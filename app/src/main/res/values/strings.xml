@@ -1,0 +1,6 @@
+<resources>
+    <string name="app_name">MeshWhisper</string>
+    <string name="channel_id_mesh">mesh_service_channel</string>
+    <string name="channel_name_mesh">Mesh Active Service</string>
+    <string name="channel_desc_mesh">Keeps the peer-to-peer Bluetooth mesh connected in the background</string>
+</resources>

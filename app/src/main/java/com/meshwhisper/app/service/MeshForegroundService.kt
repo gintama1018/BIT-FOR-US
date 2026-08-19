@@ -39,11 +39,11 @@ class MeshForegroundService : Service() {
         val app = MeshApplication.instance
         app.bleEngine.start(app.cryptoEngine.nodeId)
 
-        // Periodic heartbeat & presence announcement every 30 seconds
+        // Periodic heartbeat & presence announcement every 4 seconds (fast discovery & recovery)
         heartbeatJob = serviceScope.launch {
             while (isActive) {
                 app.router.announcePresence()
-                delay(30000L)
+                delay(4000L)
             }
         }
 

@@ -46,8 +46,8 @@ class MeshRouter(
             handleIncomingPacket(packetBytes, ingressAddress)
         }
 
-        bleEngine.onPeerConnectedListener = { _ ->
-            // Exchange identity upon new BLE link
+        bleEngine.onPeerReadyListener = { _ ->
+            // Exchange identity upon established BLE link
             scope.launch {
                 announcePresence()
             }

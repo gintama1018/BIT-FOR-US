@@ -25,13 +25,13 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.pm.PackageManager
 import android.os.Build
 import android.os.ParcelUuid
 import android.util.Log
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -86,10 +86,10 @@ class MeshBleEngine(private val context: Context) {
     private val _supportsPeripheral = MutableStateFlow(true)
     val supportsPeripheral: StateFlow<Boolean> = _supportsPeripheral.asStateFlow()
 
-    // Packet ingress listener
+    // Event listeners
     var onPacketReceivedListener: ((packetBytes: ByteArray, ingressAddress: String) -> Unit)? = null
     var onPeerDiscoveredListener: ((address: String, rssi: Int) -> Unit)? = null
-    var onPeerConnectedListener: ((address: String) -> Unit)? = null
+    var onPeerReadyListener: ((address: String) -> Unit)? = null
     var onPeerDisconnectedListener: ((address: String) -> Unit)? = null
 
     private var myNodeId: Long = 0L
@@ -118,9 +118,10 @@ class MeshBleEngine(private val context: Context) {
     }
 
     init {
-        val hasPeripheral = context.packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE) &&
-                context.packageManager.hasSystemFeature("android.hardware.bluetooth_le.peripheral")
-        _supportsPeripheral.value = hasPeripheral
+        // Check advertiser capability directly from BluetoothAdapter (more reliable than packageManager feature flag)
+        val canAdvertise = (bluetoothAdapter?.isMultipleAdvertisementSupported == true) ||
+                (bluetoothAdapter?.bluetoothLeAdvertiser != null)
+        _supportsPeripheral.value = canAdvertise
 
         // Register receiver for Bluetooth state changes (Android 14+ safe with RECEIVER_NOT_EXPORTED)
         val filter = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
@@ -245,14 +246,10 @@ class MeshBleEngine(private val context: Context) {
 
     @SuppressLint("MissingPermission")
     private fun startAdvertising() {
-        if (!_supportsPeripheral.value) {
-            Log.w(tag, "Device lacks BLE Peripheral mode support - advertising skipped")
-            return
-        }
-
         advertiser = bluetoothAdapter?.bluetoothLeAdvertiser
         if (advertiser == null) {
-            Log.w(tag, "BluetoothLeAdvertiser not available")
+            Log.w(tag, "BluetoothLeAdvertiser not available on this device")
+            _supportsPeripheral.value = false
             return
         }
 
@@ -265,13 +262,16 @@ class MeshBleEngine(private val context: Context) {
 
         val data = AdvertiseData.Builder()
             .setIncludeDeviceName(false)
+            .setIncludeTxPowerLevel(false)
             .addServiceUuid(ParcelUuid(BleConstants.MESH_SERVICE_UUID))
             .build()
 
         try {
             advertiser?.startAdvertising(settings, data, advertiseCallback)
+            Log.d(tag, "Initiated BLE Advertising for Mesh Service UUID")
         } catch (e: Exception) {
             Log.e(tag, "Failed to start BLE advertising", e)
+            _supportsPeripheral.value = false
         }
     }
 
@@ -287,13 +287,17 @@ class MeshBleEngine(private val context: Context) {
 
     private val advertiseCallback = object : AdvertiseCallback() {
         override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
-            Log.d(tag, "BLE Advertising started successfully")
+            Log.i(tag, "BLE Advertising active and broadcasting Mesh Service")
             _isAdvertising.value = true
+            _supportsPeripheral.value = true
         }
 
         override fun onStartFailure(errorCode: Int) {
-            Log.e(tag, "BLE Advertising failed with error: $errorCode")
+            Log.e(tag, "BLE Advertising failed with error code: $errorCode")
             _isAdvertising.value = false
+            if (errorCode == AdvertiseCallback.ADVERTISE_FAILED_FEATURE_UNSUPPORTED) {
+                _supportsPeripheral.value = false
+            }
         }
     }
 
@@ -301,10 +305,9 @@ class MeshBleEngine(private val context: Context) {
         override fun onConnectionStateChange(device: BluetoothDevice?, status: Int, newState: Int) {
             val address = device?.address ?: return
             if (newState == BluetoothProfile.STATE_CONNECTED) {
-                Log.d(tag, "Central connected to GATT server: $address")
+                Log.d(tag, "Central connected to our GATT server: $address")
                 connectedCentrals[address] = device
                 updatePeerCount()
-                onPeerConnectedListener?.invoke(address)
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 Log.d(tag, "Central disconnected from GATT server: $address")
                 connectedCentrals.remove(address)
@@ -351,6 +354,15 @@ class MeshBleEngine(private val context: Context) {
             if (responseNeeded && device != null) {
                 gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
             }
+
+            val address = device?.address
+            if (descriptor?.uuid == BleConstants.CCCD_UUID && address != null) {
+                Log.d(tag, "Central subscribed to notifications on server: $address -> trigger announce")
+                scope.launch {
+                    delay(300L)
+                    onPeerReadyListener?.invoke(address)
+                }
+            }
         }
     }
 
@@ -366,16 +378,20 @@ class MeshBleEngine(private val context: Context) {
             return
         }
 
-        val filter = ScanFilter.Builder()
-            .setServiceUuid(ParcelUuid(BleConstants.MESH_SERVICE_UUID))
-            .build()
+        val scanFilters = listOf(
+            ScanFilter.Builder()
+                .setServiceUuid(ParcelUuid(BleConstants.MESH_SERVICE_UUID))
+                .build(),
+            ScanFilter.Builder().build() // Catch all for devices whose OEM drops UUID filters
+        )
 
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .setReportDelay(0)
             .build()
 
         try {
-            scanner?.startScan(listOf(filter), settings, scanCallback)
+            scanner?.startScan(scanFilters, settings, scanCallback)
             _isScanning.value = true
             Log.d(tag, "BLE Scan started for Mesh Service")
         } catch (e: Exception) {
@@ -399,11 +415,16 @@ class MeshBleEngine(private val context: Context) {
             val address = device.address
             val rssi = result.rssi
 
-            onPeerDiscoveredListener?.invoke(address, rssi)
+            val serviceUuids = result.scanRecord?.serviceUuids
+            val hasMeshService = serviceUuids?.any { it.uuid == BleConstants.MESH_SERVICE_UUID } == true
 
-            // Auto-connect if not already connected or connecting
-            if (!activeGattClients.containsKey(address) && !connectedCentrals.containsKey(address)) {
-                connectToPeer(device, rssi)
+            if (hasMeshService || result.scanRecord?.serviceData?.containsKey(ParcelUuid(BleConstants.MESH_SERVICE_UUID)) == true) {
+                onPeerDiscoveredListener?.invoke(address, rssi)
+
+                // Auto-connect if not already connected or connecting
+                if (!activeGattClients.containsKey(address) && !connectedCentrals.containsKey(address)) {
+                    connectToPeer(device, rssi)
+                }
             }
         }
 
@@ -440,7 +461,6 @@ class MeshBleEngine(private val context: Context) {
                 Log.d(tag, "Connected as Central to $deviceAddress, requesting MTU 512...")
                 gatt.requestMtu(BleConstants.REQUESTED_MTU)
                 updatePeerCount()
-                onPeerConnectedListener?.invoke(deviceAddress)
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 Log.d(tag, "Disconnected from $deviceAddress")
                 gatt.close()
@@ -490,7 +510,11 @@ class MeshBleEngine(private val context: Context) {
                     }
                 }
 
-                Log.d(tag, "GATT Client ready for transmission to $deviceAddress")
+                Log.i(tag, "GATT Client ready for mesh traffic to $deviceAddress -> trigger announce")
+                scope.launch {
+                    delay(300L)
+                    onPeerReadyListener?.invoke(deviceAddress)
+                }
             }
         }
 

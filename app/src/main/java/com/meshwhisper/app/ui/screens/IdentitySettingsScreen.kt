@@ -269,6 +269,8 @@ fun IdentitySettingsScreen(
 
                         Spacer(modifier = Modifier.height(12.dp))
 
+                        val isBtOn by viewModel.isBluetoothEnabled.collectAsState()
+                        DiagnosticRow("Bluetooth Radio", if (isBtOn) "Enabled (Radio Active)" else "Disabled (Radio Off)", isBtOn)
                         DiagnosticRow("BLE Peripheral (Advertiser)", if (supportsPeripheral) "Supported (Dual-Role)" else "Degraded (Central only)", supportsPeripheral)
                         DiagnosticRow("GATT Server", "Active (512-byte MTU)", true)
                         DiagnosticRow("BLE Central Scanner", "Active (Low-Latency)", true)

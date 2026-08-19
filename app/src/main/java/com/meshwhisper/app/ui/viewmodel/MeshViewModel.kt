@@ -45,6 +45,7 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     // Engine & Router State
+    val isBluetoothEnabled: StateFlow<Boolean> = bleEngine.isBluetoothEnabled
     val connectedPeersCount: StateFlow<Int> = bleEngine.connectedPeersCount
     val isAdvertising: StateFlow<Boolean> = bleEngine.isAdvertising
     val isScanning: StateFlow<Boolean> = bleEngine.isScanning

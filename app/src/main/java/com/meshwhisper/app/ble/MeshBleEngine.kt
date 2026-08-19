@@ -21,11 +21,15 @@ import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.ParcelUuid
 import android.util.Log
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -48,6 +52,9 @@ class MeshBleEngine(private val context: Context) {
     private var scanner: BluetoothLeScanner? = null
     private var gattServer: BluetoothGattServer? = null
 
+    // Guard against duplicate start/stop cycles
+    private var isEngineRunning = false
+
     // Connected centrals on our GATT server (Peripheral role)
     private val connectedCentrals = ConcurrentHashMap<String, BluetoothDevice>()
 
@@ -63,7 +70,10 @@ class MeshBleEngine(private val context: Context) {
 
     private val activeGattClients = ConcurrentHashMap<String, ClientConnection>()
 
-    // State flows for UI
+    // State flows for UI & Service
+    private val _isBluetoothEnabled = MutableStateFlow(bluetoothAdapter?.isEnabled == true)
+    val isBluetoothEnabled: StateFlow<Boolean> = _isBluetoothEnabled.asStateFlow()
+
     private val _isAdvertising = MutableStateFlow(false)
     val isAdvertising: StateFlow<Boolean> = _isAdvertising.asStateFlow()
 
@@ -84,19 +94,62 @@ class MeshBleEngine(private val context: Context) {
 
     private var myNodeId: Long = 0L
 
+    // Receiver to automatically restart / stop engine when user toggles Bluetooth
+    private val bluetoothStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(ctx: Context?, intent: Intent?) {
+            if (intent?.action == BluetoothAdapter.ACTION_STATE_CHANGED) {
+                val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+                when (state) {
+                    BluetoothAdapter.STATE_ON -> {
+                        Log.d(tag, "Bluetooth radio turned ON -> restarting mesh engine")
+                        _isBluetoothEnabled.value = true
+                        if (myNodeId != 0L && !isEngineRunning) {
+                            start(myNodeId)
+                        }
+                    }
+                    BluetoothAdapter.STATE_OFF, BluetoothAdapter.STATE_TURNING_OFF -> {
+                        Log.d(tag, "Bluetooth radio turned OFF -> stopping mesh engine")
+                        _isBluetoothEnabled.value = false
+                        stop()
+                    }
+                }
+            }
+        }
+    }
+
     init {
         val hasPeripheral = context.packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE) &&
                 context.packageManager.hasSystemFeature("android.hardware.bluetooth_le.peripheral")
         _supportsPeripheral.value = hasPeripheral
+
+        // Register receiver for Bluetooth state changes (Android 14+ safe with RECEIVER_NOT_EXPORTED)
+        val filter = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
+        ContextCompat.registerReceiver(
+            context,
+            bluetoothStateReceiver,
+            filter,
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
     }
 
     @SuppressLint("MissingPermission")
     fun start(nodeId: Long) {
         this.myNodeId = nodeId
-        if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled) {
-            Log.w(tag, "Bluetooth is disabled or unavailable")
+        val isEnabled = bluetoothAdapter?.isEnabled == true
+        _isBluetoothEnabled.value = isEnabled
+
+        if (!isEnabled) {
+            Log.w(tag, "Bluetooth is disabled or unavailable. Waiting for Bluetooth radio to be enabled...")
             return
         }
+
+        if (isEngineRunning) {
+            Log.d(tag, "Mesh engine is already active, skipping redundant start()")
+            return
+        }
+
+        isEngineRunning = true
+        Log.i(tag, "Starting Mesh BLE Engine for Node ID: $nodeId")
 
         startGattServer()
         startAdvertising()
@@ -105,11 +158,26 @@ class MeshBleEngine(private val context: Context) {
 
     @SuppressLint("MissingPermission")
     fun stop() {
+        if (!isEngineRunning && !isAdvertising.value && !isScanning.value) {
+            return
+        }
+
+        Log.i(tag, "Stopping Mesh BLE Engine...")
+        isEngineRunning = false
         stopAdvertising()
         stopScanning()
         closeAllGattClients()
         stopGattServer()
         _connectedPeersCount.value = 0
+    }
+
+    fun destroy() {
+        stop()
+        try {
+            context.unregisterReceiver(bluetoothStateReceiver)
+        } catch (e: Exception) {
+            // Ignored
+        }
     }
 
     // =========================================================================
@@ -415,7 +483,9 @@ class MeshBleEngine(private val context: Context) {
                     gatt.setCharacteristicNotification(notifyChar, true)
                     val descriptor = notifyChar.getDescriptor(BleConstants.CCCD_UUID)
                     if (descriptor != null) {
+                        @Suppress("DEPRECATION")
                         descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                        @Suppress("DEPRECATION")
                         gatt.writeDescriptor(descriptor)
                     }
                 }

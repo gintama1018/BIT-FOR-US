@@ -86,6 +86,12 @@ dependencies {
     implementation("androidx.room:room-ktx:$roomVersion")
     ksp("androidx.room:room-compiler:$roomVersion")
 
+    // SQLCipher for encrypted SQLite Room database at rest
+    implementation("net.zetetic:sqlcipher-android:4.6.0")
+
+    // AndroidX Biometric for App Lock (Fingerprint/PIN via OS Device Credential)
+    implementation("androidx.biometric:biometric:1.2.0-alpha05")
+
     // Cryptography (Pure Java X25519 & HKDF via BouncyCastle)
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
 

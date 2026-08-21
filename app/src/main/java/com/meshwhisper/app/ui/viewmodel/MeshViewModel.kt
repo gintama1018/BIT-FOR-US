@@ -102,11 +102,35 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private val secPrefs = application.getSharedPreferences("meshwhisper_security_settings", android.content.Context.MODE_PRIVATE)
+    private val _isAppLockEnabled = MutableStateFlow(secPrefs.getBoolean("app_lock_enabled", false))
+    val isAppLockEnabled: StateFlow<Boolean> = _isAppLockEnabled.asStateFlow()
+
+    fun setAppLockEnabled(enabled: Boolean) {
+        secPrefs.edit().putBoolean("app_lock_enabled", enabled).apply()
+        _isAppLockEnabled.value = enabled
+    }
+
+    fun emergencyPanicWipe() {
+        viewModelScope.launch {
+            database.messageDao().deleteAll()
+            database.peerDao().deleteAll()
+            database.packetLogDao().deleteAll()
+            database.processedPacketDao().deleteAll()
+            database.storeForwardDao().purgeExpired(Long.MAX_VALUE)
+            cryptoEngine.resetIdentityKeys()
+            setAppLockEnabled(false)
+            _myAlias.value = "Node"
+            router.announcePresence()
+        }
+    }
+
     fun clearAllData() {
         viewModelScope.launch {
             database.messageDao().deleteAll()
             database.peerDao().deleteAll()
             database.packetLogDao().deleteAll()
+            database.processedPacketDao().deleteAll()
         }
     }
 

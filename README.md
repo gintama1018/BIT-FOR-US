@@ -148,16 +148,19 @@ sequenceDiagram
 
 ### Key Security Features:
 1. **AEAD Additional Authenticated Data (AAD) Binding**: All immutable packet headers (`type`, `messageId`, `senderId`, `recipientId`, `timestamp`) are fed into AES-GCM as AAD. Malicious relays cannot tamper with routing headers without triggering authentication failure on the recipient.
-2. **Hardware-Backed Android Keystore Master Key**: The X25519 identity private key is encrypted with an AES-256-GCM master key stored inside Android Keystore (backed by hardware TEE/SE). `android:allowBackup="false"` prevents USB extraction via `adb backup`.
-3. **Safety Number / Identity Change Warnings**: If a peer's announced public key changes from what was previously stored (TOFU), MeshWhisper alerts the user with an in-chat security warning banner.
-4. **Peer Blocking & Ingress Filtering**: Blocked contacts are dropped at router ingress before decryption or ACK generation.
-5. **Replay Protection**: Live packets are validated against a bounded timestamp window (±10 minutes) and deduplicated via memory cache and unique message UUIDs.
+2. **Full Database Encryption At Rest (SQLCipher AES-256)**: All local SQLite tables (messages, peers, packet logs, store-and-forward queue) are fully encrypted at rest with SQLCipher (`net.zetetic:sqlcipher-android`) using an independent 256-bit passphrase managed by Android Keystore.
+3. **Hardware-Backed Android Keystore Master Keys**: Device X25519 identity private keys and DB passphrases are wrapped by AES-256-GCM master keys stored inside Android Keystore (backed by hardware TEE/StrongBox). `android:allowBackup="false"` prevents USB extraction via `adb backup`.
+4. **Epoch-Based Forward Secrecy**: Direct message session keys are derived using HKDF-SHA256 bound to hourly timestamp epochs. Keys rotate automatically over time, while delayed store-and-forward packets still decrypt successfully via the sender's authenticated header timestamp.
+5. **Two-Layer Replay Protection**: Fast Layer-1 in-memory LRU cache protects against high-frequency BLE traffic loops, while Layer-2 persistent Room database table (`processed_packets`) blocks replay attacks across app restarts.
+6. **Safety Number / Identity Change Warnings**: If a peer's announced public key changes from what was previously stored (TOFU), MeshWhisper alerts the user with an in-chat security warning banner.
+7. **Peer Blocking & Ingress Filtering**: Blocked contacts are dropped at router ingress before decryption or ACK generation.
+8. **App Lock & Emergency Panic Duress Wipe**: Biometric authentication (`BIOMETRIC_STRONG or DEVICE_CREDENTIAL`) locks the application, and an Emergency Panic Wipe feature instantly purges all keys, databases, and logs in hostile environments.
 
 ---
 
 ## 6. Multi-Hop Routing & Store-and-Forward
 
-1. **Deduplication Engine**: A high-speed LRU cache holds up to 2,000 recently observed message UUIDs. Redundant transmissions are dropped instantly, preventing broadcast storms and infinite routing loops.
+1. **Two-Layer Deduplication Engine**: A high-speed RAM LRU cache + persistent SQLCipher replay table holds observed message UUIDs. Redundant transmissions are dropped instantly, preventing broadcast storms and infinite routing loops.
 2. **Hop Decrement**: Packets start with `TTL = 7`. Every relay node decrements TTL by 1 before rebroadcasting. Packets terminate at `TTL = 0`.
 3. **Store-and-Forward Buffer**: If a packet is addressed to an offline or out-of-range peer, intermediate relay nodes cache the encrypted blob in a local Room DB table (24-hour expiration). When the recipient enters range and announces presence, the queue is drained and delivered automatically.
 
@@ -169,7 +172,7 @@ sequenceDiagram
 - **Private Encrypted DMs**: 1-to-1 conversations with delivery status checkmarks (`✓` Sent, `✓✓` Delivered ACK), TOFU fingerprint verification, safety number change alerts, and contact blocking.
 - **Mesh Topology Radar**: Interactive animated pulse canvas displaying concentric radar rings, center node ("YOU"), connected links, and multi-hop peers.
 - **Live Packet Telemetry Inspector**: Real-time diagnostic terminal streaming raw packet events (`[TX]`, `[RX]`, `[RELAY]`, `[DROP]`, `[ACK]`), byte metrics, and direction filter chips.
-- **Identity & QR Manager**: Node alias customization, 64-bit Hex ID display, X25519 fingerprint generator, and QR code generator for in-person visual verification.
+- **Identity, Security & QR Manager**: Node alias customization, 64-bit Hex ID display, X25519 fingerprint generator, QR code verification, Biometric App Lock toggle, and Emergency Panic Duress Wipe.
 
 ---
 

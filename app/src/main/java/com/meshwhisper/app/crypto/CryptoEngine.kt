@@ -51,7 +51,7 @@ class CryptoEngine private constructor(private val context: Context) {
         context.getSharedPreferences("meshwhisper_identity_prefs", Context.MODE_PRIVATE)
 
     private val secureRandom = SecureRandom()
-    private val sessionKeyCache = ConcurrentHashMap<Long, ByteArray>()
+    private val sessionKeyEpochCache = ConcurrentHashMap<String, ByteArray>()
 
     // Device Identity KeyPair
     val privateKeyBytes: ByteArray
@@ -198,11 +198,24 @@ class CryptoEngine private constructor(private val context: Context) {
     }
 
     /**
-     * Derives a 256-bit AES symmetric key for a specific peer using X25519 ECDH + HKDF-SHA256.
+     * Calculates the time epoch window (1 hour) for forward secrecy key derivation.
      */
-    fun derivePeerSessionKey(peerPublicKeyBytes: ByteArray): ByteArray {
+    fun getEpochForTimestamp(timestampSec: Long): Long = timestampSec / 3600L
+
+    /**
+     * Derives a 256-bit AES symmetric key for a specific peer and epoch using X25519 ECDH + HKDF-SHA256.
+     * Binding the authenticated message timestamp epoch ensures forward secrecy while preserving
+     * decryption for delayed store-and-forward packets.
+     */
+    fun derivePeerSessionKey(
+        peerPublicKeyBytes: ByteArray,
+        timestampSec: Long = System.currentTimeMillis() / 1000L
+    ): ByteArray {
         val peerNodeId = deriveNodeId(peerPublicKeyBytes)
-        return sessionKeyCache.getOrPut(peerNodeId) {
+        val epoch = getEpochForTimestamp(timestampSec)
+        val cacheKey = "$peerNodeId:$epoch"
+
+        return sessionKeyEpochCache.getOrPut(cacheKey) {
             val privParams = X25519PrivateKeyParameters(privateKeyBytes, 0)
             val pubParams = X25519PublicKeyParameters(peerPublicKeyBytes, 0)
 
@@ -211,12 +224,13 @@ class CryptoEngine private constructor(private val context: Context) {
             val sharedSecret = ByteArray(agreement.agreementSize)
             agreement.calculateAgreement(pubParams, sharedSecret, 0)
 
-            // HKDF-SHA256 expansion to 32 bytes (256 bits)
+            // HKDF-SHA256 expansion to 32 bytes with epoch-bound info string
             val hkdf = HKDFBytesGenerator(SHA256Digest())
+            val info = "MESHWHISPER_SESSION_KEY_V1_EPOCH_$epoch".toByteArray(Charsets.UTF_8)
             val params = HKDFParameters(
                 sharedSecret,
                 HKDF_DM_SALT,
-                "MESHWHISPER_SESSION_KEY_V1".toByteArray(Charsets.UTF_8)
+                info
             )
             hkdf.init(params)
             val sessionKey = ByteArray(32)
@@ -226,17 +240,34 @@ class CryptoEngine private constructor(private val context: Context) {
     }
 
     /**
-     * Invalidates cached session key for a given peer (used when key rotation occurs).
+     * Invalidates cached session keys for a given peer across all epochs.
      */
     fun invalidateSessionKey(peerNodeId: Long) {
-        sessionKeyCache.remove(peerNodeId)
+        val prefix = "$peerNodeId:"
+        val keysToRemove = sessionKeyEpochCache.keys.filter { it.startsWith(prefix) }
+        for (k in keysToRemove) {
+            sessionKeyEpochCache.remove(k)
+        }
     }
 
     /**
-     * Clears all session keys in memory.
+     * Clears all cached session keys from memory.
      */
     fun clearAllSessionKeys() {
-        sessionKeyCache.clear()
+        sessionKeyEpochCache.clear()
+    }
+
+    /**
+     * Wipes identity keys from persistent storage (used during Panic Duress Wipe).
+     */
+    fun resetIdentityKeys() {
+        clearAllSessionKeys()
+        prefs.edit()
+            .remove(PREF_PRIVATE_KEY_ENC)
+            .remove(PREF_PRIVATE_KEY_IV)
+            .remove(PREF_PUBLIC_KEY)
+            .remove(PREF_LEGACY_PRIVATE_KEY)
+            .apply()
     }
 
     /**

@@ -34,6 +34,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -81,6 +83,9 @@ fun IdentitySettingsScreen(
         "meshwhisper://node?id=${viewModel.myNodeIdHex}&alias=$myAlias&pub=${viewModel.myPublicKeyHex}"
     }
     val qrBitmap = remember(qrContent) { QrCodeGenerator.generateQrBitmap(qrContent, 400) }
+
+    val isAppLockEnabled by viewModel.isAppLockEnabled.collectAsState()
+    var showPanicDialog by remember { mutableStateOf(false) }
 
     Column(
         modifier = modifier
@@ -200,37 +205,39 @@ fun IdentitySettingsScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Column {
-                                    Text(text = "Node Alias", color = TextSecondary, fontSize = 11.sp)
-                                    Text(text = myAlias, color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                                }
+                                Text(
+                                    text = myAlias,
+                                    color = TextPrimary,
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
                                 IconButton(
                                     onClick = {
                                         aliasInput = myAlias
                                         isEditingAlias = true
                                     }
                                 ) {
-                                    Icon(imageVector = Icons.Default.Edit, contentDescription = "Edit", tint = TextMuted, modifier = Modifier.size(18.dp))
+                                    Icon(imageVector = Icons.Default.Edit, contentDescription = "Edit Alias", tint = TextMuted, modifier = Modifier.size(18.dp))
                                 }
                             }
                         }
 
                         Spacer(modifier = Modifier.height(12.dp))
 
-                        // Node ID
-                        Text(text = "Node ID (64-bit Hex)", color = TextSecondary, fontSize = 11.sp)
+                        // 64-bit Hex Node ID
+                        Text(text = "NODE ID (64-BIT HEX)", color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         Text(
                             text = viewModel.myNodeIdHex,
-                            color = TextPrimary,
+                            color = CyanAccent,
                             fontSize = 13.sp,
                             fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Medium
+                            fontWeight = FontWeight.SemiBold
                         )
 
-                        Spacer(modifier = Modifier.height(12.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
 
-                        // TOFU Fingerprint
-                        Text(text = "Public Key Fingerprint (TOFU)", color = TextSecondary, fontSize = 11.sp)
+                        // Public Key Fingerprint
+                        Text(text = "X25519 FINGERPRINT", color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(imageVector = Icons.Default.Fingerprint, contentDescription = null, tint = EmeraldAccent, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
@@ -246,7 +253,7 @@ fun IdentitySettingsScreen(
                 }
             }
 
-            // BLE Diagnostics Card
+            // Security & Privacy Settings Card
             item {
                 Card(
                     colors = CardDefaults.cardColors(containerColor = DarkSurface),
@@ -255,18 +262,68 @@ fun IdentitySettingsScreen(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(imageVector = Icons.Default.Bluetooth, contentDescription = null, tint = CyanAccent, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "HARDWARE & BLE STATUS",
-                                color = CyanAccent,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold,
-                                letterSpacing = 0.5.sp
+                        Text(
+                            text = "SECURITY & PRIVACY",
+                            color = EmeraldAccent,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.5.sp
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "App Lock (Biometric / PIN)",
+                                    color = TextPrimary,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    text = "Require fingerprint or screen lock PIN to open app",
+                                    color = TextSecondary,
+                                    fontSize = 11.sp
+                                )
+                            }
+                            Switch(
+                                checked = isAppLockEnabled,
+                                onCheckedChange = { viewModel.setAppLockEnabled(it) },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = EmeraldAccent,
+                                    checkedTrackColor = Color(0xFF00381C)
+                                )
                             )
                         }
 
+                        Spacer(modifier = Modifier.height(10.dp))
+                        DiagnosticRow("Database Storage", "SQLCipher Encrypted (AES-256)", true)
+                        DiagnosticRow("Identity Key Storage", "Android Keystore Master Key", true)
+                        DiagnosticRow("Replay Protection", "Two-Layer (RAM + Room DB)", true)
+                        DiagnosticRow("Forward Secrecy", "Hourly Epoch HKDF Ratchet", true)
+                    }
+                }
+            }
+
+            // Diagnostics Card
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = DarkSurface),
+                    shape = RoundedCornerShape(14.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, DarkCardBorder),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = "DIAGNOSTICS & PROTOCOL ENGINE",
+                            color = EmeraldAccent,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.5.sp
+                        )
                         Spacer(modifier = Modifier.height(12.dp))
 
                         val isBtOn by viewModel.isBluetoothEnabled.collectAsState()
@@ -274,8 +331,8 @@ fun IdentitySettingsScreen(
                         DiagnosticRow("BLE Peripheral (Advertiser)", if (supportsPeripheral) "Supported (Dual-Role)" else "Degraded (Central only)", supportsPeripheral)
                         DiagnosticRow("GATT Server", "Active (512-byte MTU)", true)
                         DiagnosticRow("BLE Central Scanner", "Active (Low-Latency)", true)
-                        DiagnosticRow("Crypto Subsystem", "X25519 + AES-256-GCM", true)
-                        DiagnosticRow("Routing Algorithm", "Flood + TTL (7) + Dedup", true)
+                        DiagnosticRow("Crypto Subsystem", "X25519 + AES-256-GCM + AAD", true)
+                        DiagnosticRow("Routing Algorithm", "Flood + TTL (7) + Persistent Dedup", true)
                     }
                 }
             }
@@ -296,14 +353,28 @@ fun IdentitySettingsScreen(
             item {
                 Button(
                     onClick = { showClearDialog = true },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2A0000)),
+                    colors = ButtonDefaults.buttonColors(containerColor = DarkSurfaceVariant),
+                    shape = RoundedCornerShape(10.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, DarkCardBorder),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(imageVector = Icons.Default.Delete, contentDescription = null, tint = TextMuted, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Clear Messages & History", color = TextPrimary, fontWeight = FontWeight.SemiBold)
+                }
+            }
+
+            item {
+                Button(
+                    onClick = { showPanicDialog = true },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3B0000)),
                     shape = RoundedCornerShape(10.dp),
                     border = androidx.compose.foundation.BorderStroke(1.dp, RedAccent),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Icon(imageVector = Icons.Default.Delete, contentDescription = null, tint = RedAccent, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Clear All Messages & Cache", color = RedAccent, fontWeight = FontWeight.SemiBold)
+                    Text("🚨 Emergency Panic Duress Wipe", color = RedAccent, fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -356,7 +427,7 @@ fun IdentitySettingsScreen(
                         showClearDialog = false
                     }
                 ) {
-                    Text("Clear Everything", color = RedAccent)
+                    Text("Clear Messages", color = RedAccent)
                 }
             },
             dismissButton = {
@@ -364,7 +435,7 @@ fun IdentitySettingsScreen(
                     Text("Cancel", color = TextSecondary)
                 }
             },
-            title = { Text("Clear Local Data?", color = TextPrimary, fontWeight = FontWeight.Bold) },
+            title = { Text("Clear Messages & History?", color = TextPrimary, fontWeight = FontWeight.Bold) },
             text = {
                 Text(
                     "This will delete all stored message history, peer records, and packet telemetry. Your cryptographic identity keypair will be preserved.",
@@ -373,6 +444,38 @@ fun IdentitySettingsScreen(
                 )
             },
             containerColor = DarkSurface
+        )
+    }
+
+    // Emergency Panic Duress Wipe Dialog
+    if (showPanicDialog) {
+        AlertDialog(
+            onDismissRequest = { showPanicDialog = false },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.emergencyPanicWipe()
+                        showPanicDialog = false
+                    }
+                ) {
+                    Text("NUKE & WIPE EVERYTHING", color = RedAccent, fontWeight = FontWeight.Black)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPanicDialog = false }) {
+                    Text("Cancel", color = TextSecondary)
+                }
+            },
+            title = { Text("🚨 EMERGENCY PANIC WIPE", color = RedAccent, fontWeight = FontWeight.Bold) },
+            text = {
+                Text(
+                    "WARNING: This will instantly and irreversibly destroy your X25519 private keys from Android Keystore, purge the SQLCipher encrypted database, and wipe all messages, contacts, and logs. Use in high-threat duress situations.",
+                    color = TextPrimary,
+                    fontSize = 13.sp,
+                    lineHeight = 18.sp
+                )
+            },
+            containerColor = Color(0xFF1E0000)
         )
     }
 }

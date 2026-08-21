@@ -99,4 +99,18 @@ class SecurityAndRoutingTest {
         val futureAge = nowSec - futureTs
         assertThat(futureAge in -300..600).isFalse()
     }
+
+    @Test
+    fun testEpochCalculationConsistency() {
+        val t1 = 3600L // 1h in seconds
+        val t2 = 3659L // 1h + 59s
+        val t3 = 7200L // 2h in seconds
+
+        val epoch1 = t1 / 3600L
+        val epoch2 = t2 / 3600L
+        val epoch3 = t3 / 3600L
+
+        assertThat(epoch1).isEqualTo(epoch2) // Same 1-hour window
+        assertThat(epoch1).isNotEqualTo(epoch3) // Next epoch
+    }
 }

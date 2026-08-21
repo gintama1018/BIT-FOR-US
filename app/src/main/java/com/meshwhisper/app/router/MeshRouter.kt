@@ -69,16 +69,33 @@ class MeshRouter(
             return
         }
 
-        // Loop / Deduplication check
+        // Fast Layer 1 Deduplication Check: In-memory LRU Cache
         synchronized(dedupCache) {
             if (dedupCache.get(packet.messageId) != null) {
-                logPacket("DROP", packet, rawBytes.size, "Duplicate packet dropped (dedup cache)")
+                logPacket("DROP", packet, rawBytes.size, "Duplicate packet dropped (fast RAM cache)")
                 return
             }
-            dedupCache.put(packet.messageId, System.currentTimeMillis())
         }
 
         scope.launch {
+            // Layer 2 Deduplication Check: Persistent Room Replay Table
+            val msgIdStr = packet.messageId.toString()
+            if (database.processedPacketDao().hasSeen(msgIdStr) > 0) {
+                synchronized(dedupCache) {
+                    dedupCache.put(packet.messageId, System.currentTimeMillis())
+                }
+                logPacket("DROP", packet, rawBytes.size, "Duplicate packet dropped (persistent replay DB)")
+                return@launch
+            }
+
+            // Register in both fast RAM cache and persistent replay table
+            synchronized(dedupCache) {
+                dedupCache.put(packet.messageId, System.currentTimeMillis())
+            }
+            database.processedPacketDao().markSeen(
+                com.meshwhisper.app.data.model.ProcessedPacketEntity(msgIdStr, packet.timestamp)
+            )
+
             when (packet.type) {
                 PacketType.PEER_ANNOUNCE, PacketType.KEY_EXCHANGE -> {
                     handlePeerAnnounce(packet, ingressAddress)
@@ -228,7 +245,7 @@ class MeshRouter(
 
                 try {
                     val peerPubKey = CryptoEngine.hexToBytes(senderPeer.publicKeyHex)
-                    val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey)
+                    val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey, packet.timestamp)
                     val decryptedBytes = cryptoEngine.decrypt(
                         ciphertext = packet.payload,
                         authTag = packet.authTag,
@@ -327,8 +344,15 @@ class MeshRouter(
         )
 
         val raw = MeshPacket.serialize(packet)
+        val nowSec = System.currentTimeMillis() / 1000L
         synchronized(dedupCache) {
             dedupCache.put(packet.messageId, System.currentTimeMillis())
+        }
+        try {
+            database.processedPacketDao().purgeOld(nowSec - 86400L)
+            database.storeForwardDao().purgeExpired(System.currentTimeMillis())
+        } catch (e: Exception) {
+            Log.e(tag, "Failed to purge old records: ${e.message}")
         }
         bleEngine.broadcastPacket(raw)
         logPacket("TX", packet, raw.size, "Broadcasted local peer announce")
@@ -401,7 +425,7 @@ class MeshRouter(
         val timestamp = System.currentTimeMillis() / 1000L
 
         val peerPubKey = CryptoEngine.hexToBytes(peer.publicKeyHex)
-        val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey)
+        val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey, timestamp)
 
         val aad = MeshPacket.computeAad(
             type = PacketType.DIRECT_MESSAGE,

@@ -9,6 +9,7 @@ import com.meshwhisper.app.data.model.MessageEntity
 import com.meshwhisper.app.data.model.MessageStatus
 import com.meshwhisper.app.data.model.PacketLogEntity
 import com.meshwhisper.app.data.model.PeerEntity
+import com.meshwhisper.app.data.model.ProcessedPacketEntity
 import com.meshwhisper.app.data.model.StoreForwardEntity
 import kotlinx.coroutines.flow.Flow
 
@@ -110,5 +111,20 @@ interface PacketLogDao {
     suspend fun trimOldLogs(keepLimit: Int = 500)
 
     @Query("DELETE FROM packet_logs")
+    suspend fun deleteAll()
+}
+
+@Dao
+interface ProcessedPacketDao {
+    @Query("SELECT COUNT(*) FROM processed_packets WHERE messageId = :messageId LIMIT 1")
+    suspend fun hasSeen(messageId: String): Int
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun markSeen(packet: ProcessedPacketEntity)
+
+    @Query("DELETE FROM processed_packets WHERE timestamp < :cutoffTime")
+    suspend fun purgeOld(cutoffTime: Long): Int
+
+    @Query("DELETE FROM processed_packets")
     suspend fun deleteAll()
 }

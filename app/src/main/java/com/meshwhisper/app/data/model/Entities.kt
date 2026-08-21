@@ -80,3 +80,10 @@ data class PacketLogEntity(
     val byteSize: Int,
     val details: String
 )
+
+@Entity(tableName = "processed_packets")
+data class ProcessedPacketEntity(
+    @PrimaryKey val messageId: String,
+    val timestamp: Long
+)
+

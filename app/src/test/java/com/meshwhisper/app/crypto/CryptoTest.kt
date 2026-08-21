@@ -167,4 +167,41 @@ class CryptoTest {
             cipherDecryptTampered.doFinal(ciphertextWithTag)
         }
     }
+
+    @Test
+    fun testEpochBasedKeyRotationForwardSecrecy() {
+        val (privA, pubA) = generateKeyPair()
+        val (privB, pubB) = generateKeyPair()
+
+        fun deriveEpochKey(myPriv: ByteArray, peerPub: ByteArray, epoch: Long): ByteArray {
+            val privParams = X25519PrivateKeyParameters(myPriv, 0)
+            val pubParams = X25519PublicKeyParameters(peerPub, 0)
+            val agreement = X25519Agreement()
+            agreement.init(privParams)
+            val sharedSecret = ByteArray(agreement.agreementSize)
+            agreement.calculateAgreement(pubParams, sharedSecret, 0)
+
+            val hkdf = HKDFBytesGenerator(SHA256Digest())
+            val info = "MESHWHISPER_SESSION_KEY_V1_EPOCH_$epoch".toByteArray(Charsets.UTF_8)
+            hkdf.init(HKDFParameters(sharedSecret, "MESHWHISPER_SALT".toByteArray(), info))
+            val key = ByteArray(32)
+            hkdf.generateBytes(key, 0, 32)
+            return key
+        }
+
+        val epoch1 = 100L
+        val epoch2 = 101L
+
+        val keyA_epoch1 = deriveEpochKey(privA, pubB, epoch1)
+        val keyB_epoch1 = deriveEpochKey(privB, pubA, epoch1)
+        val keyA_epoch2 = deriveEpochKey(privA, pubB, epoch2)
+        val keyB_epoch2 = deriveEpochKey(privB, pubA, epoch2)
+
+        // Same epoch => matching keys
+        assertThat(keyA_epoch1).isEqualTo(keyB_epoch1)
+        assertThat(keyA_epoch2).isEqualTo(keyB_epoch2)
+
+        // Different epochs => completely distinct forward secret keys!
+        assertThat(keyA_epoch1).isNotEqualTo(keyA_epoch2)
+    }
 }

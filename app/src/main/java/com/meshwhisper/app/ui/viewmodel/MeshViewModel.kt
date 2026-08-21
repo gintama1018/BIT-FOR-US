@@ -119,7 +119,7 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
 
     fun emergencyPanicWipe() {
         viewModelScope.launch {
-            com.meshwhisper.app.data.MeshDatabase.executeSecureWipe(database)
+            com.meshwhisper.app.data.MeshDatabase.executeSecureWipe(app, database)
             cryptoEngine.regenerateIdentity()
             setAppLockEnabled(false)
             _myAlias.value = "Node-${cryptoEngine.nodeIdHex.takeLast(4)}"

@@ -174,9 +174,10 @@ abstract class MeshDatabase : RoomDatabase() {
         }
 
         /**
-         * Securely wipes database rows using PRAGMA secure_delete to overwrite SQLite pages with zeroes.
+         * Securely wipes database rows using PRAGMA secure_delete to overwrite SQLite pages with zeroes,
+         * and clears stored encrypted DB passphrases.
          */
-        suspend fun executeSecureWipe(db: MeshDatabase) {
+        suspend fun executeSecureWipe(context: Context, db: MeshDatabase) {
             try {
                 db.openHelper.writableDatabase.execSQL("PRAGMA secure_delete = ON;")
             } catch (e: Exception) {
@@ -193,6 +194,14 @@ abstract class MeshDatabase : RoomDatabase() {
                 db.openHelper.writableDatabase.execSQL("VACUUM;")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to vacuum wiped database", e)
+            }
+
+            // Clear stored DB passphrase preferences to force fresh key derivation
+            try {
+                val prefs = context.getSharedPreferences(PREFS_DB_SECURITY, Context.MODE_PRIVATE)
+                prefs.edit().clear().apply()
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to clear DB security prefs", e)
             }
         }
     }

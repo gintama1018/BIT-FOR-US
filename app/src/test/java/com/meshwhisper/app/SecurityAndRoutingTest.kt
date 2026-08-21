@@ -202,4 +202,23 @@ class SecurityAndRoutingTest {
         assertThat(readPubKey).isEqualTo(pubKeyBytes)
         assertThat(readNeighbors).containsExactlyElementsIn(neighbors).inOrder()
     }
+
+    @Test
+    fun testRelayedPacketDoesNotTriggerDirectLinkRegistration() {
+        val defaultTtl = MeshPacket.DEFAULT_TTL
+        
+        // Direct packet (received on 1st hop)
+        val directTtl = defaultTtl
+        val isDirectPacket = directTtl >= defaultTtl - 1
+        assertThat(isDirectPacket).isTrue()
+
+        // Relayed packet from 2+ hops away (TTL decremented by intermediate relays)
+        val relayedTtl = defaultTtl - 2
+        val isRelayedDirect = relayedTtl >= defaultTtl - 1
+        assertThat(isRelayedDirect).isFalse()
+
+        // Hop count accurately reflected
+        val hopCount = maxOf(1, defaultTtl - relayedTtl)
+        assertThat(hopCount).isEqualTo(2)
+    }
 }

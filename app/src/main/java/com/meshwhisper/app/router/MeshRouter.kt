@@ -69,8 +69,8 @@ class MeshRouter(
             return
         }
 
-        // Register direct node link if packet came from live physical ingress address
-        if (ingressAddress != null) {
+        // Register direct node link strictly if packet originated directly (TTL not decremented by relays)
+        if (ingressAddress != null && packet.ttl >= MeshPacket.DEFAULT_TTL - 1) {
             bleEngine.registerDirectNode(ingressAddress, packet.senderId)
         }
 
@@ -170,7 +170,7 @@ class MeshRouter(
             )
         }
 
-        val isDirectLink = (ingressAddress != null || packet.ttl >= MeshPacket.DEFAULT_TTL - 1)
+        val isDirectLink = (packet.ttl >= MeshPacket.DEFAULT_TTL - 1)
         if (isDirectLink) {
             database.topologyEdgeDao().insertOrUpdate(
                 com.meshwhisper.app.data.model.TopologyEdgeEntity(

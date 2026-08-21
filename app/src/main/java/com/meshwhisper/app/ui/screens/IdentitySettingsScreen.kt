@@ -73,13 +73,14 @@ fun IdentitySettingsScreen(
 ) {
     val myAlias by viewModel.myAlias.collectAsState()
     val supportsPeripheral by viewModel.supportsPeripheral.collectAsState()
+    val identityVersion by viewModel.identityVersion.collectAsState()
 
     var isEditingAlias by remember { mutableStateOf(false) }
     var aliasInput by remember { mutableStateOf(myAlias) }
     var showQrDialog by remember { mutableStateOf(false) }
     var showClearDialog by remember { mutableStateOf(false) }
 
-    val qrContent = remember(myAlias, viewModel.myNodeIdHex, viewModel.myPublicKeyHex) {
+    val qrContent = remember(myAlias, viewModel.myNodeIdHex, viewModel.myPublicKeyHex, identityVersion) {
         "meshwhisper://node?id=${viewModel.myNodeIdHex}&alias=$myAlias&pub=${viewModel.myPublicKeyHex}"
     }
     val qrBitmap = remember(qrContent) { QrCodeGenerator.generateQrBitmap(qrContent, 400) }

@@ -176,21 +176,21 @@ private fun PublicChannelHeader(connectedNodes: Int) {
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Icon(
-                        imageVector = Icons.Default.Lock,
-                        contentDescription = "Encrypted",
-                        tint = EmeraldAccent,
+                        imageVector = Icons.Default.CellTower,
+                        contentDescription = "Public Mesh",
+                        tint = CyanAccent,
                         modifier = Modifier.size(14.dp)
                     )
                     Text(
-                        text = "AES-256",
-                        color = EmeraldAccent,
+                        text = "OPEN ROOM",
+                        color = CyanAccent,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.padding(start = 2.dp)
                     )
                 }
                 Text(
-                    text = "Zero-Internet • Multi-Hop Flood",
+                    text = "Public Channel • AEAD Tamper-Protected",
                     color = TextSecondary,
                     fontSize = 11.sp
                 )

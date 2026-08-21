@@ -32,7 +32,7 @@ class MeshForegroundService : Service() {
 
         val powerManager = getSystemService(POWER_SERVICE) as? PowerManager
         wakeLock = powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MeshWhisper:ServiceWakeLock")
-        wakeLock?.acquire()
+        wakeLock?.acquire(10 * 60 * 1000L) // 10-minute safe timeout
 
         startInForeground()
 
@@ -41,8 +41,20 @@ class MeshForegroundService : Service() {
 
         // Periodic heartbeat & presence announcement every 4 seconds (fast discovery & recovery)
         heartbeatJob = serviceScope.launch {
+            var lastWakeLockRenew = System.currentTimeMillis()
             while (isActive) {
                 app.router.announcePresence()
+
+                // Periodically refresh 10-minute wakelock every 8 minutes
+                val now = System.currentTimeMillis()
+                if (now - lastWakeLockRenew > 8 * 60 * 1000L) {
+                    wakeLock?.let {
+                        if (it.isHeld) it.release()
+                        it.acquire(10 * 60 * 1000L)
+                    }
+                    lastWakeLockRenew = now
+                }
+
                 delay(4000L)
             }
         }

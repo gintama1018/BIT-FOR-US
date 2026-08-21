@@ -7,6 +7,9 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Log
 import com.meshwhisper.app.protocol.MeshPacket
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import org.bouncycastle.crypto.agreement.X25519Agreement
 import org.bouncycastle.crypto.digests.SHA256Digest
 import org.bouncycastle.crypto.generators.HKDFBytesGenerator
@@ -53,21 +56,53 @@ class CryptoEngine private constructor(private val context: Context) {
     private val secureRandom = SecureRandom()
     private val sessionKeyEpochCache = ConcurrentHashMap<String, ByteArray>()
 
-    // Device Identity KeyPair
-    val privateKeyBytes: ByteArray
-    val publicKeyBytes: ByteArray
-    val nodeId: Long
-    val nodeIdHex: String
-    val publicFingerprint: String
+    // Device Identity KeyPair (Dynamic State)
+    var privateKeyBytes: ByteArray = ByteArray(0)
+        private set
+    var publicKeyBytes: ByteArray = ByteArray(0)
+        private set
+    var nodeId: Long = 0L
+        private set
+    var nodeIdHex: String = ""
+        private set
+    var publicFingerprint: String = ""
+        private set
+
+    private val _identityVersion = MutableStateFlow(0L)
+    val identityVersion: StateFlow<Long> = _identityVersion.asStateFlow()
 
     init {
         val loadedKeys = loadOrGenerateIdentityKeys()
-        privateKeyBytes = loadedKeys.first
-        publicKeyBytes = loadedKeys.second
+        applyIdentity(loadedKeys.first, loadedKeys.second)
+    }
 
-        nodeId = deriveNodeId(publicKeyBytes)
+    private fun applyIdentity(priv: ByteArray, pub: ByteArray) {
+        privateKeyBytes = priv
+        publicKeyBytes = pub
+        nodeId = deriveNodeId(pub)
         nodeIdHex = String.format("%016X", nodeId)
-        publicFingerprint = generateFingerprint(publicKeyBytes)
+        publicFingerprint = generateFingerprint(pub)
+        _identityVersion.value += 1
+    }
+
+    /**
+     * Fully generates, encrypts, and applies a brand-new cryptographic identity in memory and disk.
+     */
+    fun regenerateIdentity(): Pair<ByteArray, ByteArray> {
+        clearAllSessionKeys()
+        val keyGen = X25519KeyPairGenerator()
+        keyGen.init(X25519KeyGenerationParameters(secureRandom))
+        val keyPair = keyGen.generateKeyPair()
+
+        val privParams = keyPair.private as X25519PrivateKeyParameters
+        val pubParams = keyPair.public as X25519PublicKeyParameters
+
+        val privBytes = privParams.encoded
+        val pubBytes = pubParams.encoded
+
+        persistEncryptedPrivateKey(privBytes, pubBytes)
+        applyIdentity(privBytes, pubBytes)
+        return Pair(privBytes, pubBytes)
     }
 
     private fun loadOrGenerateIdentityKeys(): Pair<ByteArray, ByteArray> {
@@ -85,7 +120,7 @@ class CryptoEngine private constructor(private val context: Context) {
                 val pubBytes = hexToBytes(storedPubHex)
                 return Pair(decryptedPriv, pubBytes)
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to decrypt identity key with Keystore, checking fallback", e)
+                Log.e(TAG, "Failed to decrypt identity key with Keystore, generating fresh", e)
             }
         }
 
@@ -122,6 +157,16 @@ class CryptoEngine private constructor(private val context: Context) {
             .apply()
     }
 
+    private fun isAndroidKeyStoreAvailable(): Boolean {
+        return try {
+            val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE)
+            keyStore.load(null)
+            true
+        } catch (e: Throwable) {
+            false
+        }
+    }
+
     private fun getOrCreateMasterSecretKey(): SecretKey {
         val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE)
         keyStore.load(null)
@@ -149,39 +194,37 @@ class CryptoEngine private constructor(private val context: Context) {
     }
 
     private fun encryptWithKeystore(plaintext: ByteArray): Pair<ByteArray, ByteArray> {
-        return try {
-            val secretKey = getOrCreateMasterSecretKey()
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.ENCRYPT_MODE, secretKey)
-            val ciphertext = cipher.doFinal(plaintext)
-            val iv = cipher.iv
-            Pair(ciphertext, iv)
-        } catch (e: Throwable) {
-            // Software fallback for non-Android JVM / unit test environments
+        if (!isAndroidKeyStoreAvailable()) {
+            // Software fallback exclusively for non-Android JVM / unit test environments
             val fallbackKey = deriveKeyFromMasterSalt("SOFTWARE_FALLBACK_KEY".toByteArray(), "AT_REST".toByteArray())
             val iv = ByteArray(12).also { secureRandom.nextBytes(it) }
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(fallbackKey, "AES"), GCMParameterSpec(128, iv))
             val ciphertext = cipher.doFinal(plaintext)
-            Pair(ciphertext, iv)
+            return Pair(ciphertext, iv)
         }
+
+        val secretKey = getOrCreateMasterSecretKey()
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, secretKey)
+        val ciphertext = cipher.doFinal(plaintext)
+        return Pair(ciphertext, cipher.iv)
     }
 
     private fun decryptWithKeystore(ciphertext: ByteArray, iv: ByteArray): ByteArray {
-        return try {
-            val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE)
-            keyStore.load(null)
-            val secretKey = (keyStore.getEntry(KEYSTORE_ALIAS, null) as KeyStore.SecretKeyEntry).secretKey
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.DECRYPT_MODE, secretKey, GCMParameterSpec(128, iv))
-            cipher.doFinal(ciphertext)
-        } catch (e: Throwable) {
-            // Software fallback for non-Android JVM / unit test environments
+        if (!isAndroidKeyStoreAvailable()) {
             val fallbackKey = deriveKeyFromMasterSalt("SOFTWARE_FALLBACK_KEY".toByteArray(), "AT_REST".toByteArray())
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(fallbackKey, "AES"), GCMParameterSpec(128, iv))
-            cipher.doFinal(ciphertext)
+            return cipher.doFinal(ciphertext)
         }
+
+        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE)
+        keyStore.load(null)
+        val secretKey = (keyStore.getEntry(KEYSTORE_ALIAS, null) as KeyStore.SecretKeyEntry).secretKey
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, secretKey, GCMParameterSpec(128, iv))
+        return cipher.doFinal(ciphertext)
     }
 
     var alias: String

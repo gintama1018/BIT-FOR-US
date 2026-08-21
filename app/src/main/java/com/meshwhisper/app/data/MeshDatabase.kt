@@ -130,38 +130,72 @@ abstract class MeshDatabase : RoomDatabase() {
             return keyGenerator.generateKey()
         }
 
-        private fun encryptDbKeyWithKeystore(rawKey: ByteArray): Pair<ByteArray, ByteArray> {
+        private fun isAndroidKeyStoreAvailable(): Boolean {
             return try {
-                val secretKey = getOrCreateDbMasterKey()
-                val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-                cipher.init(Cipher.ENCRYPT_MODE, secretKey)
-                val ciphertext = cipher.doFinal(rawKey)
-                Pair(ciphertext, cipher.iv)
+                val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE)
+                keyStore.load(null)
+                true
             } catch (e: Throwable) {
+                false
+            }
+        }
+
+        private fun encryptDbKeyWithKeystore(rawKey: ByteArray): Pair<ByteArray, ByteArray> {
+            if (!isAndroidKeyStoreAvailable()) {
                 // Software fallback for JVM Unit Test environments
                 val fallbackKey = "SOFTWARE_FALLBACK_DB_MASTER_KEY".toByteArray(Charsets.UTF_8).take(32).toByteArray()
                 val iv = ByteArray(12).also { SecureRandom().nextBytes(it) }
                 val cipher = Cipher.getInstance("AES/GCM/NoPadding")
                 cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(fallbackKey, "AES"), GCMParameterSpec(128, iv))
-                Pair(cipher.doFinal(rawKey), iv)
+                return Pair(cipher.doFinal(rawKey), iv)
             }
+
+            val secretKey = getOrCreateDbMasterKey()
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.ENCRYPT_MODE, secretKey)
+            val ciphertext = cipher.doFinal(rawKey)
+            return Pair(ciphertext, cipher.iv)
         }
 
         private fun decryptDbKeyWithKeystore(ciphertext: ByteArray, iv: ByteArray): ByteArray {
-            return try {
-                val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE)
-                keyStore.load(null)
-                val secretKey = (keyStore.getEntry(DB_KEYSTORE_ALIAS, null) as KeyStore.SecretKeyEntry).secretKey
-                val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-                cipher.init(Cipher.DECRYPT_MODE, secretKey, GCMParameterSpec(128, iv))
-                cipher.doFinal(ciphertext)
-            } catch (e: Throwable) {
+            if (!isAndroidKeyStoreAvailable()) {
                 val fallbackKey = "SOFTWARE_FALLBACK_DB_MASTER_KEY".toByteArray(Charsets.UTF_8).take(32).toByteArray()
                 val cipher = Cipher.getInstance("AES/GCM/NoPadding")
                 cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(fallbackKey, "AES"), GCMParameterSpec(128, iv))
-                cipher.doFinal(ciphertext)
+                return cipher.doFinal(ciphertext)
+            }
+
+            val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE)
+            keyStore.load(null)
+            val secretKey = (keyStore.getEntry(DB_KEYSTORE_ALIAS, null) as KeyStore.SecretKeyEntry).secretKey
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, secretKey, GCMParameterSpec(128, iv))
+            return cipher.doFinal(ciphertext)
+        }
+
+        /**
+         * Securely wipes database rows using PRAGMA secure_delete to overwrite SQLite pages with zeroes.
+         */
+        suspend fun executeSecureWipe(db: MeshDatabase) {
+            try {
+                db.openHelper.writableDatabase.execSQL("PRAGMA secure_delete = ON;")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to enable PRAGMA secure_delete", e)
+            }
+
+            db.messageDao().deleteAll()
+            db.peerDao().deleteAll()
+            db.packetLogDao().deleteAll()
+            db.processedPacketDao().deleteAll()
+            db.storeForwardDao().purgeExpired(Long.MAX_VALUE)
+
+            try {
+                db.openHelper.writableDatabase.execSQL("VACUUM;")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to vacuum wiped database", e)
             }
         }
     }
 }
+
 

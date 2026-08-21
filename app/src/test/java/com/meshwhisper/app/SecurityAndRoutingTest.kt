@@ -113,4 +113,51 @@ class SecurityAndRoutingTest {
         assertThat(epoch1).isEqualTo(epoch2) // Same 1-hour window
         assertThat(epoch1).isNotEqualTo(epoch3) // Next epoch
     }
+
+    @Test
+    fun testDedupKeyDisambiguationBetweenDmAndAck() {
+        val msgId = UUID.randomUUID()
+
+        val dmDedupKey = "$msgId:${PacketType.DIRECT_MESSAGE.code}"
+        val ackDedupKey = "$msgId:${PacketType.ACK.code}"
+
+        assertThat(dmDedupKey).isNotEqualTo(ackDedupKey)
+        assertThat(dmDedupKey).endsWith(":1")
+        assertThat(ackDedupKey).endsWith(":3")
+    }
+
+    @Test
+    fun testMultiSessionChunkReassemblyIsolation() {
+        val framer = BleFrameFramer()
+        val payload1 = "PAYLOAD_ONE_ABCDEFGHIJKLMN_123456789".repeat(20).toByteArray(Charsets.UTF_8)
+        val payload2 = "PAYLOAD_TWO_OPQRSTUVWXYZ_987654321".repeat(20).toByteArray(Charsets.UTF_8)
+
+        val frames1 = framer.fragment(payload1, 50)
+        val frames2 = framer.fragment(payload2, 50)
+
+        assertThat(frames1.size).isGreaterThan(2)
+        assertThat(frames2.size).isGreaterThan(2)
+
+        // Interleave frames from the same device address
+        var reassembled1: ByteArray? = null
+        var reassembled2: ByteArray? = null
+
+        val maxLen = maxOf(frames1.size, frames2.size)
+        for (i in 0 until maxLen) {
+            if (i < frames1.size) {
+                val res = framer.receiveFrame("PEER_AA", frames1[i])
+                if (res != null) reassembled1 = res
+            }
+            if (i < frames2.size) {
+                val res = framer.receiveFrame("PEER_AA", frames2[i])
+                if (res != null) reassembled2 = res
+            }
+        }
+
+        assertThat(reassembled1).isNotNull()
+        assertThat(reassembled1).isEqualTo(payload1)
+
+        assertThat(reassembled2).isNotNull()
+        assertThat(reassembled2).isEqualTo(payload2)
+    }
 }

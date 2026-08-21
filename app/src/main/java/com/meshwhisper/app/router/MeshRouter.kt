@@ -31,8 +31,8 @@ class MeshRouter(
     private val tag = "MeshRouter"
     private val scope = CoroutineScope(Dispatchers.IO)
 
-    // Deduplication Cache (Capacity: 2000 UUIDs)
-    private val dedupCache = LruCache<UUID, Long>(2000)
+    // Deduplication Cache (Capacity: 4000 keys) - Keyed by messageId:packetType to prevent ACK/DM collision
+    private val dedupCache = LruCache<String, Long>(4000)
 
     // Statistics
     private val _relayedPacketsCount = MutableStateFlow(0)
@@ -69,9 +69,10 @@ class MeshRouter(
             return
         }
 
-        // Fast Layer 1 Deduplication Check: In-memory LRU Cache
+        // Fast Layer 1 Deduplication Check: In-memory LRU Cache (keyed by msgId:type)
+        val dedupKey = "${packet.messageId}:${packet.type.code}"
         synchronized(dedupCache) {
-            if (dedupCache.get(packet.messageId) != null) {
+            if (dedupCache.get(dedupKey) != null) {
                 logPacket("DROP", packet, rawBytes.size, "Duplicate packet dropped (fast RAM cache)")
                 return
             }
@@ -79,10 +80,9 @@ class MeshRouter(
 
         scope.launch {
             // Layer 2 Deduplication Check: Persistent Room Replay Table
-            val msgIdStr = packet.messageId.toString()
-            if (database.processedPacketDao().hasSeen(msgIdStr) > 0) {
+            if (database.processedPacketDao().hasSeen(dedupKey) > 0) {
                 synchronized(dedupCache) {
-                    dedupCache.put(packet.messageId, System.currentTimeMillis())
+                    dedupCache.put(dedupKey, System.currentTimeMillis())
                 }
                 logPacket("DROP", packet, rawBytes.size, "Duplicate packet dropped (persistent replay DB)")
                 return@launch
@@ -90,10 +90,10 @@ class MeshRouter(
 
             // Register in both fast RAM cache and persistent replay table
             synchronized(dedupCache) {
-                dedupCache.put(packet.messageId, System.currentTimeMillis())
+                dedupCache.put(dedupKey, System.currentTimeMillis())
             }
             database.processedPacketDao().markSeen(
-                com.meshwhisper.app.data.model.ProcessedPacketEntity(msgIdStr, packet.timestamp)
+                com.meshwhisper.app.data.model.ProcessedPacketEntity(dedupKey, packet.timestamp)
             )
 
             when (packet.type) {
@@ -306,9 +306,32 @@ class MeshRouter(
         if (packet.recipientId == cryptoEngine.nodeId) {
             // ACK reached the original sender!
             val originalMsgId = packet.messageId.toString()
-            logPacket("ACK_RX", packet, rawBytes.size, "Delivery ACK received for msg $originalMsgId")
-            database.messageDao().updateStatus(originalMsgId, MessageStatus.DELIVERED)
-            database.storeForwardDao().delete(originalMsgId)
+            val senderPeer = database.peerDao().getPeerById(packet.senderId)
+
+            if (senderPeer == null) {
+                logPacket("DROP", packet, rawBytes.size, "Dropped ACK from unknown peer ${packet.senderId}")
+                return
+            }
+
+            // Cryptographically verify the ACK proof-of-origin via AEAD auth tag
+            try {
+                val peerPubKey = CryptoEngine.hexToBytes(senderPeer.publicKeyHex)
+                val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey, packet.timestamp)
+                cryptoEngine.decrypt(
+                    ciphertext = packet.payload,
+                    authTag = packet.authTag,
+                    messageId = packet.messageId,
+                    aesKey = sessionKey,
+                    aad = packet.getAuthenticatedHeaderBytes()
+                )
+
+                logPacket("ACK_RX", packet, rawBytes.size, "Authenticated delivery ACK received for msg $originalMsgId")
+                database.messageDao().updateStatus(originalMsgId, MessageStatus.DELIVERED)
+                database.storeForwardDao().delete(originalMsgId)
+            } catch (e: Exception) {
+                logPacket("DROP", packet, rawBytes.size, "Rejected unauthenticated/forged ACK for msg $originalMsgId")
+                Log.w(tag, "Rejected forged ACK: auth tag mismatch from ${packet.senderId}")
+            }
         } else if (packet.ttl > 1) {
             // Relay the ACK back towards sender
             val relayedPacket = packet.decrementTtl()
@@ -344,9 +367,10 @@ class MeshRouter(
         )
 
         val raw = MeshPacket.serialize(packet)
+        val dedupKey = "${packet.messageId}:${PacketType.PEER_ANNOUNCE.code}"
         val nowSec = System.currentTimeMillis() / 1000L
         synchronized(dedupCache) {
-            dedupCache.put(packet.messageId, System.currentTimeMillis())
+            dedupCache.put(dedupKey, System.currentTimeMillis())
         }
         try {
             database.processedPacketDao().purgeOld(nowSec - 86400L)
@@ -404,11 +428,15 @@ class MeshRouter(
         database.messageDao().insert(entity)
 
         val raw = MeshPacket.serialize(packet)
+        val dedupKey = "$msgId:${PacketType.BROADCAST_MESSAGE.code}"
         synchronized(dedupCache) {
-            dedupCache.put(msgId, System.currentTimeMillis())
+            dedupCache.put(dedupKey, System.currentTimeMillis())
         }
+        database.processedPacketDao().markSeen(
+            com.meshwhisper.app.data.model.ProcessedPacketEntity(dedupKey, timestamp)
+        )
         bleEngine.broadcastPacket(raw)
-        logPacket("TX", packet, raw.size, "Sent broadcast msg: $text")
+        logPacket("TX", packet, raw.size, "Sent broadcast msg (${text.length} chars)")
 
         return msgId.toString()
     }
@@ -468,9 +496,13 @@ class MeshRouter(
         database.messageDao().insert(entity)
 
         val raw = MeshPacket.serialize(packet)
+        val dedupKey = "$msgId:${PacketType.DIRECT_MESSAGE.code}"
         synchronized(dedupCache) {
-            dedupCache.put(msgId, System.currentTimeMillis())
+            dedupCache.put(dedupKey, System.currentTimeMillis())
         }
+        database.processedPacketDao().markSeen(
+            com.meshwhisper.app.data.model.ProcessedPacketEntity(dedupKey, timestamp)
+        )
 
         // Store-and-forward queue entry
         val sf = StoreForwardEntity(
@@ -483,28 +515,59 @@ class MeshRouter(
         database.storeForwardDao().insert(sf)
 
         bleEngine.broadcastPacket(raw)
-        logPacket("TX", packet, raw.size, "Sent direct DM to $recipientNodeId")
+        logPacket("TX", packet, raw.size, "Sent direct DM to $recipientNodeId (${text.length} chars)")
 
         return msgId.toString()
     }
 
     private suspend fun sendAck(recipientNodeId: Long, originalMsgId: UUID) {
+        val peer = database.peerDao().getPeerById(recipientNodeId)
+        val timestamp = System.currentTimeMillis() / 1000L
+
+        val aad = MeshPacket.computeAad(
+            type = PacketType.ACK,
+            messageId = originalMsgId,
+            senderId = cryptoEngine.nodeId,
+            recipientId = recipientNodeId,
+            timestamp = timestamp
+        )
+
+        val authTag: ByteArray
+        if (peer != null) {
+            val peerPubKey = CryptoEngine.hexToBytes(peer.publicKeyHex)
+            val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey, timestamp)
+            val encResult = cryptoEngine.encrypt(
+                plaintext = ByteArray(0),
+                messageId = originalMsgId,
+                aesKey = sessionKey,
+                aad = aad
+            )
+            authTag = encResult.authTag
+        } else {
+            authTag = ByteArray(16)
+        }
+
         val ackPacket = MeshPacket(
             type = PacketType.ACK,
             messageId = originalMsgId,
             senderId = cryptoEngine.nodeId,
             recipientId = recipientNodeId,
             ttl = MeshPacket.DEFAULT_TTL,
-            timestamp = System.currentTimeMillis() / 1000L,
-            payload = ByteArray(0)
+            timestamp = timestamp,
+            payload = ByteArray(0),
+            authTag = authTag
         )
 
         val raw = MeshPacket.serialize(ackPacket)
+        val dedupKey = "$originalMsgId:${PacketType.ACK.code}"
         synchronized(dedupCache) {
-            dedupCache.put(originalMsgId, System.currentTimeMillis())
+            dedupCache.put(dedupKey, System.currentTimeMillis())
         }
+        database.processedPacketDao().markSeen(
+            com.meshwhisper.app.data.model.ProcessedPacketEntity(dedupKey, timestamp)
+        )
         bleEngine.broadcastPacket(raw)
-        logPacket("ACK_TX", ackPacket, raw.size, "Sent ACK for msg $originalMsgId to $recipientNodeId")
+        logPacket("ACK_TX", ackPacket, raw.size, "Sent authenticated ACK for msg $originalMsgId to $recipientNodeId")
     }
 
     private suspend fun drainStoreAndForwardQueueForPeer(recipientNodeId: Long) {

@@ -1,7 +1,9 @@
 package com.meshwhisper.app.ble
 
 import java.nio.ByteBuffer
+import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Handles framing, fragmentation (chunking) and reassembly of raw packets over BLE GATT.
@@ -14,6 +16,7 @@ class BleFrameFramer {
         val createdAt: Long = System.currentTimeMillis()
     )
 
+    private val sessionCounter = AtomicInteger(SecureRandom().nextInt(0xFFFF))
     private val sessions = ConcurrentHashMap<String, ChunkSession>()
 
     /**
@@ -33,7 +36,7 @@ class BleFrameFramer {
         // Chunking needed
         val chunkSize = maxSafePayload - 4 // 1B type + 2B sessionId + 1B index + 1B total
         val totalChunks = (packetBytes.size + chunkSize - 1) / chunkSize
-        val sessionId = (packetBytes.hashCode() and 0xFFFF).toShort()
+        val sessionId = (sessionCounter.incrementAndGet() and 0xFFFF).toShort()
         val frames = mutableListOf<ByteArray>()
 
         for (i in 0 until totalChunks) {
@@ -59,7 +62,7 @@ class BleFrameFramer {
      * Returns null if more chunks are required or if frame is invalid.
      */
     fun receiveFrame(deviceAddress: String, frameBytes: ByteArray): ByteArray? {
-        if (frameBytes.isEmpty()) return null
+        if (frameBytes.isEmpty() || frameBytes.size > 1024) return null
 
         val frameType = frameBytes[0]
 
@@ -77,12 +80,26 @@ class BleFrameFramer {
             val chunkIndex = buffer.get().toInt() and 0xFF
             val totalChunks = buffer.get().toInt() and 0xFF
 
+            if (totalChunks <= 0 || chunkIndex >= totalChunks) return null
+
             val chunkData = ByteArray(buffer.remaining())
             buffer.get(chunkData)
 
             val sessionKey = "$deviceAddress-$sessionId"
-            val session = sessions.getOrPut(sessionKey) {
-                ChunkSession(totalChunks = totalChunks)
+
+            // Bound active chunk sessions per remote MAC address (max 4)
+            val peerSessions = sessions.keys.filter { it.startsWith("$deviceAddress-") }
+            if (peerSessions.size >= 4 && !sessions.containsKey(sessionKey)) {
+                val oldest = peerSessions.minByOrNull { sessions[it]?.createdAt ?: 0L }
+                if (oldest != null) sessions.remove(oldest)
+            }
+
+            // If session already exists with mismatched totalChunks, evict and start fresh
+            val existing = sessions[sessionKey]
+            val session = if (existing != null && existing.totalChunks == totalChunks) {
+                existing
+            } else {
+                ChunkSession(totalChunks = totalChunks).also { sessions[sessionKey] = it }
             }
 
             session.chunks[chunkIndex] = chunkData

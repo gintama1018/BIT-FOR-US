@@ -23,10 +23,16 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
     private val bleEngine = app.bleEngine
     private val router = app.router
 
-    val myNodeId: Long = cryptoEngine.nodeId
-    val myNodeIdHex: String = cryptoEngine.nodeIdHex
-    val myFingerprint: String = cryptoEngine.publicFingerprint
-    val myPublicKeyHex: String = com.meshwhisper.app.crypto.CryptoEngine.bytesToHex(cryptoEngine.publicKeyBytes)
+    val identityVersion: StateFlow<Long> = cryptoEngine.identityVersion
+
+    val myNodeId: Long
+        get() = cryptoEngine.nodeId
+    val myNodeIdHex: String
+        get() = cryptoEngine.nodeIdHex
+    val myFingerprint: String
+        get() = cryptoEngine.publicFingerprint
+    val myPublicKeyHex: String
+        get() = com.meshwhisper.app.crypto.CryptoEngine.bytesToHex(cryptoEngine.publicKeyBytes)
 
     private val _myAlias = MutableStateFlow(cryptoEngine.alias)
     val myAlias: StateFlow<String> = _myAlias.asStateFlow()
@@ -113,14 +119,10 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
 
     fun emergencyPanicWipe() {
         viewModelScope.launch {
-            database.messageDao().deleteAll()
-            database.peerDao().deleteAll()
-            database.packetLogDao().deleteAll()
-            database.processedPacketDao().deleteAll()
-            database.storeForwardDao().purgeExpired(Long.MAX_VALUE)
-            cryptoEngine.resetIdentityKeys()
+            com.meshwhisper.app.data.MeshDatabase.executeSecureWipe(database)
+            cryptoEngine.regenerateIdentity()
             setAppLockEnabled(false)
-            _myAlias.value = "Node"
+            _myAlias.value = "Node-${cryptoEngine.nodeIdHex.takeLast(4)}"
             router.announcePresence()
         }
     }

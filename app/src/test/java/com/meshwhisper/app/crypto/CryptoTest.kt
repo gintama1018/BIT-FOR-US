@@ -204,4 +204,57 @@ class CryptoTest {
         // Different epochs => completely distinct forward secret keys!
         assertThat(keyA_epoch1).isNotEqualTo(keyA_epoch2)
     }
+
+    @Test
+    fun testAuthenticatedAckGenerationAndForgedAckRejection() {
+        val (privA, pubA) = generateKeyPair()
+        val (privB, pubB) = generateKeyPair()
+        val (privAttacker, _) = generateKeyPair()
+
+        val sharedKeyAtoB = deriveSharedKey(privA, pubB)
+        val sharedKeyBtoA = deriveSharedKey(privB, pubA)
+        val attackerKey = deriveSharedKey(privAttacker, pubA)
+
+        val msgId = UUID.randomUUID()
+        val senderId = 0x1111222233334444L
+        val recipientId = 0x5555666677778888L
+        val timestamp = 1720000000L
+
+        val ackAad = com.meshwhisper.app.protocol.MeshPacket.computeAad(
+            type = com.meshwhisper.app.protocol.PacketType.ACK,
+            messageId = msgId,
+            senderId = recipientId,
+            recipientId = senderId,
+            timestamp = timestamp
+        )
+        val iv = CryptoEngine.extractIvFromUuid(msgId)
+
+        // Node B creates authenticated ACK (empty payload + AEAD tag)
+        val cipherB = Cipher.getInstance("AES/GCM/NoPadding")
+        cipherB.init(Cipher.ENCRYPT_MODE, SecretKeySpec(sharedKeyBtoA, "AES"), GCMParameterSpec(128, iv))
+        cipherB.updateAAD(ackAad)
+        val ackTagWithEmptyCipher = cipherB.doFinal(ByteArray(0)) // 16-byte tag
+
+        // Node A verifies authenticated ACK from Node B
+        val cipherA = Cipher.getInstance("AES/GCM/NoPadding")
+        cipherA.init(Cipher.DECRYPT_MODE, SecretKeySpec(sharedKeyAtoB, "AES"), GCMParameterSpec(128, iv))
+        cipherA.updateAAD(ackAad)
+        val decrypted = cipherA.doFinal(ackTagWithEmptyCipher)
+        assertThat(decrypted).isEmpty() // Authentication verified!
+
+        // Attacker creates a forged ACK without knowing B's private key
+        val cipherAttacker = Cipher.getInstance("AES/GCM/NoPadding")
+        cipherAttacker.init(Cipher.ENCRYPT_MODE, SecretKeySpec(attackerKey, "AES"), GCMParameterSpec(128, iv))
+        cipherAttacker.updateAAD(ackAad)
+        val forgedTag = cipherAttacker.doFinal(ByteArray(0))
+
+        // Node A attempts to verify forged ACK -> must throw AEADBadTagException
+        val cipherVerifyForged = Cipher.getInstance("AES/GCM/NoPadding")
+        cipherVerifyForged.init(Cipher.DECRYPT_MODE, SecretKeySpec(sharedKeyAtoB, "AES"), GCMParameterSpec(128, iv))
+        cipherVerifyForged.updateAAD(ackAad)
+
+        assertThrows(AEADBadTagException::class.java) {
+            cipherVerifyForged.doFinal(forgedTag)
+        }
+    }
 }

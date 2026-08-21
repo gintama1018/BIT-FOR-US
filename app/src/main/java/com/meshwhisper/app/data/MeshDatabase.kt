@@ -13,11 +13,13 @@ import com.meshwhisper.app.data.dao.PacketLogDao
 import com.meshwhisper.app.data.dao.PeerDao
 import com.meshwhisper.app.data.dao.ProcessedPacketDao
 import com.meshwhisper.app.data.dao.StoreForwardDao
+import com.meshwhisper.app.data.dao.TopologyEdgeDao
 import com.meshwhisper.app.data.model.MessageEntity
 import com.meshwhisper.app.data.model.PacketLogEntity
 import com.meshwhisper.app.data.model.PeerEntity
 import com.meshwhisper.app.data.model.ProcessedPacketEntity
 import com.meshwhisper.app.data.model.StoreForwardEntity
+import com.meshwhisper.app.data.model.TopologyEdgeEntity
 import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
 import java.security.KeyStore
 import java.security.SecureRandom
@@ -33,9 +35,10 @@ import javax.crypto.spec.SecretKeySpec
         MessageEntity::class,
         StoreForwardEntity::class,
         PacketLogEntity::class,
-        ProcessedPacketEntity::class
+        ProcessedPacketEntity::class,
+        TopologyEdgeEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class MeshDatabase : RoomDatabase() {
@@ -45,6 +48,7 @@ abstract class MeshDatabase : RoomDatabase() {
     abstract fun storeForwardDao(): StoreForwardDao
     abstract fun packetLogDao(): PacketLogDao
     abstract fun processedPacketDao(): ProcessedPacketDao
+    abstract fun topologyEdgeDao(): TopologyEdgeDao
 
     companion object {
         private const val TAG = "MeshDatabase"
@@ -188,6 +192,7 @@ abstract class MeshDatabase : RoomDatabase() {
             db.peerDao().deleteAll()
             db.packetLogDao().deleteAll()
             db.processedPacketDao().deleteAll()
+            db.topologyEdgeDao().deleteAll()
             db.storeForwardDao().purgeExpired(Long.MAX_VALUE)
 
             try {

@@ -87,3 +87,12 @@ data class ProcessedPacketEntity(
     val timestamp: Long
 )
 
+@Entity(tableName = "topology_edges", primaryKeys = ["fromNode", "toNode"])
+data class TopologyEdgeEntity(
+    val fromNode: Long,
+    val toNode: Long,
+    val rssi: Int = 0,
+    val lastSeen: Long = System.currentTimeMillis()
+)
+
+

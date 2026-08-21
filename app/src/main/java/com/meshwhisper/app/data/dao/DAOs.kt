@@ -128,3 +128,22 @@ interface ProcessedPacketDao {
     @Query("DELETE FROM processed_packets")
     suspend fun deleteAll()
 }
+
+@Dao
+interface TopologyEdgeDao {
+    @Query("SELECT * FROM topology_edges ORDER BY lastSeen DESC")
+    fun getAllEdges(): Flow<List<com.meshwhisper.app.data.model.TopologyEdgeEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertOrUpdate(edge: com.meshwhisper.app.data.model.TopologyEdgeEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertOrUpdateAll(edges: List<com.meshwhisper.app.data.model.TopologyEdgeEntity>)
+
+    @Query("DELETE FROM topology_edges WHERE lastSeen < :cutoffTimestamp")
+    suspend fun pruneStaleEdges(cutoffTimestamp: Long): Int
+
+    @Query("DELETE FROM topology_edges")
+    suspend fun deleteAll()
+}
+

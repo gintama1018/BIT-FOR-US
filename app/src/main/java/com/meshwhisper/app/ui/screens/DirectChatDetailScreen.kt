@@ -15,7 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -44,20 +44,27 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.meshwhisper.app.data.model.MessageEntity
 import com.meshwhisper.app.data.model.MessageStatus
-import com.meshwhisper.app.data.model.PeerEntity
-import com.meshwhisper.app.ui.theme.CyanAccent
+import com.meshwhisper.app.ui.components.NodeAvatar
+import com.meshwhisper.app.ui.theme.AmberAccent
 import com.meshwhisper.app.ui.theme.DarkBackground
 import com.meshwhisper.app.ui.theme.DarkCardBorder
 import com.meshwhisper.app.ui.theme.DarkSurface
-import com.meshwhisper.app.ui.theme.DarkSurfaceVariant
 import com.meshwhisper.app.ui.theme.EmeraldAccent
+import com.meshwhisper.app.ui.theme.IncomingBubble
+import com.meshwhisper.app.ui.theme.IncomingBubbleBorder
+import com.meshwhisper.app.ui.theme.OutgoingBubble
+import com.meshwhisper.app.ui.theme.OutgoingBubbleBorder
+import com.meshwhisper.app.ui.theme.RedAccent
 import com.meshwhisper.app.ui.theme.TextMuted
 import com.meshwhisper.app.ui.theme.TextPrimary
 import com.meshwhisper.app.ui.theme.TextSecondary
+import com.meshwhisper.app.ui.theme.WhatsAppGreen
 import com.meshwhisper.app.ui.viewmodel.MeshViewModel
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import kotlin.math.abs
 
 @Composable
 fun DirectChatDetailScreen(
@@ -96,7 +103,7 @@ fun DirectChatDetailScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 8.dp),
+                    .padding(horizontal = 6.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 IconButton(onClick = onBack) {
@@ -107,26 +114,44 @@ fun DirectChatDetailScreen(
                     )
                 }
 
+                // Avatar
+                NodeAvatar(
+                    nodeId = peerNodeId,
+                    alias = peer?.alias ?: "Node",
+                    size = 40.dp,
+                    isDirect = peer?.isDirect == true,
+                    showOnlineBadge = true
+                )
+
+                Spacer(modifier = Modifier.width(10.dp))
+
                 Column(modifier = Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             text = peer?.alias ?: "Node-${String.format("%016X", peerNodeId).takeLast(4)}",
                             color = TextPrimary,
                             fontSize = 16.sp,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.SemiBold
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Icon(
                             imageVector = Icons.Default.Lock,
                             contentDescription = "E2EE",
                             tint = EmeraldAccent,
-                            modifier = Modifier.size(14.dp)
+                            modifier = Modifier.size(13.dp)
                         )
                     }
+                    val statusSubtitle = if (peer?.isDirect == true) {
+                        "Direct BLE link"
+                    } else if (peer != null) {
+                        "${peer.hopCount} hops away"
+                    } else {
+                        "Encrypted channel"
+                    }
                     Text(
-                        text = "FP: ${peer?.fingerprint ?: "Verifying..."}",
-                        color = TextSecondary,
-                        fontSize = 11.sp
+                        text = statusSubtitle,
+                        color = if (peer?.isDirect == true) WhatsAppGreen else TextSecondary,
+                        fontSize = 12.sp
                     )
                 }
 
@@ -137,9 +162,9 @@ fun DirectChatDetailScreen(
                 ) {
                     Text(
                         text = if (isBlocked) "Unblock" else "Block",
-                        color = if (isBlocked) EmeraldAccent else com.meshwhisper.app.ui.theme.RedAccent,
+                        color = if (isBlocked) EmeraldAccent else RedAccent,
                         fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.SemiBold
                     )
                 }
             }
@@ -150,7 +175,7 @@ fun DirectChatDetailScreen(
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF3B1E08)),
                 shape = RoundedCornerShape(0.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, com.meshwhisper.app.ui.theme.AmberAccent),
+                border = androidx.compose.foundation.BorderStroke(1.dp, AmberAccent),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(
@@ -159,22 +184,22 @@ fun DirectChatDetailScreen(
                         .padding(12.dp)
                 ) {
                     Text(
-                        text = "⚠️ SAFETY NUMBER CHANGED",
-                        color = com.meshwhisper.app.ui.theme.AmberAccent,
-                        fontSize = 12.sp,
+                        text = "⚠️ Safety Number Changed",
+                        color = AmberAccent,
+                        fontSize = 13.sp,
                         fontWeight = FontWeight.Bold
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = "This contact's cryptographic identity key has changed (Previous: ${peer.previousFingerprint ?: "N/A"}). This happens if they reinstalled or an adversary is attempting an impersonation.",
                         color = TextPrimary,
-                        fontSize = 11.sp,
-                        lineHeight = 15.sp
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     androidx.compose.material3.Button(
                         onClick = { viewModel.acknowledgeSafetyWarning(peerNodeId) },
-                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = com.meshwhisper.app.ui.theme.AmberAccent),
+                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = AmberAccent),
                         shape = RoundedCornerShape(8.dp),
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
                     ) {
@@ -189,12 +214,12 @@ fun DirectChatDetailScreen(
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF2A0000)),
                 shape = RoundedCornerShape(0.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, com.meshwhisper.app.ui.theme.RedAccent),
+                border = androidx.compose.foundation.BorderStroke(1.dp, RedAccent),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text(
                     text = "🚫 You have blocked this contact. Incoming messages are dropped.",
-                    color = com.meshwhisper.app.ui.theme.RedAccent,
+                    color = RedAccent,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Medium,
                     modifier = Modifier.padding(10.dp)
@@ -211,13 +236,22 @@ fun DirectChatDetailScreen(
                     .padding(32.dp),
                 contentAlignment = Alignment.Center
             ) {
-                Text(
-                    text = "End-to-End Encrypted Session\nMessages are encrypted with X25519 session keys and cannot be read by relay nodes.",
-                    color = TextMuted,
-                    fontSize = 13.sp,
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                    lineHeight = 18.sp
-                )
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        imageVector = Icons.Default.Lock,
+                        contentDescription = null,
+                        tint = EmeraldAccent.copy(alpha = 0.6f),
+                        modifier = Modifier.size(32.dp)
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "Messages are end-to-end encrypted.\nNo one outside of this chat, not even relay nodes, can read them.",
+                        color = TextSecondary,
+                        fontSize = 13.sp,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        lineHeight = 18.sp
+                    )
+                }
             }
         } else {
             LazyColumn(
@@ -225,11 +259,32 @@ fun DirectChatDetailScreen(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth(),
-                contentPadding = PaddingValues(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
             ) {
-                items(messages, key = { it.messageId }) { msg ->
-                    DirectMessageBubble(msg = msg)
+                itemsIndexed(messages, key = { _, msg -> msg.messageId }) { index, msg ->
+                    val prevMsg = if (index > 0) messages[index - 1] else null
+                    val nextMsg = if (index < messages.size - 1) messages[index + 1] else null
+
+                    val isNewDay = prevMsg == null || !isSameDay(prevMsg.timestamp, msg.timestamp)
+                    val isFirstInRun = prevMsg == null || prevMsg.isOutgoing != msg.isOutgoing ||
+                            isNewDay || abs(msg.timestamp - prevMsg.timestamp) > 60_000L
+                    val isLastInRun = nextMsg == null || nextMsg.isOutgoing != msg.isOutgoing ||
+                            !isSameDay(msg.timestamp, nextMsg.timestamp) || abs(nextMsg.timestamp - msg.timestamp) > 60_000L
+
+                    if (isNewDay) {
+                        DateSeparatorPill(timestamp = msg.timestamp)
+                    }
+
+                    DirectMessageBubble(
+                        msg = msg,
+                        isFirstInRun = isFirstInRun,
+                        isLastInRun = isLastInRun
+                    )
+
+                    if (isLastInRun) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                    }
                 }
             }
         }
@@ -259,17 +314,65 @@ fun DirectChatDetailScreen(
                         textInput = ""
                     }
                 },
-                placeholder = "Send private message..."
+                placeholder = "Message..."
             )
         }
     }
 }
 
 @Composable
-fun DirectMessageBubble(msg: MessageEntity) {
+fun DateSeparatorPill(timestamp: Long) {
+    val dateLabel = remember(timestamp) { formatDateSeparator(timestamp) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 10.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(DarkSurface)
+                .border(0.5.dp, DarkCardBorder, RoundedCornerShape(8.dp))
+                .padding(horizontal = 12.dp, vertical = 4.dp)
+        ) {
+            Text(
+                text = dateLabel,
+                color = TextSecondary,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium
+            )
+        }
+    }
+}
+
+@Composable
+fun DirectMessageBubble(
+    msg: MessageEntity,
+    isFirstInRun: Boolean,
+    isLastInRun: Boolean
+) {
     val isMe = msg.isOutgoing
     val timeFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
     val formattedTime = remember(msg.timestamp) { timeFormat.format(Date(msg.timestamp)) }
+
+    // Dynamic WhatsApp-style corner shapes based on grouping run
+    val bubbleShape = if (isMe) {
+        RoundedCornerShape(
+            topStart = 14.dp,
+            topEnd = if (isFirstInRun) 14.dp else 4.dp,
+            bottomStart = 14.dp,
+            bottomEnd = if (isLastInRun) 2.dp else 4.dp
+        )
+    } else {
+        RoundedCornerShape(
+            topStart = if (isFirstInRun) 14.dp else 4.dp,
+            topEnd = 14.dp,
+            bottomStart = if (isLastInRun) 2.dp else 4.dp,
+            bottomEnd = 14.dp
+        )
+    }
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -277,21 +380,14 @@ fun DirectMessageBubble(msg: MessageEntity) {
     ) {
         Box(
             modifier = Modifier
-                .clip(
-                    RoundedCornerShape(
-                        topStart = 12.dp,
-                        topEnd = 12.dp,
-                        bottomStart = if (isMe) 12.dp else 2.dp,
-                        bottomEnd = if (isMe) 2.dp else 12.dp
-                    )
-                )
-                .background(if (isMe) Color(0xFF00381C) else DarkSurfaceVariant)
+                .clip(bubbleShape)
+                .background(if (isMe) OutgoingBubble else IncomingBubble)
                 .border(
-                    1.dp,
-                    if (isMe) EmeraldAccent.copy(alpha = 0.5f) else DarkCardBorder,
-                    RoundedCornerShape(12.dp)
+                    0.5.dp,
+                    if (isMe) OutgoingBubbleBorder else IncomingBubbleBorder,
+                    bubbleShape
                 )
-                .padding(horizontal = 14.dp, vertical = 10.dp)
+                .padding(start = 12.dp, top = 8.dp, end = 12.dp, bottom = 6.dp)
         ) {
             Column {
                 Text(
@@ -300,14 +396,14 @@ fun DirectMessageBubble(msg: MessageEntity) {
                     fontSize = 14.sp,
                     lineHeight = 19.sp
                 )
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(3.dp))
                 Row(
                     modifier = Modifier.align(Alignment.End),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
                         text = formattedTime,
-                        color = TextMuted,
+                        color = if (isMe) Color(0xFF90C2B6) else TextMuted,
                         fontSize = 10.sp
                     )
                     if (isMe) {
@@ -316,14 +412,14 @@ fun DirectMessageBubble(msg: MessageEntity) {
                             Icon(
                                 imageVector = Icons.Default.DoneAll,
                                 contentDescription = "Delivered (ACK)",
-                                tint = EmeraldAccent,
+                                tint = WhatsAppGreen,
                                 modifier = Modifier.size(14.dp)
                             )
                         } else {
                             Icon(
                                 imageVector = Icons.Default.Check,
                                 contentDescription = "Sent",
-                                tint = TextMuted,
+                                tint = Color(0xFF90C2B6),
                                 modifier = Modifier.size(14.dp)
                             )
                         }
@@ -333,3 +429,28 @@ fun DirectMessageBubble(msg: MessageEntity) {
         }
     }
 }
+
+private fun isSameDay(t1: Long, t2: Long): Boolean {
+    val c1 = Calendar.getInstance().apply { timeInMillis = t1 }
+    val c2 = Calendar.getInstance().apply { timeInMillis = t2 }
+    return c1.get(Calendar.YEAR) == c2.get(Calendar.YEAR) &&
+            c1.get(Calendar.DAY_OF_YEAR) == c2.get(Calendar.DAY_OF_YEAR)
+}
+
+private fun formatDateSeparator(timestamp: Long): String {
+    val now = Calendar.getInstance()
+    val msgTime = Calendar.getInstance().apply { timeInMillis = timestamp }
+
+    return if (now.get(Calendar.YEAR) == msgTime.get(Calendar.YEAR) &&
+        now.get(Calendar.DAY_OF_YEAR) == msgTime.get(Calendar.DAY_OF_YEAR)
+    ) {
+        "Today"
+    } else if (now.get(Calendar.YEAR) == msgTime.get(Calendar.YEAR) &&
+        now.get(Calendar.DAY_OF_YEAR) - msgTime.get(Calendar.DAY_OF_YEAR) == 1
+    ) {
+        "Yesterday"
+    } else {
+        SimpleDateFormat("MMMM d, yyyy", Locale.getDefault()).format(Date(timestamp))
+    }
+}
+

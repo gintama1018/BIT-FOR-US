@@ -101,6 +101,10 @@ class MeshBleEngine(private val context: Context) {
     private val _connectedPeersCount = MutableStateFlow(0)
     val connectedPeersCount: StateFlow<Int> = _connectedPeersCount.asStateFlow()
 
+    private val directAddressToNodeId = ConcurrentHashMap<String, Long>()
+    private val _connectedNodeIds = MutableStateFlow<Set<Long>>(emptySet())
+    val connectedNodeIds: StateFlow<Set<Long>> = _connectedNodeIds.asStateFlow()
+
     private val _supportsPeripheral = MutableStateFlow(true)
     val supportsPeripheral: StateFlow<Boolean> = _supportsPeripheral.asStateFlow()
 
@@ -109,6 +113,20 @@ class MeshBleEngine(private val context: Context) {
     var onPeerDiscoveredListener: ((address: String, rssi: Int) -> Unit)? = null
     var onPeerReadyListener: ((address: String) -> Unit)? = null
     var onPeerDisconnectedListener: ((address: String) -> Unit)? = null
+
+    fun registerDirectNode(address: String, nodeId: Long) {
+        directAddressToNodeId[address] = nodeId
+        updateConnectedNodeIds()
+    }
+
+    private fun updateConnectedNodeIds() {
+        val activeAddresses = HashSet<String>()
+        activeAddresses.addAll(connectedCentrals.keys)
+        activeAddresses.addAll(activeGattClients.keys)
+
+        directAddressToNodeId.keys.retainAll(activeAddresses)
+        _connectedNodeIds.value = directAddressToNodeId.values.toSet()
+    }
 
     private var myNodeId: Long = 0L
 
@@ -598,6 +616,7 @@ class MeshBleEngine(private val context: Context) {
     private fun updatePeerCount() {
         val totalUnique = (activeGattClients.keys + connectedCentrals.keys).size
         _connectedPeersCount.value = totalUnique
+        updateConnectedNodeIds()
     }
 
     // =========================================================================

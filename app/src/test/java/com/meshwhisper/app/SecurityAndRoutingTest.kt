@@ -160,4 +160,46 @@ class SecurityAndRoutingTest {
         assertThat(reassembled2).isNotNull()
         assertThat(reassembled2).isEqualTo(payload2)
     }
+
+    @Test
+    fun testPeerAnnounceNeighborGossipSerializationAndParsing() {
+        val alias = "AlphaNode"
+        val aliasBytes = alias.toByteArray(Charsets.UTF_8)
+        val pubKeyBytes = ByteArray(32) { (it + 1).toByte() }
+        val neighbors = listOf(0x1122334455667788L, 0x2233445566778899L)
+
+        // Encode payload with neighbor list
+        val payload = ByteArray(1 + aliasBytes.size + pubKeyBytes.size + 1 + (neighbors.size * 8))
+        val buffer = java.nio.ByteBuffer.wrap(payload)
+        buffer.put((aliasBytes.size and 0xFF).toByte())
+        buffer.put(aliasBytes)
+        buffer.put(pubKeyBytes)
+        buffer.put(neighbors.size.toByte())
+        for (n in neighbors) {
+            buffer.putLong(n)
+        }
+
+        // Decode payload
+        val readBuf = java.nio.ByteBuffer.wrap(payload)
+        val readAliasLen = readBuf.get().toInt() and 0xFF
+        val readAliasBytes = ByteArray(readAliasLen)
+        readBuf.get(readAliasBytes)
+        val readAlias = String(readAliasBytes, Charsets.UTF_8)
+        val readPubKey = ByteArray(32)
+        readBuf.get(readPubKey)
+
+        val readNeighbors = mutableListOf<Long>()
+        if (readBuf.hasRemaining()) {
+            val neighborCount = readBuf.get().toInt() and 0xFF
+            for (i in 0 until neighborCount) {
+                if (readBuf.remaining() >= 8) {
+                    readNeighbors.add(readBuf.long)
+                }
+            }
+        }
+
+        assertThat(readAlias).isEqualTo(alias)
+        assertThat(readPubKey).isEqualTo(pubKeyBytes)
+        assertThat(readNeighbors).containsExactlyElementsIn(neighbors).inOrder()
+    }
 }

@@ -168,9 +168,19 @@ sequenceDiagram
 
 ## 7. App Screens & UI Features
 
-- **Public Mesh Room**: Live decentralized chat room with dynamic hop badges (`⚡ Direct` vs `⚡ 2 hops (Relayed)`).
-- **Private Encrypted DMs**: 1-to-1 conversations with delivery status checkmarks (`✓` Sent, `✓✓` Delivered ACK), TOFU fingerprint verification, safety number change alerts, and contact blocking.
-- **Mesh Topology Radar**: Interactive animated pulse canvas displaying concentric radar rings, center node ("YOU"), connected links, and multi-hop peers.
+- **Public Mesh Room**: Live decentralized chat room with dynamic hop badges (`⚡ Direct` vs `⚡ 2 hops (Relayed)`), protected with AEAD encryption.
+- **Private Encrypted DMs (WhatsApp-Grade UX)**:
+  - 1-to-1 conversations with delivery status checkmarks (`✓` Sent, `✓✓` Delivered ACK).
+  - **Consecutive message grouping** with dynamic bubble tails and corner shaping.
+  - **Date separator pills** ("Today", "Yesterday", date headers) between day boundaries.
+  - **Deterministic Initials Avatars** with real-time direct connection indicators.
+  - **Real Inbox**: Latest message previews, delivery status indicators, and activity-based ordering.
+  - TOFU fingerprint verification, safety number change alerts, and contact blocking.
+- **Web-of-Nodes Mesh Topology Graph**:
+  - **Force-Directed Physics Simulation**: Dynamic multi-node graph rendering interconnected links, relay hops, and traveling energy pulses in real time.
+  - **Decentralized Neighbor Gossip**: Discovers multi-node topologies across remote corners of a room via peer announce gossip.
+  - **Dual-Mode Canvas**: Seamlessly toggle between the interactive **Web-of-Nodes** force graph and the traditional single-perspective **Radar Scope**.
+  - Tap any node on the canvas to open an instant end-to-end encrypted direct chat.
 - **Live Packet Telemetry Inspector**: Real-time diagnostic terminal streaming raw packet events (`[TX]`, `[RX]`, `[RELAY]`, `[DROP]`, `[ACK]`), byte metrics, and direction filter chips.
 - **Identity, Security & QR Manager**: Node alias customization, 64-bit Hex ID display, X25519 fingerprint generator, QR code verification, Biometric App Lock toggle, and Emergency Panic Duress Wipe.
 

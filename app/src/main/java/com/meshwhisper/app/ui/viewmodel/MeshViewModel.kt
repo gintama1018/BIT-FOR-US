@@ -50,9 +50,13 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
     val packetLogs: StateFlow<List<PacketLogEntity>> = database.packetLogDao().getRecentLogs(100)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val topologyEdges: StateFlow<List<com.meshwhisper.app.data.model.TopologyEdgeEntity>> = database.topologyEdgeDao().getAllEdges()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     // Engine & Router State
     val isBluetoothEnabled: StateFlow<Boolean> = bleEngine.isBluetoothEnabled
     val connectedPeersCount: StateFlow<Int> = bleEngine.connectedPeersCount
+    val connectedNodeIds: StateFlow<Set<Long>> = bleEngine.connectedNodeIds
     val isAdvertising: StateFlow<Boolean> = bleEngine.isAdvertising
     val isScanning: StateFlow<Boolean> = bleEngine.isScanning
     val supportsPeripheral: StateFlow<Boolean> = bleEngine.supportsPeripheral

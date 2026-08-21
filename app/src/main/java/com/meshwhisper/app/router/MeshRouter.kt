@@ -69,6 +69,11 @@ class MeshRouter(
             return
         }
 
+        // Register direct node link if packet came from live physical ingress address
+        if (ingressAddress != null) {
+            bleEngine.registerDirectNode(ingressAddress, packet.senderId)
+        }
+
         // Fast Layer 1 Deduplication Check: In-memory LRU Cache (keyed by msgId:type)
         val dedupKey = "${packet.messageId}:${packet.type.code}"
         synchronized(dedupCache) {
@@ -141,6 +146,42 @@ class MeshRouter(
         val fingerprint = CryptoEngine.generateFingerprint(pubKeyBytes)
         val pubHex = CryptoEngine.bytesToHex(pubKeyBytes)
 
+        // Parse direct neighbor list from gossip extension
+        val neighborNodeIds = mutableListOf<Long>()
+        if (buffer.hasRemaining()) {
+            val neighborCount = buffer.get().toInt() and 0xFF
+            for (i in 0 until neighborCount) {
+                if (buffer.remaining() >= 8) {
+                    neighborNodeIds.add(buffer.long)
+                }
+            }
+        }
+
+        // Upsert reported topology edges into database
+        val now = System.currentTimeMillis()
+        for (neighborId in neighborNodeIds) {
+            database.topologyEdgeDao().insertOrUpdate(
+                com.meshwhisper.app.data.model.TopologyEdgeEntity(
+                    fromNode = packet.senderId,
+                    toNode = neighborId,
+                    rssi = 0,
+                    lastSeen = now
+                )
+            )
+        }
+
+        val isDirectLink = (ingressAddress != null || packet.ttl >= MeshPacket.DEFAULT_TTL - 1)
+        if (isDirectLink) {
+            database.topologyEdgeDao().insertOrUpdate(
+                com.meshwhisper.app.data.model.TopologyEdgeEntity(
+                    fromNode = cryptoEngine.nodeId,
+                    toNode = packet.senderId,
+                    rssi = 0,
+                    lastSeen = now
+                )
+            )
+        }
+
         // Check if existing peer has rotated or changed public key (TOFU safety check)
         val existingPeer = database.peerDao().getPeerById(packet.senderId)
         val hasKeyChanged = (existingPeer != null && existingPeer.publicKeyHex != pubHex)
@@ -158,7 +199,7 @@ class MeshRouter(
             publicKeyHex = pubHex,
             fingerprint = fingerprint,
             lastSeen = System.currentTimeMillis(),
-            isDirect = (packet.ttl >= MeshPacket.DEFAULT_TTL - 1),
+            isDirect = isDirectLink,
             hopCount = maxOf(1, MeshPacket.DEFAULT_TTL - packet.ttl),
             isBlocked = isBlocked,
             hasKeyChanged = hasKeyChanged || (existingPeer?.hasKeyChanged ?: false),
@@ -350,11 +391,21 @@ class MeshRouter(
         val aliasBytes = cryptoEngine.alias.toByteArray(Charsets.UTF_8)
         val pubKeyBytes = cryptoEngine.publicKeyBytes
 
-        val payload = ByteArray(1 + aliasBytes.size + pubKeyBytes.size)
+        // Collect live direct neighbor node IDs (strictly from active GATT links)
+        val directNeighbors = bleEngine.connectedNodeIds.value
+            .filter { it != cryptoEngine.nodeId && it != 0L }
+            .take(10)
+            .toList()
+
+        val payload = ByteArray(1 + aliasBytes.size + pubKeyBytes.size + 1 + (directNeighbors.size * 8))
         val buffer = ByteBuffer.wrap(payload)
         buffer.put((aliasBytes.size and 0xFF).toByte())
         buffer.put(aliasBytes)
         buffer.put(pubKeyBytes)
+        buffer.put(directNeighbors.size.toByte())
+        for (nId in directNeighbors) {
+            buffer.putLong(nId)
+        }
 
         val packet = MeshPacket(
             type = PacketType.PEER_ANNOUNCE,
@@ -375,11 +426,13 @@ class MeshRouter(
         try {
             database.processedPacketDao().purgeOld(nowSec - 86400L)
             database.storeForwardDao().purgeExpired(System.currentTimeMillis())
+            // Prune topology edges older than 2 minutes (live mesh dynamic graph)
+            database.topologyEdgeDao().pruneStaleEdges(System.currentTimeMillis() - 120_000L)
         } catch (e: Exception) {
             Log.e(tag, "Failed to purge old records: ${e.message}")
         }
         bleEngine.broadcastPacket(raw)
-        logPacket("TX", packet, raw.size, "Broadcasted local peer announce")
+        logPacket("TX", packet, raw.size, "Broadcasted local peer announce (${directNeighbors.size} neighbors)")
     }
 
     suspend fun sendBroadcastMessage(text: String): String {

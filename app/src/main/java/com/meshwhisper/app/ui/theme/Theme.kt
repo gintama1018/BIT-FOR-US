@@ -12,22 +12,23 @@ import androidx.core.view.WindowCompat
 fun MeshWhisperTheme(
     content: @Composable () -> Unit
 ) {
-    val colorScheme = MeshColorScheme
+    val colorScheme = SaharaColorScheme
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {
             val window = (view.context as? Activity)?.window
             if (window != null) {
-                window.statusBarColor = DarkBackground.toArgb()
-                window.navigationBarColor = DarkBackground.toArgb()
-                WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = false
-                WindowCompat.getInsetsController(window, view).isAppearanceLightNavigationBars = false
+                window.statusBarColor = WarmLinen.toArgb()
+                window.navigationBarColor = WarmLinen.toArgb()
+                WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = true
+                WindowCompat.getInsetsController(window, view).isAppearanceLightNavigationBars = true
             }
         }
     }
 
     MaterialTheme(
         colorScheme = colorScheme,
+        typography = SaharaTypography,
         content = content
     )
 }

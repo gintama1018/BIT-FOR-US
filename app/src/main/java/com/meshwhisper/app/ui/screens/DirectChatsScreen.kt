@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
@@ -33,24 +34,33 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.meshwhisper.app.data.model.MediaType
 import com.meshwhisper.app.data.model.MessageEntity
 import com.meshwhisper.app.data.model.MessageStatus
 import com.meshwhisper.app.data.model.PeerEntity
 import com.meshwhisper.app.ui.components.NodeAvatar
-import com.meshwhisper.app.ui.theme.AmberAccent
-import com.meshwhisper.app.ui.theme.DarkBackground
-import com.meshwhisper.app.ui.theme.DarkCardBorder
-import com.meshwhisper.app.ui.theme.DarkSurface
-import com.meshwhisper.app.ui.theme.EmeraldAccent
-import com.meshwhisper.app.ui.theme.RedAccent
+import com.meshwhisper.app.ui.theme.BurntSienna
+import com.meshwhisper.app.ui.theme.BurntSiennaContainer
+import com.meshwhisper.app.ui.theme.DustyRose
+import com.meshwhisper.app.ui.theme.EBGaramondFamily
+import com.meshwhisper.app.ui.theme.ManropeFamily
 import com.meshwhisper.app.ui.theme.TextMuted
 import com.meshwhisper.app.ui.theme.TextPrimary
 import com.meshwhisper.app.ui.theme.TextSecondary
+import com.meshwhisper.app.ui.theme.WarmAmber
+import com.meshwhisper.app.ui.theme.WarmCardBorder
+import com.meshwhisper.app.ui.theme.WarmDivider
+import com.meshwhisper.app.ui.theme.WarmGreen
+import com.meshwhisper.app.ui.theme.WarmLinen
+import com.meshwhisper.app.ui.theme.WarmRed
+import com.meshwhisper.app.ui.theme.WarmSurface
+import com.meshwhisper.app.ui.theme.WarmSurfaceContainer
 import com.meshwhisper.app.ui.viewmodel.MeshViewModel
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -64,61 +74,92 @@ fun DirectChatsScreen(
     modifier: Modifier = Modifier
 ) {
     val peers by viewModel.peers.collectAsState()
-    val recentMessages by viewModel.recentConversations.collectAsState()
+    val connectedNodeIds by viewModel.connectedNodeIds.collectAsState()
+    val recentConversations by viewModel.recentConversations.collectAsState()
 
-    // Map peer to their latest conversation message
-    val recentMap = remember(recentMessages, viewModel.myNodeId) {
-        recentMessages.associateBy { msg ->
-            if (msg.isOutgoing) msg.recipientId else msg.senderId
+    // Map latest messages by peerId
+    val recentMap = remember(recentConversations) {
+        val map = mutableMapOf<Long, MessageEntity>()
+        for (msg in recentConversations) {
+            val peerId = if (msg.isOutgoing) msg.recipientId else msg.senderId
+            if (!map.containsKey(peerId) || (map[peerId]?.timestamp ?: 0L) < msg.timestamp) {
+                map[peerId] = msg
+            }
         }
+        map
     }
 
-    // Sort peers: prioritize nodes with recent messages, then by lastSeen
-    val sortedPeers = remember(peers, recentMap) {
-        peers.sortedByDescending { peer ->
-            val latestMsgTime = recentMap[peer.nodeId]?.timestamp ?: 0L
-            maxOf(latestMsgTime, peer.lastSeen)
-        }
+    // Sort peers: active conversations first, then online status, then alias
+    val sortedPeers = remember(peers, recentMap, connectedNodeIds) {
+        peers.map { peer ->
+            peer.copy(isDirect = connectedNodeIds.contains(peer.nodeId))
+        }.sortedWith(
+            compareByDescending<PeerEntity> { recentMap[it.nodeId]?.timestamp ?: 0L }
+                .thenByDescending { it.isDirect }
+                .thenBy { it.alias }
+        )
     }
 
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(DarkBackground)
+            .background(WarmLinen)
     ) {
-        // Direct Chats Header
+        // Direct Header
         Card(
-            colors = CardDefaults.cardColors(containerColor = DarkSurface),
+            colors = CardDefaults.cardColors(containerColor = WarmSurface),
             shape = RoundedCornerShape(0.dp),
-            border = androidx.compose.foundation.BorderStroke(1.dp, DarkCardBorder),
             modifier = Modifier.fillMaxWidth()
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 14.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Lock,
-                    contentDescription = null,
-                    tint = EmeraldAccent,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(modifier = Modifier.width(10.dp))
-                Column {
-                    Text(
-                        text = "Direct Messages",
-                        color = TextPrimary,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "End-to-end encrypted with X25519 session keys",
-                        color = TextSecondary,
-                        fontSize = 12.sp
-                    )
+            Column {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = "Direct Encrypted",
+                                color = TextPrimary,
+                                fontSize = 18.sp,
+                                fontFamily = EBGaramondFamily,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Icon(
+                                imageVector = Icons.Default.Lock,
+                                contentDescription = "E2EE",
+                                tint = BurntSienna,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                        Text(
+                            text = "End-to-end encrypted with X25519 & AES-256-GCM",
+                            color = TextSecondary,
+                            fontSize = 11.sp,
+                            fontFamily = ManropeFamily
+                        )
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(WarmSurfaceContainer)
+                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = "${peers.size} contact${if (peers.size != 1) "s" else ""}",
+                            color = TextPrimary,
+                            fontSize = 11.sp,
+                            fontFamily = ManropeFamily,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
                 }
+                HorizontalDivider(color = WarmCardBorder, thickness = 0.8.dp)
             }
         }
 
@@ -137,21 +178,23 @@ fun DirectChatsScreen(
                     Icon(
                         imageVector = Icons.Default.Shield,
                         contentDescription = null,
-                        tint = TextMuted,
+                        tint = BurntSienna.copy(alpha = 0.5f),
                         modifier = Modifier.size(48.dp)
                     )
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
                         text = "No mesh contacts yet",
                         color = TextPrimary,
-                        fontSize = 17.sp,
-                        fontWeight = FontWeight.SemiBold
+                        fontSize = 18.sp,
+                        fontFamily = EBGaramondFamily,
+                        fontWeight = FontWeight.Bold
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
                         text = "When other MeshWhisper nodes come into BLE range, they will appear here automatically.",
                         color = TextSecondary,
                         fontSize = 13.sp,
+                        fontFamily = ManropeFamily,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                         lineHeight = 18.sp
                     )
@@ -172,8 +215,8 @@ fun DirectChatsScreen(
                     )
                     HorizontalDivider(
                         modifier = Modifier.padding(start = 72.dp, end = 16.dp),
-                        thickness = 0.5.dp,
-                        color = DarkCardBorder.copy(alpha = 0.6f)
+                        thickness = 0.6.dp,
+                        color = WarmDivider
                     )
                 }
             }
@@ -182,18 +225,20 @@ fun DirectChatsScreen(
 }
 
 @Composable
-fun InboxPeerRow(
+private fun InboxPeerRow(
     peer: PeerEntity,
     latestMessage: MessageEntity?,
     onClick: () -> Unit
 ) {
-    val displayTimestamp = latestMessage?.timestamp ?: peer.lastSeen
-    val formattedTime = remember(displayTimestamp) { formatInboxTime(displayTimestamp) }
+    val formattedTime = remember(latestMessage?.timestamp, peer.lastSeen) {
+        val ts = latestMessage?.timestamp ?: peer.lastSeen
+        formatInboxTime(ts)
+    }
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onClick() }
+            .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -219,6 +264,7 @@ fun InboxPeerRow(
                     text = peer.alias,
                     color = TextPrimary,
                     fontSize = 15.sp,
+                    fontFamily = ManropeFamily,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -226,7 +272,8 @@ fun InboxPeerRow(
                 Text(
                     text = formattedTime,
                     color = if (latestMessage != null) TextSecondary else TextMuted,
-                    fontSize = 11.sp
+                    fontSize = 11.sp,
+                    fontFamily = ManropeFamily
                 )
             }
 
@@ -239,16 +286,18 @@ fun InboxPeerRow(
                 if (peer.hasKeyChanged) {
                     Text(
                         text = "⚠️ Safety number changed",
-                        color = AmberAccent,
+                        color = WarmAmber,
                         fontSize = 12.sp,
-                        fontWeight = FontWeight.Medium,
+                        fontFamily = ManropeFamily,
+                        fontWeight = FontWeight.SemiBold,
                         maxLines = 1
                     )
                 } else if (peer.isBlocked) {
                     Text(
                         text = "🚫 Blocked contact",
-                        color = RedAccent,
+                        color = WarmRed,
                         fontSize = 12.sp,
+                        fontFamily = ManropeFamily,
                         maxLines = 1
                     )
                 } else if (latestMessage != null) {
@@ -257,7 +306,7 @@ fun InboxPeerRow(
                             Icon(
                                 imageVector = Icons.Default.DoneAll,
                                 contentDescription = "Delivered",
-                                tint = EmeraldAccent,
+                                tint = WarmGreen,
                                 modifier = Modifier.size(14.dp)
                             )
                         } else {
@@ -271,14 +320,15 @@ fun InboxPeerRow(
                         Spacer(modifier = Modifier.width(4.dp))
                     }
                     val previewText = when (latestMessage.mediaType) {
-                        com.meshwhisper.app.data.model.MediaType.IMAGE -> if (latestMessage.text.isNotBlank() && latestMessage.text != "📷 Photo") "📷 ${latestMessage.text}" else "📷 Photo"
-                        com.meshwhisper.app.data.model.MediaType.VOICE -> "🎤 Voice message"
+                        MediaType.IMAGE -> if (latestMessage.text.isNotBlank() && latestMessage.text != "📷 Photo") "📷 ${latestMessage.text}" else "📷 Photo"
+                        MediaType.VOICE -> "🎤 Voice message"
                         else -> latestMessage.text
                     }
                     Text(
                         text = previewText,
                         color = TextSecondary,
                         fontSize = 13.sp,
+                        fontFamily = ManropeFamily,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -288,6 +338,7 @@ fun InboxPeerRow(
                         text = statusText,
                         color = TextMuted,
                         fontSize = 12.sp,
+                        fontFamily = ManropeFamily,
                         maxLines = 1
                     )
                 }
@@ -312,4 +363,3 @@ private fun formatInboxTime(timestamp: Long): String {
         SimpleDateFormat("dd/MM/yy", Locale.getDefault()).format(Date(timestamp))
     }
 }
-

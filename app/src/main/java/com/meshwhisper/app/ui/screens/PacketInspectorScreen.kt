@@ -20,10 +20,12 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DataObject
-import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -40,17 +42,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.meshwhisper.app.data.model.PacketLogEntity
-import com.meshwhisper.app.ui.theme.AmberAccent
-import com.meshwhisper.app.ui.theme.CyanAccent
-import com.meshwhisper.app.ui.theme.DarkBackground
-import com.meshwhisper.app.ui.theme.DarkCardBorder
-import com.meshwhisper.app.ui.theme.DarkSurface
-import com.meshwhisper.app.ui.theme.DarkSurfaceVariant
-import com.meshwhisper.app.ui.theme.EmeraldAccent
-import com.meshwhisper.app.ui.theme.RedAccent
+import com.meshwhisper.app.ui.theme.BurntSienna
+import com.meshwhisper.app.ui.theme.DustyRose
+import com.meshwhisper.app.ui.theme.EBGaramondFamily
+import com.meshwhisper.app.ui.theme.ManropeFamily
 import com.meshwhisper.app.ui.theme.TextMuted
 import com.meshwhisper.app.ui.theme.TextPrimary
 import com.meshwhisper.app.ui.theme.TextSecondary
+import com.meshwhisper.app.ui.theme.WarmCardBorder
+import com.meshwhisper.app.ui.theme.WarmGreen
+import com.meshwhisper.app.ui.theme.WarmLinen
+import com.meshwhisper.app.ui.theme.WarmRed
+import com.meshwhisper.app.ui.theme.WarmSurface
 import com.meshwhisper.app.ui.viewmodel.MeshViewModel
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -76,42 +79,59 @@ fun PacketInspectorScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(DarkBackground)
+            .background(WarmLinen)
     ) {
         // Top Header
         Card(
-            colors = CardDefaults.cardColors(containerColor = DarkSurface),
+            colors = CardDefaults.cardColors(containerColor = WarmSurface),
             shape = RoundedCornerShape(0.dp),
-            border = androidx.compose.foundation.BorderStroke(1.dp, DarkCardBorder),
             modifier = Modifier.fillMaxWidth()
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 14.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = Icons.Default.DataObject,
-                    contentDescription = null,
-                    tint = CyanAccent,
-                    modifier = Modifier.size(22.dp)
-                )
-                Spacer(modifier = Modifier.width(10.dp))
-                Column {
-                    Text(
-                        text = "PACKET & ROUTING INSPECTOR",
-                        color = TextPrimary,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Black,
-                        letterSpacing = 0.5.sp
-                    )
-                    Text(
-                        text = "Live Binary Frame Telemetry & Dedup Monitor",
-                        color = TextSecondary,
-                        fontSize = 11.sp
-                    )
+            Column {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.DataObject,
+                            contentDescription = null,
+                            tint = BurntSienna,
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = "Packet & Routing Inspector",
+                                color = TextPrimary,
+                                fontSize = 18.sp,
+                                fontFamily = EBGaramondFamily,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "Live Binary Frame Telemetry & Dedup Monitor",
+                                color = TextSecondary,
+                                fontSize = 11.sp,
+                                fontFamily = ManropeFamily
+                            )
+                        }
+                    }
+
+                    IconButton(
+                        onClick = { viewModel.clearLogs() }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.DeleteSweep,
+                            contentDescription = "Clear Logs",
+                            tint = TextMuted,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
                 }
+                HorizontalDivider(color = WarmCardBorder, thickness = 0.8.dp)
             }
         }
 
@@ -122,9 +142,9 @@ fun PacketInspectorScreen(
                 .padding(16.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            MetricStatCard(title = "Relayed Hops", value = relayedCount.toString(), accent = AmberAccent, modifier = Modifier.weight(1f))
-            MetricStatCard(title = "Packets RX", value = totalRx.toString(), accent = EmeraldAccent, modifier = Modifier.weight(1f))
-            MetricStatCard(title = "Active Nodes", value = connectedNodes.toString(), accent = CyanAccent, modifier = Modifier.weight(1f))
+            MetricStatCard(title = "Relayed Hops", value = relayedCount.toString(), accent = BurntSienna, modifier = Modifier.weight(1f))
+            MetricStatCard(title = "Packets RX", value = totalRx.toString(), accent = WarmGreen, modifier = Modifier.weight(1f))
+            MetricStatCard(title = "Active Nodes", value = connectedNodes.toString(), accent = DustyRose, modifier = Modifier.weight(1f))
         }
 
         // Filter Bar
@@ -138,16 +158,17 @@ fun PacketInspectorScreen(
                 val isSelected = selectedFilter == filter
                 Box(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(if (isSelected) EmeraldAccent else DarkSurface)
-                        .border(1.dp, if (isSelected) EmeraldAccent else DarkCardBorder, RoundedCornerShape(8.dp))
+                        .clip(RoundedCornerShape(8.dp)) // 8px radius per DESIGN.md
+                        .background(if (isSelected) BurntSienna else WarmSurface)
+                        .border(0.8.dp, if (isSelected) BurntSienna else WarmCardBorder, RoundedCornerShape(8.dp))
                         .clickable { selectedFilter = filter }
                         .padding(horizontal = 12.dp, vertical = 6.dp)
                 ) {
                     Text(
                         text = filter,
-                        color = if (isSelected) Color.Black else TextSecondary,
+                        color = if (isSelected) Color.White else TextSecondary,
                         fontSize = 11.sp,
+                        fontFamily = ManropeFamily,
                         fontWeight = FontWeight.Bold
                     )
                 }
@@ -164,7 +185,12 @@ fun PacketInspectorScreen(
                     .fillMaxWidth(),
                 contentAlignment = Alignment.Center
             ) {
-                Text("No packet activity logged yet", color = TextMuted, fontSize = 13.sp)
+                Text(
+                    text = "No packet activity logged yet",
+                    color = TextMuted,
+                    fontSize = 13.sp,
+                    fontFamily = ManropeFamily
+                )
             }
         } else {
             LazyColumn(
@@ -190,18 +216,29 @@ fun MetricStatCard(
     modifier: Modifier = Modifier
 ) {
     Card(
-        colors = CardDefaults.cardColors(containerColor = DarkSurface),
-        shape = RoundedCornerShape(10.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, DarkCardBorder),
+        colors = CardDefaults.cardColors(containerColor = WarmSurface),
+        shape = RoundedCornerShape(8.dp), // 8px radius per DESIGN.md
+        border = androidx.compose.foundation.BorderStroke(0.8.dp, WarmCardBorder),
         modifier = modifier
     ) {
         Column(
             modifier = Modifier.padding(10.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text(text = value, color = accent, fontSize = 18.sp, fontWeight = FontWeight.Black)
+            Text(
+                text = value,
+                color = accent,
+                fontSize = 18.sp,
+                fontFamily = ManropeFamily,
+                fontWeight = FontWeight.Bold
+            )
             Spacer(modifier = Modifier.height(2.dp))
-            Text(text = title, color = TextSecondary, fontSize = 10.sp)
+            Text(
+                text = title,
+                color = TextSecondary,
+                fontSize = 10.sp,
+                fontFamily = ManropeFamily
+            )
         }
     }
 }
@@ -212,17 +249,17 @@ fun PacketLogRow(log: PacketLogEntity) {
     val timeStr = remember(log.timestamp) { timeFormat.format(Date(log.timestamp)) }
 
     val dirColor = when (log.direction) {
-        "TX" -> CyanAccent
-        "RX" -> EmeraldAccent
-        "RELAY" -> AmberAccent
-        "DROP" -> RedAccent
+        "TX" -> DustyRose
+        "RX" -> WarmGreen
+        "RELAY" -> BurntSienna
+        "DROP" -> WarmRed
         else -> TextPrimary
     }
 
     Card(
-        colors = CardDefaults.cardColors(containerColor = DarkSurface),
+        colors = CardDefaults.cardColors(containerColor = WarmSurface),
         shape = RoundedCornerShape(6.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, DarkCardBorder),
+        border = androidx.compose.foundation.BorderStroke(0.8.dp, WarmCardBorder),
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(
@@ -240,7 +277,7 @@ fun PacketLogRow(log: PacketLogEntity) {
                         text = "[${log.direction}]",
                         color = dirColor,
                         fontSize = 11.sp,
-                        fontWeight = FontWeight.Black,
+                        fontWeight = FontWeight.Bold,
                         fontFamily = FontFamily.Monospace
                     )
                     Spacer(modifier = Modifier.width(6.dp))

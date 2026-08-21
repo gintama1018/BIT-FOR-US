@@ -174,6 +174,12 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun clearLogs() {
+        viewModelScope.launch {
+            database.packetLogDao().deleteAll()
+        }
+    }
+
     override fun onCleared() {
         super.onCleared()
         audioPlayer.stop()

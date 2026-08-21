@@ -19,17 +19,15 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.ui.graphics.Color
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.CellTower
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
@@ -45,20 +43,32 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.meshwhisper.app.data.model.MediaType
 import com.meshwhisper.app.data.model.MessageEntity
-import com.meshwhisper.app.ui.theme.CyanAccent
-import com.meshwhisper.app.ui.theme.DarkBackground
-import com.meshwhisper.app.ui.theme.DarkCardBorder
-import com.meshwhisper.app.ui.theme.DarkSurface
-import com.meshwhisper.app.ui.theme.DarkSurfaceVariant
-import com.meshwhisper.app.ui.theme.EmeraldAccent
+import com.meshwhisper.app.ui.components.ImageMessageBubble
+import com.meshwhisper.app.ui.components.VoiceNoteBubble
+import com.meshwhisper.app.ui.theme.BurntSienna
+import com.meshwhisper.app.ui.theme.BurntSiennaContainer
+import com.meshwhisper.app.ui.theme.DustyRose
+import com.meshwhisper.app.ui.theme.EBGaramondFamily
+import com.meshwhisper.app.ui.theme.IncomingBubble
+import com.meshwhisper.app.ui.theme.IncomingBubbleBorder
+import com.meshwhisper.app.ui.theme.ManropeFamily
+import com.meshwhisper.app.ui.theme.OutgoingBubble
+import com.meshwhisper.app.ui.theme.OutgoingBubbleBorder
 import com.meshwhisper.app.ui.theme.TextMuted
 import com.meshwhisper.app.ui.theme.TextPrimary
 import com.meshwhisper.app.ui.theme.TextSecondary
+import com.meshwhisper.app.ui.theme.WarmCardBorder
+import com.meshwhisper.app.ui.theme.WarmGreen
+import com.meshwhisper.app.ui.theme.WarmLinen
+import com.meshwhisper.app.ui.theme.WarmRed
+import com.meshwhisper.app.ui.theme.WarmSurface
+import com.meshwhisper.app.ui.theme.WarmSurfaceContainer
 import com.meshwhisper.app.ui.viewmodel.MeshViewModel
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -71,9 +81,10 @@ fun PublicMeshScreen(
 ) {
     val messages by viewModel.broadcastMessages.collectAsState()
     val connectedNodes by viewModel.connectedPeersCount.collectAsState()
-    val listState = rememberLazyListState()
     var textInput by remember { mutableStateOf("") }
+    val listState = rememberLazyListState()
 
+    // Auto-scroll on new message
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
             listState.animateScrollToItem(messages.size - 1)
@@ -83,12 +94,12 @@ fun PublicMeshScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(DarkBackground)
+            .background(WarmLinen)
     ) {
-        // Channel Header Bar
+        // Channel Top Header
         PublicChannelHeader(connectedNodes = connectedNodes)
 
-        // Message Stream
+        // Messages List
         if (messages.isEmpty()) {
             Box(
                 modifier = Modifier
@@ -104,22 +115,25 @@ fun PublicMeshScreen(
                     Icon(
                         imageVector = Icons.Default.CellTower,
                         contentDescription = null,
-                        tint = TextMuted,
-                        modifier = Modifier.size(56.dp)
+                        tint = BurntSienna.copy(alpha = 0.5f),
+                        modifier = Modifier.size(48.dp)
                     )
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
                         text = "Public Mesh Channel",
                         color = TextPrimary,
                         fontSize = 18.sp,
+                        fontFamily = EBGaramondFamily,
                         fontWeight = FontWeight.Bold
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = "Messages sent here flood-hop across all nearby BLE nodes without internet.",
+                        text = "All broadcasts flood through every nearby node.\nMessages are authenticated and community encrypted.",
                         color = TextSecondary,
                         fontSize = 13.sp,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        fontFamily = ManropeFamily,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        lineHeight = 18.sp
                     )
                 }
             }
@@ -138,7 +152,7 @@ fun PublicMeshScreen(
             }
         }
 
-        // Message Input Field
+        // Message Input Field with Attachment & Voice Support
         ChatInputBar(
             text = textInput,
             onTextChanged = { textInput = it },
@@ -160,72 +174,69 @@ fun PublicMeshScreen(
 @Composable
 private fun PublicChannelHeader(connectedNodes: Int) {
     Card(
-        colors = CardDefaults.cardColors(containerColor = DarkSurface),
+        colors = CardDefaults.cardColors(containerColor = WarmSurface),
         shape = RoundedCornerShape(0.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, DarkCardBorder),
         modifier = Modifier.fillMaxWidth()
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Column {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = "PUBLIC MESH",
-                        color = TextPrimary,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Black,
-                        letterSpacing = 1.sp
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Icon(
-                        imageVector = Icons.Default.CellTower,
-                        contentDescription = "Public Mesh",
-                        tint = EmeraldAccent,
-                        modifier = Modifier.size(16.dp)
-                    )
-                }
-                Text(
-                    text = "Encrypted with mesh-wide community key",
-                    color = TextMuted,
-                    fontSize = 11.sp
-                )
-            }
-
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = if (connectedNodes > 0) EmeraldAccent.copy(alpha = 0.15f) else DarkSurfaceVariant
-                ),
-                shape = RoundedCornerShape(12.dp),
-                border = androidx.compose.foundation.BorderStroke(
-                    1.dp,
-                    if (connectedNodes > 0) EmeraldAccent.copy(alpha = 0.4f) else DarkCardBorder
-                )
+        Column {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(6.dp)
-                            .clip(CircleShape)
-                            .background(if (connectedNodes > 0) EmeraldAccent else TextMuted)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
+                Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "Public Mesh",
+                            color = TextPrimary,
+                            fontSize = 18.sp,
+                            fontFamily = EBGaramondFamily,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Icon(
+                            imageVector = Icons.Default.CellTower,
+                            contentDescription = "Public Mesh",
+                            tint = BurntSienna,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
                     Text(
-                        text = if (connectedNodes > 0) "$connectedNodes peers" else "Scanning...",
-                        color = if (connectedNodes > 0) EmeraldAccent else TextMuted,
+                        text = "Encrypted with mesh-wide community key",
+                        color = TextSecondary,
                         fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        fontFamily = FontFamily.Monospace
+                        fontFamily = ManropeFamily
                     )
                 }
+
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(WarmSurfaceContainer)
+                        .border(0.8.dp, WarmCardBorder, RoundedCornerShape(16.dp))
+                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(6.dp)
+                                .clip(CircleShape)
+                                .background(if (connectedNodes > 0) WarmGreen else TextMuted)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (connectedNodes > 0) "$connectedNodes peer${if (connectedNodes != 1) "s" else ""}" else "Scanning...",
+                            color = if (connectedNodes > 0) TextPrimary else TextMuted,
+                            fontSize = 11.sp,
+                            fontFamily = ManropeFamily,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
             }
+            HorizontalDivider(color = WarmCardBorder, thickness = 0.8.dp)
         }
     }
 }
@@ -250,16 +261,18 @@ fun BroadcastMessageBubble(
         ) {
             Text(
                 text = if (isMe) "You" else msg.senderAlias,
-                color = if (isMe) EmeraldAccent else CyanAccent,
+                color = if (isMe) BurntSienna else DustyRose,
                 fontSize = 11.sp,
+                fontFamily = ManropeFamily,
                 fontWeight = FontWeight.Bold
             )
             Spacer(modifier = Modifier.width(6.dp))
             val hopText = if (msg.hopCount == 0) "⚡ Direct" else "⚡ ${msg.hopCount} hops"
             Text(
                 text = hopText,
-                color = TextMuted,
-                fontSize = 10.sp
+                color = TextSecondary,
+                fontSize = 10.sp,
+                fontFamily = ManropeFamily
             )
         }
 
@@ -274,37 +287,43 @@ fun BroadcastMessageBubble(
                         bottomEnd = if (isMe) 2.dp else 12.dp
                     )
                 )
-                .background(if (isMe) Color(0xFF00381C) else DarkSurfaceVariant)
+                .background(if (isMe) OutgoingBubble else IncomingBubble)
                 .border(
-                    1.dp,
-                    if (isMe) EmeraldAccent.copy(alpha = 0.5f) else DarkCardBorder,
+                    0.8.dp,
+                    if (isMe) OutgoingBubbleBorder else IncomingBubbleBorder,
                     RoundedCornerShape(12.dp)
                 )
                 .padding(horizontal = 14.dp, vertical = 10.dp)
         ) {
             Column {
                 when (msg.mediaType) {
-                    com.meshwhisper.app.data.model.MediaType.IMAGE -> {
-                        com.meshwhisper.app.ui.components.ImageMessageBubble(
+                    MediaType.IMAGE -> {
+                        ImageMessageBubble(
                             message = msg,
                             isOutgoing = isMe
                         )
                     }
-                    com.meshwhisper.app.data.model.MediaType.VOICE -> {
+                    MediaType.VOICE -> {
                         if (viewModel != null) {
-                            com.meshwhisper.app.ui.components.VoiceNoteBubble(
+                            VoiceNoteBubble(
                                 message = msg,
                                 isOutgoing = isMe,
                                 audioPlayer = viewModel.audioPlayer
                             )
                         } else {
-                            Text(text = "🎤 Voice note", color = TextPrimary, fontSize = 14.sp)
+                            Text(
+                                text = "🎤 Voice note",
+                                color = TextPrimary,
+                                fontFamily = ManropeFamily,
+                                fontSize = 14.sp
+                            )
                         }
                     }
                     else -> {
                         Text(
                             text = msg.text,
                             color = TextPrimary,
+                            fontFamily = ManropeFamily,
                             fontSize = 14.sp,
                             lineHeight = 19.sp
                         )
@@ -315,6 +334,7 @@ fun BroadcastMessageBubble(
                     text = formattedTime,
                     color = TextMuted,
                     fontSize = 10.sp,
+                    fontFamily = ManropeFamily,
                     modifier = Modifier.align(Alignment.End)
                 )
             }
@@ -327,7 +347,7 @@ fun ChatInputBar(
     text: String,
     onTextChanged: (String) -> Unit,
     onSend: () -> Unit,
-    onSendMedia: ((mediaType: com.meshwhisper.app.data.model.MediaType, bytes: ByteArray, caption: String, durationMs: Long) -> Unit)? = null,
+    onSendMedia: ((mediaType: MediaType, bytes: ByteArray, caption: String, durationMs: Long) -> Unit)? = null,
     audioRecorder: com.meshwhisper.app.media.AudioRecorder? = null,
     placeholder: String = "Message..."
 ) {
@@ -342,7 +362,7 @@ fun ChatInputBar(
         if (uri != null && onSendMedia != null) {
             val compressedBytes = com.meshwhisper.app.media.MediaCompressor.compressImage(context, uri)
             if (compressedBytes != null) {
-                onSendMedia(com.meshwhisper.app.data.model.MediaType.IMAGE, compressedBytes, "", 0L)
+                onSendMedia(MediaType.IMAGE, compressedBytes, "", 0L)
             }
         }
     }
@@ -354,13 +374,12 @@ fun ChatInputBar(
                 kotlinx.coroutines.delay(1000L)
                 recordTimeSec += 1
                 if (recordTimeSec >= 30) {
-                    // Auto stop at 30 seconds
                     isRecording = false
                     val durationMs = audioRecorder?.stopRecording() ?: 0L
                     val file = recordOutputFile
                     if (file != null && file.exists() && file.length() > 0) {
                         onSendMedia?.invoke(
-                            com.meshwhisper.app.data.model.MediaType.VOICE,
+                            MediaType.VOICE,
                             file.readBytes(),
                             "",
                             durationMs
@@ -372,154 +391,166 @@ fun ChatInputBar(
     }
 
     Card(
-        colors = CardDefaults.cardColors(containerColor = DarkSurface),
+        colors = CardDefaults.cardColors(containerColor = WarmSurface),
         shape = RoundedCornerShape(0.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, DarkCardBorder),
         modifier = Modifier.fillMaxWidth()
     ) {
-        if (isRecording) {
-            // Active Voice Recording Bar
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .size(10.dp)
-                            .clip(CircleShape)
-                            .background(Color.Red)
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text(
-                        text = String.format("Recording: 0:%02d / 0:30", recordTimeSec),
-                        color = Color.White,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(
-                        onClick = {
-                            isRecording = false
-                            audioRecorder?.cancelRecording()
-                        }
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Cancel",
-                            tint = TextMuted
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.width(8.dp))
-
-                    IconButton(
-                        onClick = {
-                            isRecording = false
-                            val durationMs = audioRecorder?.stopRecording() ?: 0L
-                            val file = recordOutputFile
-                            if (file != null && file.exists() && file.length() > 0) {
-                                onSendMedia?.invoke(
-                                    com.meshwhisper.app.data.model.MediaType.VOICE,
-                                    file.readBytes(),
-                                    "",
-                                    durationMs
-                                )
-                            }
-                        },
-                        modifier = Modifier
-                            .size(40.dp)
-                            .clip(CircleShape)
-                            .background(EmeraldAccent)
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.Send,
-                            contentDescription = "Send voice note",
-                            tint = Color.Black,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                }
-            }
-        } else {
-            // Normal Text & Media Bar
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                if (onSendMedia != null) {
-                    IconButton(
-                        onClick = { imagePickerLauncher.launch("image/*") }
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.AddPhotoAlternate,
-                            contentDescription = "Attach image",
-                            tint = TextSecondary,
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
-                }
-
-                OutlinedTextField(
-                    value = text,
-                    onValueChange = onTextChanged,
-                    placeholder = { Text(placeholder, color = TextMuted, fontSize = 14.sp) },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = EmeraldAccent,
-                        unfocusedBorderColor = DarkCardBorder,
-                        focusedTextColor = TextPrimary,
-                        unfocusedTextColor = TextPrimary,
-                        cursorColor = EmeraldAccent
-                    ),
-                    shape = RoundedCornerShape(24.dp),
+        Column {
+            HorizontalDivider(color = WarmCardBorder, thickness = 0.8.dp)
+            if (isRecording) {
+                // Active Voice Recording Bar
+                Row(
                     modifier = Modifier
-                        .weight(1f)
-                        .padding(horizontal = 4.dp),
-                    maxLines = 4
-                )
-
-                if (text.isNotBlank()) {
-                    IconButton(
-                        onClick = onSend,
-                        modifier = Modifier
-                            .size(44.dp)
-                            .clip(CircleShape)
-                            .background(EmeraldAccent)
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.Send,
-                            contentDescription = "Send",
-                            tint = Color.Black,
-                            modifier = Modifier.size(20.dp)
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(10.dp)
+                                .clip(CircleShape)
+                                .background(WarmRed)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = String.format("Recording: 0:%02d / 0:30", recordTimeSec),
+                            color = TextPrimary,
+                            fontSize = 14.sp,
+                            fontFamily = ManropeFamily,
+                            fontWeight = FontWeight.Bold
                         )
                     }
-                } else if (audioRecorder != null && onSendMedia != null) {
-                    IconButton(
-                        onClick = {
-                            val tempFile = java.io.File(context.cacheDir, "temp_voice_${System.currentTimeMillis()}.m4a")
-                            recordOutputFile = tempFile
-                            if (audioRecorder.startRecording(tempFile)) {
-                                isRecording = true
+
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(
+                            onClick = {
+                                isRecording = false
+                                audioRecorder?.cancelRecording()
                             }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Cancel",
+                                tint = TextMuted
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(8.dp))
+
+                        IconButton(
+                            onClick = {
+                                isRecording = false
+                                val durationMs = audioRecorder?.stopRecording() ?: 0L
+                                val file = recordOutputFile
+                                if (file != null && file.exists() && file.length() > 0) {
+                                    onSendMedia?.invoke(
+                                        MediaType.VOICE,
+                                        file.readBytes(),
+                                        "",
+                                        durationMs
+                                    )
+                                }
+                            },
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(BurntSienna)
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.Send,
+                                contentDescription = "Send voice note",
+                                tint = Color.White,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                }
+            } else {
+                // Normal Text & Media Bar
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (onSendMedia != null) {
+                        IconButton(
+                            onClick = { imagePickerLauncher.launch("image/*") }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.AddPhotoAlternate,
+                                contentDescription = "Attach image",
+                                tint = BurntSienna,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    }
+
+                    OutlinedTextField(
+                        value = text,
+                        onValueChange = onTextChanged,
+                        placeholder = {
+                            Text(
+                                placeholder,
+                                color = TextMuted,
+                                fontFamily = ManropeFamily,
+                                fontSize = 14.sp
+                            )
                         },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = BurntSienna,
+                            unfocusedBorderColor = WarmCardBorder,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary,
+                            cursorColor = BurntSienna,
+                            focusedContainerColor = WarmSurface,
+                            unfocusedContainerColor = WarmSurface
+                        ),
+                        shape = RoundedCornerShape(24.dp),
                         modifier = Modifier
-                            .size(44.dp)
-                            .clip(CircleShape)
-                            .background(DarkSurfaceVariant)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Mic,
-                            contentDescription = "Record voice note",
-                            tint = EmeraldAccent,
-                            modifier = Modifier.size(22.dp)
-                        )
+                            .weight(1f)
+                            .padding(horizontal = 4.dp),
+                        maxLines = 4
+                    )
+
+                    if (text.isNotBlank()) {
+                        IconButton(
+                            onClick = onSend,
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(CircleShape)
+                                .background(BurntSienna)
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.Send,
+                                contentDescription = "Send",
+                                tint = Color.White,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    } else if (audioRecorder != null && onSendMedia != null) {
+                        IconButton(
+                            onClick = {
+                                val tempFile = java.io.File(context.cacheDir, "temp_voice_${System.currentTimeMillis()}.m4a")
+                                recordOutputFile = tempFile
+                                if (audioRecorder.startRecording(tempFile)) {
+                                    isRecording = true
+                                }
+                            },
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(CircleShape)
+                                .background(BurntSiennaContainer)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Mic,
+                                contentDescription = "Record voice note",
+                                tint = BurntSienna,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
                     }
                 }
             }

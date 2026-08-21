@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -36,11 +37,14 @@ import androidx.compose.ui.unit.sp
 import androidx.fragment.app.FragmentActivity
 import com.meshwhisper.app.security.BiometricAuthManager
 import com.meshwhisper.app.ui.components.PermissionHandler
-import com.meshwhisper.app.ui.theme.DarkBackground
-import com.meshwhisper.app.ui.theme.EmeraldAccent
+import com.meshwhisper.app.ui.theme.BurntSienna
+import com.meshwhisper.app.ui.theme.EBGaramondFamily
+import com.meshwhisper.app.ui.theme.ManropeFamily
 import com.meshwhisper.app.ui.theme.MeshWhisperTheme
 import com.meshwhisper.app.ui.theme.TextMuted
 import com.meshwhisper.app.ui.theme.TextPrimary
+import com.meshwhisper.app.ui.theme.TextSecondary
+import com.meshwhisper.app.ui.theme.WarmLinen
 import com.meshwhisper.app.ui.viewmodel.MeshViewModel
 
 class MainActivity : FragmentActivity() {
@@ -66,7 +70,7 @@ class MainActivity : FragmentActivity() {
 
                 Surface(
                     modifier = Modifier.fillMaxSize(),
-                    color = DarkBackground
+                    color = WarmLinen
                 ) {
                     if (isAppLockEnabled && !isUnlocked) {
                         AppLockScreen(
@@ -97,7 +101,8 @@ fun AppLockScreen(onUnlockClick: () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(DarkBackground),
+            .background(WarmLinen)
+            .padding(32.dp),
         contentAlignment = Alignment.Center
     ) {
         Column(
@@ -107,38 +112,48 @@ fun AppLockScreen(onUnlockClick: () -> Unit) {
             Icon(
                 imageVector = Icons.Default.Lock,
                 contentDescription = null,
-                tint = EmeraldAccent,
-                modifier = Modifier.size(64.dp)
+                tint = BurntSienna,
+                modifier = Modifier.size(56.dp)
             )
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(20.dp))
             Text(
                 text = "MeshWhisper Locked",
                 color = TextPrimary,
-                fontSize = 20.sp,
+                fontSize = 24.sp,
+                fontFamily = EBGaramondFamily,
                 fontWeight = FontWeight.Bold
             )
             Spacer(modifier = Modifier.height(8.dp))
             Text(
                 text = "Biometric or Device PIN authentication required",
-                color = TextMuted,
+                color = TextSecondary,
+                fontFamily = ManropeFamily,
                 fontSize = 13.sp
             )
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(28.dp))
             Button(
                 onClick = onUnlockClick,
-                colors = ButtonDefaults.buttonColors(containerColor = EmeraldAccent),
-                shape = RoundedCornerShape(12.dp)
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = BurntSienna,
+                    contentColor = Color.White
+                ),
+                shape = RoundedCornerShape(8.dp) // 8px radius per DESIGN.md
             ) {
                 Icon(
                     imageVector = Icons.Default.Fingerprint,
                     contentDescription = null,
-                    tint = Color.Black,
+                    tint = Color.White,
                     modifier = Modifier.size(18.dp)
                 )
                 Spacer(modifier = Modifier.size(8.dp))
-                Text("Unlock App", color = Color.Black, fontWeight = FontWeight.Bold)
+                Text(
+                    text = "Unlock App",
+                    color = Color.White,
+                    fontFamily = ManropeFamily,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.sp
+                )
             }
         }
     }
 }
-

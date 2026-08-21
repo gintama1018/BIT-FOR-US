@@ -36,6 +36,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
@@ -48,7 +49,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -69,17 +69,19 @@ import com.meshwhisper.app.ui.components.NodeAvatar
 import com.meshwhisper.app.ui.graph.GraphEdge
 import com.meshwhisper.app.ui.graph.GraphNode
 import com.meshwhisper.app.ui.graph.GraphPhysicsSimulation
-import com.meshwhisper.app.ui.theme.AmberAccent
-import com.meshwhisper.app.ui.theme.CyanAccent
-import com.meshwhisper.app.ui.theme.DarkBackground
-import com.meshwhisper.app.ui.theme.DarkCardBorder
-import com.meshwhisper.app.ui.theme.DarkSurface
-import com.meshwhisper.app.ui.theme.DarkSurfaceVariant
-import com.meshwhisper.app.ui.theme.EmeraldAccent
+import com.meshwhisper.app.ui.theme.BurntSienna
+import com.meshwhisper.app.ui.theme.DustyRose
+import com.meshwhisper.app.ui.theme.EBGaramondFamily
+import com.meshwhisper.app.ui.theme.ManropeFamily
 import com.meshwhisper.app.ui.theme.TextMuted
 import com.meshwhisper.app.ui.theme.TextPrimary
 import com.meshwhisper.app.ui.theme.TextSecondary
-import com.meshwhisper.app.ui.theme.WhatsAppGreen
+import com.meshwhisper.app.ui.theme.WarmAmber
+import com.meshwhisper.app.ui.theme.WarmCardBorder
+import com.meshwhisper.app.ui.theme.WarmGreen
+import com.meshwhisper.app.ui.theme.WarmLinen
+import com.meshwhisper.app.ui.theme.WarmSurface
+import com.meshwhisper.app.ui.theme.WarmSurfaceContainer
 import com.meshwhisper.app.ui.viewmodel.MeshViewModel
 import kotlinx.coroutines.delay
 import kotlin.math.cos
@@ -102,62 +104,72 @@ fun MeshRadarScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(DarkBackground)
+            .background(WarmLinen)
     ) {
         // Top Header
         Card(
-            colors = CardDefaults.cardColors(containerColor = DarkSurface),
+            colors = CardDefaults.cardColors(containerColor = WarmSurface),
             shape = RoundedCornerShape(0.dp),
-            border = androidx.compose.foundation.BorderStroke(1.dp, DarkCardBorder),
             modifier = Modifier.fillMaxWidth()
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.NetworkCheck,
-                        contentDescription = null,
-                        tint = EmeraldAccent,
-                        modifier = Modifier.size(22.dp)
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Column {
-                        Text(
-                            text = "Mesh Topology",
-                            color = TextPrimary,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.SemiBold
+            Column {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.NetworkCheck,
+                            contentDescription = null,
+                            tint = BurntSienna,
+                            modifier = Modifier.size(22.dp)
                         )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = "Mesh Topology",
+                                color = TextPrimary,
+                                fontSize = 18.sp,
+                                fontFamily = EBGaramondFamily,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "$connectedCount live direct links • ${peers.size} discovered",
+                                color = TextSecondary,
+                                fontSize = 11.sp,
+                                fontFamily = ManropeFamily
+                            )
+                        }
+                    }
+
+                    Button(
+                        onClick = { viewModel.announcePresence() },
+                        colors = ButtonDefaults.buttonColors(containerColor = BurntSienna),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                        shape = RoundedCornerShape(8.dp) // 8px radius per DESIGN.md
+                    ) {
                         Text(
-                            text = "$connectedCount live direct links • ${peers.size} discovered",
-                            color = TextSecondary,
-                            fontSize = 12.sp
+                            text = "Ping Mesh",
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            fontFamily = ManropeFamily,
+                            fontWeight = FontWeight.Bold
                         )
                     }
                 }
-
-                Button(
-                    onClick = { viewModel.announcePresence() },
-                    colors = ButtonDefaults.buttonColors(containerColor = EmeraldAccent),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Text("Ping Mesh", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                }
+                HorizontalDivider(color = WarmCardBorder, thickness = 0.8.dp)
             }
         }
 
         // Hardware Support Warning Banner if Peripheral mode is missing
         if (!supportsPeripheral) {
             Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF332000)),
+                colors = CardDefaults.cardColors(containerColor = WarmSurfaceContainer),
                 shape = RoundedCornerShape(8.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, AmberAccent),
+                border = androidx.compose.foundation.BorderStroke(1.dp, WarmAmber),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 6.dp)
@@ -166,12 +178,13 @@ fun MeshRadarScreen(
                     modifier = Modifier.padding(10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(imageVector = Icons.Default.Warning, contentDescription = null, tint = AmberAccent, modifier = Modifier.size(18.dp))
+                    Icon(imageVector = Icons.Default.Warning, contentDescription = null, tint = WarmAmber, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         text = "Device lacks BLE Peripheral mode. Operating in Central Relay mode.",
-                        color = Color(0xFFFFE082),
-                        fontSize = 12.sp
+                        color = TextPrimary,
+                        fontSize = 12.sp,
+                        fontFamily = ManropeFamily
                     )
                 }
             }
@@ -180,16 +193,16 @@ fun MeshRadarScreen(
         // View Mode Selector Tab Row
         TabRow(
             selectedTabIndex = selectedViewTab,
-            containerColor = DarkSurface,
-            contentColor = EmeraldAccent,
+            containerColor = WarmSurface,
+            contentColor = BurntSienna,
             indicator = { tabPositions ->
                 TabRowDefaults.SecondaryIndicator(
                     Modifier.tabIndicatorOffset(tabPositions[selectedViewTab]),
-                    color = EmeraldAccent
+                    color = BurntSienna
                 )
             },
             divider = {
-                androidx.compose.material3.HorizontalDivider(color = DarkCardBorder, thickness = 0.5.dp)
+                HorizontalDivider(color = WarmCardBorder, thickness = 0.8.dp)
             }
         ) {
             Tab(
@@ -197,9 +210,20 @@ fun MeshRadarScreen(
                 onClick = { selectedViewTab = 0 },
                 text = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(imageVector = Icons.Default.Hub, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Icon(
+                            imageVector = Icons.Default.Hub,
+                            contentDescription = null,
+                            tint = if (selectedViewTab == 0) BurntSienna else TextMuted,
+                            modifier = Modifier.size(16.dp)
+                        )
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Web of Nodes", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                        Text(
+                            text = "Web of Nodes",
+                            color = if (selectedViewTab == 0) BurntSienna else TextSecondary,
+                            fontSize = 13.sp,
+                            fontFamily = ManropeFamily,
+                            fontWeight = if (selectedViewTab == 0) FontWeight.Bold else FontWeight.Medium
+                        )
                     }
                 }
             )
@@ -208,9 +232,20 @@ fun MeshRadarScreen(
                 onClick = { selectedViewTab = 1 },
                 text = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(imageVector = Icons.Default.Radar, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Icon(
+                            imageVector = Icons.Default.Radar,
+                            contentDescription = null,
+                            tint = if (selectedViewTab == 1) BurntSienna else TextMuted,
+                            modifier = Modifier.size(16.dp)
+                        )
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Radar Scope", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                        Text(
+                            text = "Radar Scope",
+                            color = if (selectedViewTab == 1) BurntSienna else TextSecondary,
+                            fontSize = 13.sp,
+                            fontFamily = ManropeFamily,
+                            fontWeight = if (selectedViewTab == 1) FontWeight.Bold else FontWeight.Medium
+                        )
                     }
                 }
             )
@@ -248,14 +283,16 @@ fun MeshRadarScreen(
         ) {
             Text(
                 text = "Discovered Nodes (${peers.size})",
-                color = TextSecondary,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold
+                color = TextPrimary,
+                fontSize = 15.sp,
+                fontFamily = EBGaramondFamily,
+                fontWeight = FontWeight.Bold
             )
             Text(
                 text = "Tap a node to chat",
-                color = TextMuted,
-                fontSize = 11.sp
+                color = TextSecondary,
+                fontSize = 11.sp,
+                fontFamily = ManropeFamily
             )
         }
 
@@ -276,7 +313,7 @@ fun MeshRadarScreen(
 
 /**
  * Web-of-Nodes Canvas powered by Force-Directed Physics Simulation.
- * Renders the decentralized interconnected mesh graph.
+ * Renders the decentralized interconnected mesh graph on Warm Canvas.
  */
 @Composable
 fun MeshWebVisualizerCanvas(
@@ -393,9 +430,9 @@ fun MeshWebVisualizerCanvas(
     Canvas(
         modifier = Modifier
             .fillMaxSize()
-            .clip(RoundedCornerShape(16.dp))
-            .background(DarkSurface)
-            .border(1.dp, DarkCardBorder, RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(8.dp))
+            .background(WarmSurface)
+            .border(0.8.dp, WarmCardBorder, RoundedCornerShape(8.dp))
             .pointerInput(graphNodes) {
                 detectTapGestures { tapOffset ->
                     val clickedNode = graphNodes.find { node ->
@@ -416,8 +453,8 @@ fun MeshWebVisualizerCanvas(
         for (i in 0..numX) {
             for (j in 0..numY) {
                 drawCircle(
-                    color = DarkCardBorder.copy(alpha = 0.35f),
-                    radius = 1.dp.toPx(),
+                    color = WarmCardBorder.copy(alpha = 0.65f),
+                    radius = 1.2.dp.toPx(),
                     center = Offset(i * dotSpacing, j * dotSpacing)
                 )
             }
@@ -432,17 +469,17 @@ fun MeshWebVisualizerCanvas(
             val end = Offset(b.x, b.y)
 
             if (edge.isDirect) {
-                // Solid green link for direct BLE communication
+                // Solid Burnt Sienna link for direct BLE communication
                 drawLine(
-                    color = EmeraldAccent.copy(alpha = 0.6f),
+                    color = BurntSienna.copy(alpha = 0.75f),
                     start = start,
                     end = end,
                     strokeWidth = 2.dp.toPx()
                 )
             } else {
-                // Dashed cyan link for multi-hop relay links between remote peers
+                // Dashed warm muted link for multi-hop relay links between remote peers
                 drawLine(
-                    color = CyanAccent.copy(alpha = 0.45f),
+                    color = TextMuted.copy(alpha = 0.5f),
                     start = start,
                     end = end,
                     strokeWidth = 1.5.dp.toPx(),
@@ -454,7 +491,7 @@ fun MeshWebVisualizerCanvas(
             val pulseX = start.x + (end.x - start.x) * pulseProgress
             val pulseY = start.y + (end.y - start.y) * pulseProgress
             drawCircle(
-                color = if (edge.isDirect) WhatsAppGreen else CyanAccent,
+                color = if (edge.isDirect) BurntSienna else DustyRose,
                 radius = 2.5.dp.toPx(),
                 center = Offset(pulseX, pulseY)
             )
@@ -466,19 +503,19 @@ fun MeshWebVisualizerCanvas(
 
             if (node.isSelf) {
                 // Self Node (Center Local Phone)
-                val pulseR = 24.dp.toPx() + (8.dp.toPx() * pulseProgress)
+                val pulseR = 22.dp.toPx() + (8.dp.toPx() * pulseProgress)
                 drawCircle(
-                    color = EmeraldAccent.copy(alpha = 0.3f * (1f - pulseProgress)),
+                    color = BurntSienna.copy(alpha = 0.25f * (1f - pulseProgress)),
                     radius = pulseR,
                     center = nodeCenter
                 )
                 drawCircle(
-                    color = Color(0xFF005C4B),
+                    color = BurntSienna,
                     radius = 16.dp.toPx(),
                     center = nodeCenter
                 )
                 drawCircle(
-                    color = EmeraldAccent,
+                    color = Color.White,
                     radius = 16.dp.toPx(),
                     center = nodeCenter,
                     style = Stroke(width = 2.dp.toPx())
@@ -486,12 +523,12 @@ fun MeshWebVisualizerCanvas(
             } else {
                 // Remote Peer Node
                 drawCircle(
-                    color = DarkSurfaceVariant,
+                    color = WarmSurfaceContainer,
                     radius = 14.dp.toPx(),
                     center = nodeCenter
                 )
                 drawCircle(
-                    color = EmeraldAccent.copy(alpha = 0.7f),
+                    color = BurntSienna.copy(alpha = 0.8f),
                     radius = 14.dp.toPx(),
                     center = nodeCenter,
                     style = Stroke(width = 1.5.dp.toPx())
@@ -501,7 +538,7 @@ fun MeshWebVisualizerCanvas(
             // Draw Node Label text via Android Native Canvas Paint
             drawContext.canvas.nativeCanvas.apply {
                 val paint = android.graphics.Paint().apply {
-                    color = android.graphics.Color.WHITE
+                    color = android.graphics.Color.rgb(42, 35, 29) // TextPrimary #2A231D
                     textSize = 10.sp.toPx()
                     textAlign = android.graphics.Paint.Align.CENTER
                     isAntiAlias = true
@@ -515,7 +552,7 @@ fun MeshWebVisualizerCanvas(
 }
 
 /**
- * Traditional Single-Perspective Radar Scope Canvas
+ * Traditional Single-Perspective Radar Scope Canvas on Warm Linen
  */
 @Composable
 fun RadarVisualizerCanvas(peers: List<PeerEntity>) {
@@ -533,9 +570,9 @@ fun RadarVisualizerCanvas(peers: List<PeerEntity>) {
     Canvas(
         modifier = Modifier
             .fillMaxSize()
-            .clip(RoundedCornerShape(16.dp))
-            .background(DarkSurface)
-            .border(1.dp, DarkCardBorder, RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(8.dp))
+            .background(WarmSurface)
+            .border(0.8.dp, WarmCardBorder, RoundedCornerShape(8.dp))
     ) {
         val center = Offset(size.width / 2, size.height / 2)
         val maxRadius = minOf(size.width, size.height) / 2 * 0.85f
@@ -545,7 +582,7 @@ fun RadarVisualizerCanvas(peers: List<PeerEntity>) {
         for (i in 1..rings) {
             val r = maxRadius * (i.toFloat() / rings)
             drawCircle(
-                color = DarkCardBorder,
+                color = WarmCardBorder,
                 radius = r,
                 center = center,
                 style = Stroke(width = 1.dp.toPx())
@@ -555,7 +592,7 @@ fun RadarVisualizerCanvas(peers: List<PeerEntity>) {
         // Radar Pulse Wave
         val animatedRadius = maxRadius * pulseProgress
         drawCircle(
-            color = EmeraldAccent.copy(alpha = 1f - pulseProgress),
+            color = BurntSienna.copy(alpha = 0.6f * (1f - pulseProgress)),
             radius = animatedRadius,
             center = center,
             style = Stroke(width = 2.dp.toPx())
@@ -563,7 +600,7 @@ fun RadarVisualizerCanvas(peers: List<PeerEntity>) {
 
         // Center Node (Local Phone)
         drawCircle(
-            color = EmeraldAccent,
+            color = BurntSienna,
             radius = 7.dp.toPx(),
             center = center
         )
@@ -579,7 +616,7 @@ fun RadarVisualizerCanvas(peers: List<PeerEntity>) {
 
             // Mesh Link Line
             drawLine(
-                color = if (peer.isDirect) EmeraldAccent.copy(alpha = 0.4f) else CyanAccent.copy(alpha = 0.3f),
+                color = if (peer.isDirect) BurntSienna.copy(alpha = 0.5f) else TextMuted.copy(alpha = 0.35f),
                 start = center,
                 end = Offset(x, y),
                 strokeWidth = 1.5.dp.toPx()
@@ -587,7 +624,7 @@ fun RadarVisualizerCanvas(peers: List<PeerEntity>) {
 
             // Peer Node Dot
             drawCircle(
-                color = if (peer.isDirect) EmeraldAccent else CyanAccent,
+                color = if (peer.isDirect) BurntSienna else DustyRose,
                 radius = 6.dp.toPx(),
                 center = Offset(x, y)
             )
@@ -601,9 +638,9 @@ fun RadarPeerCard(
     onOpenChat: () -> Unit
 ) {
     Card(
-        colors = CardDefaults.cardColors(containerColor = DarkSurface),
-        shape = RoundedCornerShape(12.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, DarkCardBorder),
+        colors = CardDefaults.cardColors(containerColor = WarmSurface),
+        shape = RoundedCornerShape(8.dp), // 8px radius per DESIGN.md
+        border = androidx.compose.foundation.BorderStroke(0.8.dp, WarmCardBorder),
         modifier = Modifier.fillMaxWidth()
     ) {
         Row(
@@ -633,14 +670,16 @@ fun RadarPeerCard(
                             text = peer.alias,
                             color = TextPrimary,
                             fontSize = 15.sp,
+                            fontFamily = ManropeFamily,
                             fontWeight = FontWeight.SemiBold
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         val hopBadge = if (peer.isDirect) "Direct BLE" else "${peer.hopCount} hops"
                         Text(
                             text = "• $hopBadge",
-                            color = if (peer.isDirect) WhatsAppGreen else TextSecondary,
+                            color = if (peer.isDirect) WarmGreen else TextSecondary,
                             fontSize = 11.sp,
+                            fontFamily = ManropeFamily,
                             fontWeight = FontWeight.Medium
                         )
                     }
@@ -650,28 +689,34 @@ fun RadarPeerCard(
                     Text(
                         text = "FP: ${peer.fingerprint.take(9)}... • ID: ${peer.nodeIdHex.takeLast(6)}",
                         color = TextMuted,
-                        fontSize = 11.sp
+                        fontSize = 11.sp,
+                        fontFamily = ManropeFamily
                     )
                 }
             }
 
             Button(
                 onClick = onOpenChat,
-                colors = ButtonDefaults.buttonColors(containerColor = DarkSurfaceVariant),
+                colors = ButtonDefaults.buttonColors(containerColor = WarmSurfaceContainer),
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                shape = RoundedCornerShape(6.dp),
-                border = androidx.compose.foundation.BorderStroke(0.5.dp, DarkCardBorder)
+                shape = RoundedCornerShape(8.dp),
+                border = androidx.compose.foundation.BorderStroke(0.8.dp, WarmCardBorder)
             ) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.Chat,
                     contentDescription = null,
-                    tint = EmeraldAccent,
+                    tint = BurntSienna,
                     modifier = Modifier.size(14.dp)
                 )
                 Spacer(modifier = Modifier.width(4.dp))
-                Text("Chat", color = TextPrimary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                Text(
+                    text = "Chat",
+                    color = TextPrimary,
+                    fontSize = 12.sp,
+                    fontFamily = ManropeFamily,
+                    fontWeight = FontWeight.SemiBold
+                )
             }
         }
     }
 }
-

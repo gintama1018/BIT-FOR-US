@@ -10,6 +10,7 @@ import androidx.compose.material.icons.filled.DataObject
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -22,10 +23,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.meshwhisper.app.ui.screens.DirectChatDetailScreen
@@ -34,12 +33,14 @@ import com.meshwhisper.app.ui.screens.IdentitySettingsScreen
 import com.meshwhisper.app.ui.screens.MeshRadarScreen
 import com.meshwhisper.app.ui.screens.PacketInspectorScreen
 import com.meshwhisper.app.ui.screens.PublicMeshScreen
-import com.meshwhisper.app.ui.theme.DarkBackground
-import com.meshwhisper.app.ui.theme.DarkCardBorder
-import com.meshwhisper.app.ui.theme.DarkSurface
-import com.meshwhisper.app.ui.theme.EmeraldAccent
+import com.meshwhisper.app.ui.theme.BurntSienna
+import com.meshwhisper.app.ui.theme.BurntSiennaContainer
+import com.meshwhisper.app.ui.theme.ManropeFamily
 import com.meshwhisper.app.ui.theme.TextMuted
 import com.meshwhisper.app.ui.theme.TextSecondary
+import com.meshwhisper.app.ui.theme.WarmCardBorder
+import com.meshwhisper.app.ui.theme.WarmLinen
+import com.meshwhisper.app.ui.theme.WarmSurfaceContainer
 import com.meshwhisper.app.ui.viewmodel.MeshViewModel
 
 enum class NavTab(val title: String, val icon: ImageVector) {
@@ -62,47 +63,53 @@ fun MainScreen(
         bottomBar = {
             if (activeDirectChatPeerId == null) {
                 androidx.compose.foundation.layout.Column {
-                    androidx.compose.material3.HorizontalDivider(color = DarkCardBorder, thickness = 1.dp)
+                    HorizontalDivider(color = WarmCardBorder, thickness = 0.8.dp)
                     NavigationBar(
-                        containerColor = DarkSurface,
+                        containerColor = WarmSurfaceContainer,
                         tonalElevation = 0.dp
                     ) {
-                    NavTab.entries.forEach { tab ->
-                        val isSelected = selectedTab == tab
-                        NavigationBarItem(
-                            selected = isSelected,
-                            onClick = { selectedTab = tab },
-                            icon = {
-                                Icon(
-                                    imageVector = tab.icon,
-                                    contentDescription = tab.title,
-                                    tint = if (isSelected) EmeraldAccent else TextMuted
+                        NavTab.entries.forEach { tab ->
+                            val isSelected = selectedTab == tab
+                            NavigationBarItem(
+                                selected = isSelected,
+                                onClick = { selectedTab = tab },
+                                icon = {
+                                    Icon(
+                                        imageVector = tab.icon,
+                                        contentDescription = tab.title,
+                                        tint = if (isSelected) BurntSienna else TextMuted
+                                    )
+                                },
+                                label = {
+                                    Text(
+                                        text = tab.title,
+                                        color = if (isSelected) BurntSienna else TextSecondary,
+                                        fontSize = 11.sp,
+                                        fontFamily = ManropeFamily,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                                    )
+                                },
+                                colors = NavigationBarItemDefaults.colors(
+                                    indicatorColor = BurntSiennaContainer,
+                                    selectedIconColor = BurntSienna,
+                                    unselectedIconColor = TextMuted,
+                                    selectedTextColor = BurntSienna,
+                                    unselectedTextColor = TextSecondary
                                 )
-                            },
-                            label = {
-                                Text(
-                                    text = tab.title,
-                                    color = if (isSelected) EmeraldAccent else TextSecondary,
-                                    fontSize = 11.sp
-                                )
-                            },
-                            colors = NavigationBarItemDefaults.colors(
-                                indicatorColor = Color(0xFF00381C)
                             )
-                        )
+                        }
                     }
                 }
             }
-        }
         },
-        containerColor = DarkBackground,
+        containerColor = WarmLinen,
         modifier = modifier.fillMaxSize()
     ) { innerPadding ->
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .background(DarkBackground)
+                .background(WarmLinen)
         ) {
             if (activeDirectChatPeerId != null) {
                 DirectChatDetailScreen(

@@ -17,21 +17,23 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.meshwhisper.app.ui.theme.DarkBackground
-import com.meshwhisper.app.ui.theme.WhatsAppGreen
+import com.meshwhisper.app.ui.theme.ManropeFamily
+import com.meshwhisper.app.ui.theme.WarmGreen
+import com.meshwhisper.app.ui.theme.WarmLinen
 import kotlin.math.abs
 
+// Sahara Warm-Shifted Avatar Palette (Burnt Sienna, Terracotta, Dusty Rose, Ochre, Raw Umber)
 private val AVATAR_PALETTE = listOf(
-    Color(0xFF007A60), // WhatsApp Teal
-    Color(0xFF1E88E5), // Blue
-    Color(0xFF8E24AA), // Purple
-    Color(0xFF00897B), // Mint Teal
-    Color(0xFFD81B60), // Rose Pink
-    Color(0xFFFB8C00), // Amber Orange
-    Color(0xFF5C6BC0), // Indigo
-    Color(0xFF00ACC1), // Cyan Teal
-    Color(0xFF43A047), // Green
-    Color(0xFFE53935)  // Crimson
+    Color(0xFFC2652A), // Burnt Sienna
+    Color(0xFF8C3C3C), // Dusty Rose
+    Color(0xFFD97746), // Terracotta
+    Color(0xFFC98A2C), // Warm Ochre
+    Color(0xFFA85C3B), // Deep Clay
+    Color(0xFF8D7362), // Sandstone Taupe
+    Color(0xFFD48A37), // Warm Amber
+    Color(0xFF9C4A2F), // Russet
+    Color(0xFF7D5334), // Raw Umber
+    Color(0xFF8A421B)  // Dark Sienna
 )
 
 @Composable
@@ -81,6 +83,7 @@ fun NodeAvatar(
                 text = initials,
                 color = Color.White,
                 fontSize = fontSize,
+                fontFamily = ManropeFamily,
                 fontWeight = FontWeight.Bold
             )
         }
@@ -93,8 +96,8 @@ fun NodeAvatar(
                     .align(Alignment.BottomEnd)
                     .offset(x = 1.dp, y = 1.dp)
                     .clip(CircleShape)
-                    .background(WhatsAppGreen)
-                    .border(1.5.dp, DarkBackground, CircleShape)
+                    .background(WarmGreen)
+                    .border(1.5.dp, WarmLinen, CircleShape)
             )
         }
     }

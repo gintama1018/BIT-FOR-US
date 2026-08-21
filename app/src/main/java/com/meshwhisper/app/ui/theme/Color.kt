@@ -1,51 +1,71 @@
 package com.meshwhisper.app.ui.theme
 
-import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.ui.graphics.Color
 
-// Calm WhatsApp-inspired dark palette
-val DarkBackground = Color(0xFF0B141B)
-val DarkSurface = Color(0xFF111B21)
-val DarkSurfaceVariant = Color(0xFF202C33)
-val DarkCardBorder = Color(0xFF222D34)
+// =========================================================================
+// SAHARA — WARM MINIMALISM DESIGN TOKENS
+// =========================================================================
 
-// Chat Bubbles
-val OutgoingBubble = Color(0xFF005C4B)
-val OutgoingBubbleBorder = Color(0xFF006B57)
-val IncomingBubble = Color(0xFF202C33)
-val IncomingBubbleBorder = Color(0xFF2A3942)
+// Primary & Accents
+val BurntSienna = Color(0xFFC2652A)       // Primary CTA / Focus / High-intent
+val BurntSiennaDim = Color(0xFFA8541F)    // Darker Sienna for pressed/dim states
+val BurntSiennaContainer = Color(0xFFF3DFD3) // Soft Sienna container tint
+val DustyRose = Color(0xFF8C3C3C)         // Tertiary Accent for emphasis
+val WarmAmber = Color(0xFFD48A37)         // Warning / Pending state
+val WarmGreen = Color(0xFF2E7D32)         // Direct BLE online / Delivered status
+val WarmRed = Color(0xFFB71C1C)           // Danger / Panic / Blocked
 
-// WhatsApp Accent Accents
-val WhatsAppGreen = Color(0xFF25D366)
-val EmeraldAccent = Color(0xFF00A884)
-val EmeraldDim = Color(0xFF008069)
-val CyanAccent = Color(0xFF53BDEB)
-val CyanDim = Color(0xFF3B9AC6)
-val AmberAccent = Color(0xFFFFD279)
-val RedAccent = Color(0xFFF15C6D)
+// Surfaces & Backgrounds (Warm Linen & Warm White)
+val WarmLinen = Color(0xFFFAF5EE)         // Canvas Background — never cold white
+val WarmSurface = Color(0xFFFFFFFF)       // Primary Card / Surface container
+val WarmSurfaceContainer = Color(0xFFF4ECE1) // Secondary container / header tint
+val WarmCardBorder = Color(0x99D8D0C8)    // 60% Opacity warm border (#d8d0c8)
+val WarmDivider = Color(0x66D8D0C8)       // Subtle divider border
 
-// Typography
-val TextPrimary = Color(0xFFE9EDEF)
-val TextSecondary = Color(0xFF8696A0)
-val TextMuted = Color(0xFF667781)
+// Typography (Warm Espresso & Taupe)
+val TextPrimary = Color(0xFF2A231D)       // Deep warm espresso
+val TextSecondary = Color(0xFF6E6359)     // Warm muted taupe
+val TextMuted = Color(0xFF9E9286)         // Light warm taupe
 
-val MeshColorScheme = darkColorScheme(
-    primary = EmeraldAccent,
+// Chat Bubbles (Warm Minimalist)
+val OutgoingBubble = Color(0xFFF3DFD3)    // Soft warm sienna tint
+val OutgoingBubbleBorder = Color(0xFFE5C4B1)
+val IncomingBubble = Color(0xFFFFFFFF)    // Crisp warm white
+val IncomingBubbleBorder = Color(0xFFE3DAD0)
+
+// Backward Compatibility Aliases
+val DarkBackground = WarmLinen
+val DarkSurface = WarmSurface
+val DarkSurfaceVariant = WarmSurfaceContainer
+val DarkCardBorder = WarmCardBorder
+val EmeraldAccent = BurntSienna
+val EmeraldDim = BurntSiennaDim
+val CyanAccent = DustyRose
+val CyanDim = DustyRose
+val AmberAccent = WarmAmber
+val RedAccent = WarmRed
+val WhatsAppGreen = WarmGreen
+
+val SaharaColorScheme = lightColorScheme(
+    primary = BurntSienna,
     onPrimary = Color.White,
-    primaryContainer = Color(0xFF00381C),
-    onPrimaryContainer = EmeraldAccent,
-    secondary = CyanAccent,
-    onSecondary = Color.Black,
-    secondaryContainer = Color(0xFF1F2C34),
-    onSecondaryContainer = CyanAccent,
-    tertiary = AmberAccent,
-    background = DarkBackground,
+    primaryContainer = BurntSiennaContainer,
+    onPrimaryContainer = BurntSienna,
+    secondary = DustyRose,
+    onSecondary = Color.White,
+    secondaryContainer = Color(0xFFF0E2DE),
+    onSecondaryContainer = DustyRose,
+    tertiary = WarmAmber,
+    background = WarmLinen,
     onBackground = TextPrimary,
-    surface = DarkSurface,
+    surface = WarmSurface,
     onSurface = TextPrimary,
-    surfaceVariant = DarkSurfaceVariant,
+    surfaceVariant = WarmSurfaceContainer,
     onSurfaceVariant = TextSecondary,
-    error = RedAccent,
+    outline = WarmCardBorder,
+    error = WarmRed,
     onError = Color.White
 )
 
+val MeshColorScheme = SaharaColorScheme

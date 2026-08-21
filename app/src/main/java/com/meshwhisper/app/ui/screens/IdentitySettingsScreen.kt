@@ -1,8 +1,10 @@
 package com.meshwhisper.app.ui.screens
 
+import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,8 +20,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Fingerprint
@@ -30,6 +32,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
@@ -48,21 +51,28 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.meshwhisper.app.ui.theme.AmberAccent
-import com.meshwhisper.app.ui.theme.CyanAccent
-import com.meshwhisper.app.ui.theme.DarkBackground
-import com.meshwhisper.app.ui.theme.DarkCardBorder
-import com.meshwhisper.app.ui.theme.DarkSurface
-import com.meshwhisper.app.ui.theme.DarkSurfaceVariant
-import com.meshwhisper.app.ui.theme.EmeraldAccent
-import com.meshwhisper.app.ui.theme.RedAccent
+import com.meshwhisper.app.ui.theme.BurntSienna
+import com.meshwhisper.app.ui.theme.BurntSiennaContainer
+import com.meshwhisper.app.ui.theme.DustyRose
+import com.meshwhisper.app.ui.theme.EBGaramondFamily
+import com.meshwhisper.app.ui.theme.ManropeFamily
 import com.meshwhisper.app.ui.theme.TextMuted
 import com.meshwhisper.app.ui.theme.TextPrimary
 import com.meshwhisper.app.ui.theme.TextSecondary
+import com.meshwhisper.app.ui.theme.WarmAmber
+import com.meshwhisper.app.ui.theme.WarmCardBorder
+import com.meshwhisper.app.ui.theme.WarmGreen
+import com.meshwhisper.app.ui.theme.WarmLinen
+import com.meshwhisper.app.ui.theme.WarmRed
+import com.meshwhisper.app.ui.theme.WarmSurface
+import com.meshwhisper.app.ui.theme.WarmSurfaceContainer
 import com.meshwhisper.app.ui.util.QrCodeGenerator
 import com.meshwhisper.app.ui.viewmodel.MeshViewModel
 
@@ -71,6 +81,9 @@ fun IdentitySettingsScreen(
     viewModel: MeshViewModel,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
+
     val myAlias by viewModel.myAlias.collectAsState()
     val supportsPeripheral by viewModel.supportsPeripheral.collectAsState()
     val identityVersion by viewModel.identityVersion.collectAsState()
@@ -91,42 +104,45 @@ fun IdentitySettingsScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(DarkBackground)
+            .background(WarmLinen)
     ) {
         // Header
         Card(
-            colors = CardDefaults.cardColors(containerColor = DarkSurface),
+            colors = CardDefaults.cardColors(containerColor = WarmSurface),
             shape = RoundedCornerShape(0.dp),
-            border = androidx.compose.foundation.BorderStroke(1.dp, DarkCardBorder),
             modifier = Modifier.fillMaxWidth()
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 14.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Settings,
-                    contentDescription = null,
-                    tint = EmeraldAccent,
-                    modifier = Modifier.size(22.dp)
-                )
-                Spacer(modifier = Modifier.width(10.dp))
-                Column {
-                    Text(
-                        text = "NODE IDENTITY & SETTINGS",
-                        color = TextPrimary,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Black,
-                        letterSpacing = 0.5.sp
+            Column {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Settings,
+                        contentDescription = null,
+                        tint = BurntSienna,
+                        modifier = Modifier.size(22.dp)
                     )
-                    Text(
-                        text = "X25519 Curve25519 Identity & BLE Diagnostics",
-                        color = TextSecondary,
-                        fontSize = 11.sp
-                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column {
+                        Text(
+                            text = "Node Identity & Settings",
+                            color = TextPrimary,
+                            fontSize = 18.sp,
+                            fontFamily = EBGaramondFamily,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "X25519 Curve25519 Identity & BLE Diagnostics",
+                            color = TextSecondary,
+                            fontSize = 11.sp,
+                            fontFamily = ManropeFamily
+                        )
+                    }
                 }
+                HorizontalDivider(color = WarmCardBorder, thickness = 0.8.dp)
             }
         }
 
@@ -140,9 +156,9 @@ fun IdentitySettingsScreen(
             // Identity Card
             item {
                 Card(
-                    colors = CardDefaults.cardColors(containerColor = DarkSurface),
-                    shape = RoundedCornerShape(14.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, DarkCardBorder),
+                    colors = CardDefaults.cardColors(containerColor = WarmSurface),
+                    shape = RoundedCornerShape(8.dp), // 8px radius per DESIGN.md
+                    border = androidx.compose.foundation.BorderStroke(0.8.dp, WarmCardBorder),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
@@ -153,8 +169,9 @@ fun IdentitySettingsScreen(
                         ) {
                             Text(
                                 text = "LOCAL NODE IDENTITY",
-                                color = EmeraldAccent,
+                                color = BurntSienna,
                                 fontSize = 12.sp,
+                                fontFamily = ManropeFamily,
                                 fontWeight = FontWeight.Bold,
                                 letterSpacing = 0.5.sp
                             )
@@ -165,7 +182,7 @@ fun IdentitySettingsScreen(
                                 Icon(
                                     imageVector = Icons.Default.QrCode2,
                                     contentDescription = "Show QR",
-                                    tint = CyanAccent
+                                    tint = DustyRose
                                 )
                             }
                         }
@@ -182,10 +199,13 @@ fun IdentitySettingsScreen(
                                     value = aliasInput,
                                     onValueChange = { aliasInput = it },
                                     colors = OutlinedTextFieldDefaults.colors(
-                                        focusedBorderColor = EmeraldAccent,
-                                        unfocusedBorderColor = DarkCardBorder,
+                                        focusedBorderColor = BurntSienna,
+                                        unfocusedBorderColor = WarmCardBorder,
                                         focusedTextColor = TextPrimary,
-                                        unfocusedTextColor = TextPrimary
+                                        unfocusedTextColor = TextPrimary,
+                                        cursorColor = BurntSienna,
+                                        focusedContainerColor = WarmSurface,
+                                        unfocusedContainerColor = WarmSurface
                                     ),
                                     modifier = Modifier.weight(1f),
                                     singleLine = true
@@ -197,7 +217,7 @@ fun IdentitySettingsScreen(
                                         isEditingAlias = false
                                     }
                                 ) {
-                                    Icon(imageVector = Icons.Default.Check, contentDescription = "Save", tint = EmeraldAccent)
+                                    Icon(imageVector = Icons.Default.Check, contentDescription = "Save", tint = BurntSienna)
                                 }
                             }
                         } else {
@@ -210,6 +230,7 @@ fun IdentitySettingsScreen(
                                     text = myAlias,
                                     color = TextPrimary,
                                     fontSize = 18.sp,
+                                    fontFamily = EBGaramondFamily,
                                     fontWeight = FontWeight.Bold
                                 )
                                 IconButton(
@@ -225,29 +246,63 @@ fun IdentitySettingsScreen(
 
                         Spacer(modifier = Modifier.height(12.dp))
 
-                        // 64-bit Hex Node ID
-                        Text(text = "NODE ID (64-BIT HEX)", color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        Text(
-                            text = viewModel.myNodeIdHex,
-                            color = CyanAccent,
-                            fontSize = 13.sp,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.SemiBold
-                        )
+                        // 64-bit Hex Node ID with copy action
+                        Text(text = "NODE ID (64-BIT HEX)", color = TextSecondary, fontSize = 11.sp, fontFamily = ManropeFamily, fontWeight = FontWeight.Bold)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    clipboardManager.setText(AnnotatedString(viewModel.myNodeIdHex))
+                                    Toast.makeText(context, "Node ID copied", Toast.LENGTH_SHORT).show()
+                                }
+                                .padding(vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = viewModel.myNodeIdHex,
+                                color = DustyRose,
+                                fontSize = 13.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Icon(
+                                imageVector = Icons.Default.ContentCopy,
+                                contentDescription = "Copy Node ID",
+                                tint = TextMuted,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
 
                         Spacer(modifier = Modifier.height(10.dp))
 
-                        // Public Key Fingerprint
-                        Text(text = "X25519 FINGERPRINT", color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(imageVector = Icons.Default.Fingerprint, contentDescription = null, tint = EmeraldAccent, modifier = Modifier.size(16.dp))
+                        // Public Key Fingerprint with copy action
+                        Text(text = "X25519 FINGERPRINT", color = TextSecondary, fontSize = 11.sp, fontFamily = ManropeFamily, fontWeight = FontWeight.Bold)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    clipboardManager.setText(AnnotatedString(viewModel.myFingerprint))
+                                    Toast.makeText(context, "Fingerprint copied", Toast.LENGTH_SHORT).show()
+                                }
+                                .padding(vertical = 2.dp)
+                        ) {
+                            Icon(imageVector = Icons.Default.Fingerprint, contentDescription = null, tint = BurntSienna, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
                                 text = viewModel.myFingerprint,
-                                color = EmeraldAccent,
+                                color = BurntSienna,
                                 fontSize = 13.sp,
                                 fontFamily = FontFamily.Monospace,
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Icon(
+                                imageVector = Icons.Default.ContentCopy,
+                                contentDescription = "Copy Fingerprint",
+                                tint = TextMuted,
+                                modifier = Modifier.size(16.dp)
                             )
                         }
                     }
@@ -257,16 +312,17 @@ fun IdentitySettingsScreen(
             // Security & Privacy Settings Card
             item {
                 Card(
-                    colors = CardDefaults.cardColors(containerColor = DarkSurface),
-                    shape = RoundedCornerShape(14.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, DarkCardBorder),
+                    colors = CardDefaults.cardColors(containerColor = WarmSurface),
+                    shape = RoundedCornerShape(8.dp),
+                    border = androidx.compose.foundation.BorderStroke(0.8.dp, WarmCardBorder),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text(
                             text = "SECURITY & PRIVACY",
-                            color = EmeraldAccent,
+                            color = BurntSienna,
                             fontSize = 12.sp,
+                            fontFamily = ManropeFamily,
                             fontWeight = FontWeight.Bold,
                             letterSpacing = 0.5.sp
                         )
@@ -282,20 +338,22 @@ fun IdentitySettingsScreen(
                                     text = "App Lock (Biometric / PIN)",
                                     color = TextPrimary,
                                     fontSize = 14.sp,
-                                    fontWeight = FontWeight.Medium
+                                    fontFamily = ManropeFamily,
+                                    fontWeight = FontWeight.SemiBold
                                 )
                                 Text(
                                     text = "Require fingerprint or screen lock PIN to open app",
                                     color = TextSecondary,
-                                    fontSize = 11.sp
+                                    fontSize = 11.sp,
+                                    fontFamily = ManropeFamily
                                 )
                             }
                             Switch(
                                 checked = isAppLockEnabled,
                                 onCheckedChange = { viewModel.setAppLockEnabled(it) },
                                 colors = SwitchDefaults.colors(
-                                    checkedThumbColor = EmeraldAccent,
-                                    checkedTrackColor = Color(0xFF00381C)
+                                    checkedThumbColor = BurntSienna,
+                                    checkedTrackColor = BurntSiennaContainer
                                 )
                             )
                         }
@@ -312,16 +370,17 @@ fun IdentitySettingsScreen(
             // Diagnostics Card
             item {
                 Card(
-                    colors = CardDefaults.cardColors(containerColor = DarkSurface),
-                    shape = RoundedCornerShape(14.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, DarkCardBorder),
+                    colors = CardDefaults.cardColors(containerColor = WarmSurface),
+                    shape = RoundedCornerShape(8.dp),
+                    border = androidx.compose.foundation.BorderStroke(0.8.dp, WarmCardBorder),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text(
                             text = "DIAGNOSTICS & PROTOCOL ENGINE",
-                            color = EmeraldAccent,
+                            color = BurntSienna,
                             fontSize = 12.sp,
+                            fontFamily = ManropeFamily,
                             fontWeight = FontWeight.Bold,
                             letterSpacing = 0.5.sp
                         )
@@ -342,40 +401,55 @@ fun IdentitySettingsScreen(
             item {
                 Button(
                     onClick = { viewModel.announcePresence() },
-                    colors = ButtonDefaults.buttonColors(containerColor = DarkSurfaceVariant),
-                    shape = RoundedCornerShape(10.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, DarkCardBorder),
+                    colors = ButtonDefaults.buttonColors(containerColor = WarmSurfaceContainer),
+                    shape = RoundedCornerShape(8.dp),
+                    border = androidx.compose.foundation.BorderStroke(0.8.dp, WarmCardBorder),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Re-broadcast Presence Announce", color = TextPrimary, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        text = "Re-broadcast Presence Announce",
+                        color = TextPrimary,
+                        fontFamily = ManropeFamily,
+                        fontWeight = FontWeight.SemiBold
+                    )
                 }
             }
 
             item {
                 Button(
                     onClick = { showClearDialog = true },
-                    colors = ButtonDefaults.buttonColors(containerColor = DarkSurfaceVariant),
-                    shape = RoundedCornerShape(10.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, DarkCardBorder),
+                    colors = ButtonDefaults.buttonColors(containerColor = WarmSurfaceContainer),
+                    shape = RoundedCornerShape(8.dp),
+                    border = androidx.compose.foundation.BorderStroke(0.8.dp, WarmCardBorder),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Icon(imageVector = Icons.Default.Delete, contentDescription = null, tint = TextMuted, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Clear Messages & History", color = TextPrimary, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        text = "Clear Messages & History",
+                        color = TextPrimary,
+                        fontFamily = ManropeFamily,
+                        fontWeight = FontWeight.SemiBold
+                    )
                 }
             }
 
             item {
                 Button(
                     onClick = { showPanicDialog = true },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3B0000)),
-                    shape = RoundedCornerShape(10.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, RedAccent),
+                    colors = ButtonDefaults.buttonColors(containerColor = WarmSurfaceContainer),
+                    shape = RoundedCornerShape(8.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, WarmRed),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Icon(imageVector = Icons.Default.Delete, contentDescription = null, tint = RedAccent, modifier = Modifier.size(16.dp))
+                    Icon(imageVector = Icons.Default.Delete, contentDescription = null, tint = WarmRed, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("🚨 Emergency Panic Duress Wipe", color = RedAccent, fontWeight = FontWeight.Bold)
+                    Text(
+                        text = "🚨 Emergency Panic Duress Wipe",
+                        color = WarmRed,
+                        fontFamily = ManropeFamily,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
         }
@@ -387,10 +461,22 @@ fun IdentitySettingsScreen(
             onDismissRequest = { showQrDialog = false },
             confirmButton = {
                 TextButton(onClick = { showQrDialog = false }) {
-                    Text("Close", color = EmeraldAccent)
+                    Text(
+                        text = "Close",
+                        color = BurntSienna,
+                        fontFamily = ManropeFamily,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             },
-            title = { Text("Node Identity QR", color = TextPrimary, fontWeight = FontWeight.Bold) },
+            title = {
+                Text(
+                    text = "Node Identity QR",
+                    color = TextPrimary,
+                    fontFamily = EBGaramondFamily,
+                    fontWeight = FontWeight.Bold
+                )
+            },
             text = {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -402,18 +488,20 @@ fun IdentitySettingsScreen(
                             contentDescription = "Identity QR Code",
                             modifier = Modifier
                                 .size(240.dp)
-                                .clip(RoundedCornerShape(12.dp))
+                                .clip(RoundedCornerShape(8.dp))
+                                .border(0.8.dp, WarmCardBorder, RoundedCornerShape(8.dp))
                         )
                     }
                     Spacer(modifier = Modifier.height(12.dp))
                     Text(
                         text = "Scan to verify X25519 public key fingerprint",
                         color = TextSecondary,
+                        fontFamily = ManropeFamily,
                         fontSize = 12.sp
                     )
                 }
             },
-            containerColor = DarkSurface
+            containerColor = WarmSurface
         )
     }
 
@@ -428,23 +516,41 @@ fun IdentitySettingsScreen(
                         showClearDialog = false
                     }
                 ) {
-                    Text("Clear Messages", color = RedAccent)
+                    Text(
+                        text = "Clear Messages",
+                        color = WarmRed,
+                        fontFamily = ManropeFamily,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showClearDialog = false }) {
-                    Text("Cancel", color = TextSecondary)
+                    Text(
+                        text = "Cancel",
+                        color = TextSecondary,
+                        fontFamily = ManropeFamily
+                    )
                 }
             },
-            title = { Text("Clear Messages & History?", color = TextPrimary, fontWeight = FontWeight.Bold) },
-            text = {
+            title = {
                 Text(
-                    "This will delete all stored message history, peer records, and packet telemetry. Your cryptographic identity keypair will be preserved.",
-                    color = TextSecondary,
-                    fontSize = 13.sp
+                    text = "Clear Messages & History?",
+                    color = TextPrimary,
+                    fontFamily = EBGaramondFamily,
+                    fontWeight = FontWeight.Bold
                 )
             },
-            containerColor = DarkSurface
+            text = {
+                Text(
+                    text = "This will delete all stored message history, peer records, and packet telemetry. Your cryptographic identity keypair will be preserved.",
+                    color = TextSecondary,
+                    fontFamily = ManropeFamily,
+                    fontSize = 13.sp,
+                    lineHeight = 18.sp
+                )
+            },
+            containerColor = WarmSurface
         )
     }
 
@@ -459,24 +565,41 @@ fun IdentitySettingsScreen(
                         showPanicDialog = false
                     }
                 ) {
-                    Text("NUKE & WIPE EVERYTHING", color = RedAccent, fontWeight = FontWeight.Black)
+                    Text(
+                        text = "NUKE & WIPE EVERYTHING",
+                        color = WarmRed,
+                        fontFamily = ManropeFamily,
+                        fontWeight = FontWeight.Black
+                    )
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showPanicDialog = false }) {
-                    Text("Cancel", color = TextSecondary)
+                    Text(
+                        text = "Cancel",
+                        color = TextSecondary,
+                        fontFamily = ManropeFamily
+                    )
                 }
             },
-            title = { Text("🚨 EMERGENCY PANIC WIPE", color = RedAccent, fontWeight = FontWeight.Bold) },
+            title = {
+                Text(
+                    text = "🚨 EMERGENCY PANIC WIPE",
+                    color = WarmRed,
+                    fontFamily = EBGaramondFamily,
+                    fontWeight = FontWeight.Bold
+                )
+            },
             text = {
                 Text(
-                    "WARNING: This will instantly and irreversibly destroy your X25519 private keys from Android Keystore, purge the SQLCipher encrypted database, and wipe all messages, contacts, and logs. Use in high-threat duress situations.",
+                    text = "WARNING: This will instantly and irreversibly destroy your X25519 private keys from Android Keystore, purge the SQLCipher encrypted database, and wipe all messages, contacts, and logs. Use in high-threat duress situations.",
                     color = TextPrimary,
+                    fontFamily = ManropeFamily,
                     fontSize = 13.sp,
                     lineHeight = 18.sp
                 )
             },
-            containerColor = Color(0xFF1E0000)
+            containerColor = WarmSurface
         )
     }
 }
@@ -489,11 +612,17 @@ fun DiagnosticRow(label: String, value: String, isOk: Boolean) {
             .padding(vertical = 4.dp),
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Text(text = label, color = TextSecondary, fontSize = 12.sp)
+        Text(
+            text = label,
+            color = TextSecondary,
+            fontSize = 12.sp,
+            fontFamily = ManropeFamily
+        )
         Text(
             text = value,
-            color = if (isOk) EmeraldAccent else AmberAccent,
+            color = if (isOk) WarmGreen else WarmAmber,
             fontSize = 12.sp,
+            fontFamily = ManropeFamily,
             fontWeight = FontWeight.Medium
         )
     }

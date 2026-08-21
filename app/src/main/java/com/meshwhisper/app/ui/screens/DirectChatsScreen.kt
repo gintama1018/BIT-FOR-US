@@ -270,8 +270,13 @@ fun InboxPeerRow(
                         }
                         Spacer(modifier = Modifier.width(4.dp))
                     }
+                    val previewText = when (latestMessage.mediaType) {
+                        com.meshwhisper.app.data.model.MediaType.IMAGE -> if (latestMessage.text.isNotBlank() && latestMessage.text != "📷 Photo") "📷 ${latestMessage.text}" else "📷 Photo"
+                        com.meshwhisper.app.data.model.MediaType.VOICE -> "🎤 Voice message"
+                        else -> latestMessage.text
+                    }
                     Text(
-                        text = latestMessage.text,
+                        text = previewText,
                         color = TextSecondary,
                         fontSize = 13.sp,
                         maxLines = 1,

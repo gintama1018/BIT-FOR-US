@@ -29,6 +29,12 @@ enum class MessageStatus {
     FAILED
 }
 
+enum class MediaType {
+    NONE,
+    IMAGE,
+    VOICE
+}
+
 @Entity(tableName = "messages")
 data class MessageEntity(
     @PrimaryKey val messageId: String,
@@ -40,7 +46,12 @@ data class MessageEntity(
     val isOutgoing: Boolean,
     val isBroadcast: Boolean,
     val status: MessageStatus = MessageStatus.SENT,
-    val hopCount: Int = 0
+    val hopCount: Int = 0,
+    val mediaType: MediaType = MediaType.NONE,
+    val mediaUri: String? = null,
+    val mediaSizeBytes: Long = 0L,
+    val mediaProgress: Float = 1.0f,
+    val mediaDurationMs: Long = 0L
 )
 
 @Entity(tableName = "store_forward_queue")

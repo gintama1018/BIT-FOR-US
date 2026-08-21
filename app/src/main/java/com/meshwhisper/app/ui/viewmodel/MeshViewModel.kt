@@ -121,9 +121,39 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         _isAppLockEnabled.value = enabled
     }
 
+    val audioRecorder = com.meshwhisper.app.media.AudioRecorder(application)
+    val audioPlayer = com.meshwhisper.app.media.AudioPlayer()
+
+    fun sendMediaDirect(
+        recipientNodeId: Long,
+        mediaType: com.meshwhisper.app.data.model.MediaType,
+        mediaBytes: ByteArray,
+        caption: String = "",
+        durationMs: Long = 0L
+    ) {
+        viewModelScope.launch {
+            router.sendMediaDirect(recipientNodeId, mediaType, mediaBytes, caption, durationMs)
+        }
+    }
+
+    fun sendMediaBroadcast(
+        mediaType: com.meshwhisper.app.data.model.MediaType,
+        mediaBytes: ByteArray,
+        caption: String = "",
+        durationMs: Long = 0L
+    ) {
+        viewModelScope.launch {
+            router.sendMediaBroadcast(mediaType, mediaBytes, caption, durationMs)
+        }
+    }
+
     fun emergencyPanicWipe() {
         viewModelScope.launch {
+            audioPlayer.stop()
             com.meshwhisper.app.data.MeshDatabase.executeSecureWipe(app, database)
+            // Clean local media directory
+            val mediaDir = java.io.File(app.filesDir, "media")
+            mediaDir.deleteRecursively()
             cryptoEngine.regenerateIdentity()
             setAppLockEnabled(false)
             _myAlias.value = "Node-${cryptoEngine.nodeIdHex.takeLast(4)}"
@@ -133,11 +163,20 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearAllData() {
         viewModelScope.launch {
+            audioPlayer.stop()
             database.messageDao().deleteAll()
             database.peerDao().deleteAll()
             database.packetLogDao().deleteAll()
             database.processedPacketDao().deleteAll()
+            database.topologyEdgeDao().deleteAll()
+            val mediaDir = java.io.File(app.filesDir, "media")
+            mediaDir.deleteRecursively()
         }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        audioPlayer.stop()
     }
 
     fun startService() {

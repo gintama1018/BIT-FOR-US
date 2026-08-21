@@ -228,6 +228,34 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ---
 
-## 10. License
+---
+
+## 10. College Event Multi-Floor Deployment Checklist 🏢
+
+Bluetooth Low Energy (BLE) signals travel 10–30 meters in open spaces, but degrade severely through reinforced concrete and rebar floor slabs. For multi-floor college events, follow this deployment protocol:
+
+```
+[4th Floor: Room 402] ───BLE───▶ [Stairwell Bridge Node #4]
+                                            │ (Open stair airgap)
+                                            ▼
+[3rd Floor: Lab 301]  ◀───BLE─── [Stairwell Bridge Node #3]
+                                            │
+                                            ▼
+[2nd Floor: Aud-2]    ◀───BLE─── [Stairwell Bridge Node #2]
+                                            │
+                                            ▼
+[1st Floor: Lobby]    ◀───BLE─── [Stairwell Bridge Node #1]
+```
+
+### Pre-Event Operational Checklist:
+- [ ] **Staircase Bridge Placement**: Station one dedicated "bridge" device (or volunteer) at every staircase landing. Stairwells provide an uninterrupted open-air vertical corridor between floors.
+- [ ] **Avoid Elevator Shafts**: Metal elevator enclosures and dense structural shafts act as Faraday cages that block 2.4 GHz BLE signals completely. Do not rely on elevator areas for mesh propagation.
+- [ ] **Foreground Service & Battery Optimization**: Ensure all bridge devices have **MeshWhisper Foreground Service** active and OS battery optimization disabled (`Settings -> Apps -> MeshWhisper -> Battery -> Unrestricted`). This prevents OEM task killers (MIUI, ColorOS, OneUI) from suspending background BLE scanning.
+- [ ] **Pre-Event End-to-End Hop Verification**: Send a test text message from the top floor to the lobby and verify in the chat bubble that the hop count shows `⚡ 3 hops (Relayed)`.
+- [ ] **Flood Bandwidth Discipline**: Media chunk transfers use `MEDIA_TTL = 4` and paced transmissions (`delay(70L)`) to preserve bandwidth. Text messages use `DEFAULT_TTL = 7` to traverse up to 6–7 serial hops.
+
+---
+
+## 11. License
 
 Developed for decentralized, open off-grid communication. Apache 2.0 / MIT License.

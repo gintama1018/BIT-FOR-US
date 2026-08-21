@@ -13,7 +13,9 @@ enum class PacketType(val code: Byte) {
     DIRECT_MESSAGE(0x01),
     KEY_EXCHANGE(0x02),
     ACK(0x03),
-    PEER_ANNOUNCE(0x04);
+    PEER_ANNOUNCE(0x04),
+    MEDIA_INIT(0x05),
+    MEDIA_CHUNK(0x06);
 
     companion object {
         fun fromCode(code: Byte): PacketType? {
@@ -35,10 +37,12 @@ data class MeshPacket(
     companion object {
         const val BROADCAST_RECIPIENT_ID: Long = -1L // 0xFFFFFFFFFFFFFFFFL in unsigned
         const val DEFAULT_TTL: Int = 7
+        const val MEDIA_TTL: Int = 4 // Lower TTL to protect flood mesh bandwidth
         const val HEADER_SIZE: Int = 40
         const val AUTH_TAG_SIZE: Int = 16
         const val OVERHEAD_SIZE: Int = HEADER_SIZE + AUTH_TAG_SIZE // 56 bytes
         const val MAX_PAYLOAD_SIZE: Int = 2048 // Suitable for BLE MTU fragment/chunking
+        const val CHUNK_PAYLOAD_SIZE: Int = 1800 // Payload byte slice per MEDIA_CHUNK
 
         /**
          * Serializes a MeshPacket into a compact binary byte array.

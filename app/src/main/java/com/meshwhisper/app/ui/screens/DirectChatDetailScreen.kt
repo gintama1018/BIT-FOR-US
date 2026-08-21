@@ -279,7 +279,8 @@ fun DirectChatDetailScreen(
                     DirectMessageBubble(
                         msg = msg,
                         isFirstInRun = isFirstInRun,
-                        isLastInRun = isLastInRun
+                        isLastInRun = isLastInRun,
+                        viewModel = viewModel
                     )
 
                     if (isLastInRun) {
@@ -314,6 +315,10 @@ fun DirectChatDetailScreen(
                         textInput = ""
                     }
                 },
+                onSendMedia = { mediaType, bytes, caption, durationMs ->
+                    viewModel.sendMediaDirect(peerNodeId, mediaType, bytes, caption, durationMs)
+                },
+                audioRecorder = viewModel.audioRecorder,
                 placeholder = "Message..."
             )
         }
@@ -351,7 +356,8 @@ fun DateSeparatorPill(timestamp: Long) {
 fun DirectMessageBubble(
     msg: MessageEntity,
     isFirstInRun: Boolean,
-    isLastInRun: Boolean
+    isLastInRun: Boolean,
+    viewModel: MeshViewModel? = null
 ) {
     val isMe = msg.isOutgoing
     val timeFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
@@ -390,12 +396,33 @@ fun DirectMessageBubble(
                 .padding(start = 12.dp, top = 8.dp, end = 12.dp, bottom = 6.dp)
         ) {
             Column {
-                Text(
-                    text = msg.text,
-                    color = TextPrimary,
-                    fontSize = 14.sp,
-                    lineHeight = 19.sp
-                )
+                when (msg.mediaType) {
+                    com.meshwhisper.app.data.model.MediaType.IMAGE -> {
+                        com.meshwhisper.app.ui.components.ImageMessageBubble(
+                            message = msg,
+                            isOutgoing = isMe
+                        )
+                    }
+                    com.meshwhisper.app.data.model.MediaType.VOICE -> {
+                        if (viewModel != null) {
+                            com.meshwhisper.app.ui.components.VoiceNoteBubble(
+                                message = msg,
+                                isOutgoing = isMe,
+                                audioPlayer = viewModel.audioPlayer
+                            )
+                        } else {
+                            Text(text = "🎤 Voice note", color = TextPrimary, fontSize = 14.sp)
+                        }
+                    }
+                    else -> {
+                        Text(
+                            text = msg.text,
+                            color = TextPrimary,
+                            fontSize = 14.sp,
+                            lineHeight = 19.sp
+                        )
+                    }
+                }
                 Spacer(modifier = Modifier.height(3.dp))
                 Row(
                     modifier = Modifier.align(Alignment.End),

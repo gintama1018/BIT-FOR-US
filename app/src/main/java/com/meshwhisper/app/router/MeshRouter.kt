@@ -41,6 +41,18 @@ class MeshRouter(
     private val _totalPacketsReceived = MutableStateFlow(0)
     val totalPacketsReceived: StateFlow<Int> = _totalPacketsReceived.asStateFlow()
 
+    val mediaTransferManager = com.meshwhisper.app.media.MediaTransferManager(
+        context = context,
+        database = database,
+        cryptoEngine = cryptoEngine,
+        packetBroadcaster = { bleEngine.broadcastPacket(it) },
+        ackSender = { recipientId, msgId ->
+            scope.launch {
+                sendAck(recipientId, msgId)
+            }
+        }
+    )
+
     init {
         bleEngine.onPacketReceivedListener = { packetBytes, ingressAddress ->
             handleIncomingPacket(packetBytes, ingressAddress)
@@ -58,10 +70,19 @@ class MeshRouter(
      * Entry point for incoming raw packets from BLE.
      */
     fun handleIncomingPacket(rawBytes: ByteArray, ingressAddress: String? = null) {
-        val packet = MeshPacket.deserialize(rawBytes) ?: return
+        val packet = MeshPacket.deserialize(rawBytes) ?: run {
+            Log.w(tag, "Failed to deserialize packet (${rawBytes.size} bytes)")
+            return
+        }
+
         _totalPacketsReceived.value += 1
 
-        // Replay / Timestamp sanity check (allow ±10 minutes clock drift for live mesh packets)
+        // Ignore own echoes
+        if (packet.senderId == cryptoEngine.nodeId) {
+            return
+        }
+
+        // Anti-Replay: Timestamp freshness window check (5 minutes in past, 10 minutes in future)
         val nowSec = System.currentTimeMillis() / 1000L
         val packetAge = nowSec - packet.timestamp
         if (packetAge > 600 || packetAge < -300) {
@@ -113,6 +134,12 @@ class MeshRouter(
                 }
                 PacketType.ACK -> {
                     handleAck(packet, rawBytes, ingressAddress)
+                }
+                PacketType.MEDIA_INIT -> {
+                    handleMediaInit(packet, rawBytes, ingressAddress)
+                }
+                PacketType.MEDIA_CHUNK -> {
+                    handleMediaChunk(packet, rawBytes, ingressAddress)
                 }
             }
         }
@@ -383,9 +410,80 @@ class MeshRouter(
         }
     }
 
+    private suspend fun handleMediaInit(packet: MeshPacket, rawBytes: ByteArray, ingressAddress: String?) {
+        val isForMe = (packet.recipientId == cryptoEngine.nodeId || packet.recipientId == MeshPacket.BROADCAST_RECIPIENT_ID)
+        val isBroadcast = (packet.recipientId == MeshPacket.BROADCAST_RECIPIENT_ID)
+
+        if (isForMe) {
+            val peer = database.peerDao().getPeerById(packet.senderId)
+            val senderAlias = peer?.alias ?: "Node-${String.format("%016X", packet.senderId).takeLast(4)}"
+            mediaTransferManager.handleMediaInit(packet, senderAlias, isBroadcast)
+            logPacket("RX", packet, rawBytes.size, "Received MEDIA_INIT from $senderAlias")
+        }
+
+        // Live flood relay (EXCLUDED from StoreForwardDao to protect DB footprint)
+        if (packet.ttl > 1 && (!isForMe || isBroadcast)) {
+            val relayedPacket = packet.decrementTtl()
+            val relayedBytes = MeshPacket.serialize(relayedPacket)
+            bleEngine.broadcastPacket(relayedBytes, ingressAddress)
+            _relayedPacketsCount.value += 1
+            logPacket("RELAY", relayedPacket, relayedBytes.size, "Relaying MEDIA_INIT from ${packet.senderId}")
+        }
+    }
+
+    private suspend fun handleMediaChunk(packet: MeshPacket, rawBytes: ByteArray, ingressAddress: String?) {
+        val isForMe = (packet.recipientId == cryptoEngine.nodeId || packet.recipientId == MeshPacket.BROADCAST_RECIPIENT_ID)
+        val isBroadcast = (packet.recipientId == MeshPacket.BROADCAST_RECIPIENT_ID)
+
+        if (isForMe) {
+            mediaTransferManager.handleMediaChunk(packet, isBroadcast)
+            logPacket("RX", packet, rawBytes.size, "Received MEDIA_CHUNK from ${packet.senderId}")
+        }
+
+        // Live flood relay (EXCLUDED from StoreForwardDao to protect DB footprint)
+        if (packet.ttl > 1 && (!isForMe || isBroadcast)) {
+            val relayedPacket = packet.decrementTtl()
+            val relayedBytes = MeshPacket.serialize(relayedPacket)
+            bleEngine.broadcastPacket(relayedBytes, ingressAddress)
+            _relayedPacketsCount.value += 1
+            logPacket("RELAY", relayedPacket, relayedBytes.size, "Relaying MEDIA_CHUNK from ${packet.senderId}")
+        }
+    }
+
     // =========================================================================
     // OUTBOUND MESSAGING APIS
     // =========================================================================
+
+    suspend fun sendMediaDirect(
+        recipientNodeId: Long,
+        mediaType: com.meshwhisper.app.data.model.MediaType,
+        mediaBytes: ByteArray,
+        caption: String = "",
+        durationMs: Long = 0L
+    ): String {
+        return mediaTransferManager.sendMedia(
+            recipientNodeId = recipientNodeId,
+            mediaType = mediaType,
+            mediaBytes = mediaBytes,
+            caption = caption,
+            durationMs = durationMs
+        )
+    }
+
+    suspend fun sendMediaBroadcast(
+        mediaType: com.meshwhisper.app.data.model.MediaType,
+        mediaBytes: ByteArray,
+        caption: String = "",
+        durationMs: Long = 0L
+    ): String {
+        return mediaTransferManager.sendMedia(
+            recipientNodeId = MeshPacket.BROADCAST_RECIPIENT_ID,
+            mediaType = mediaType,
+            mediaBytes = mediaBytes,
+            caption = caption,
+            durationMs = durationMs
+        )
+    }
 
     suspend fun announcePresence() {
         val aliasBytes = cryptoEngine.alias.toByteArray(Charsets.UTF_8)

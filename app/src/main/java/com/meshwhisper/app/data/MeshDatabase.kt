@@ -38,7 +38,7 @@ import javax.crypto.spec.SecretKeySpec
         ProcessedPacketEntity::class,
         TopologyEdgeEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class MeshDatabase : RoomDatabase() {

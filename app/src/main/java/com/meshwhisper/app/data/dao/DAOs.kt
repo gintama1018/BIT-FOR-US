@@ -74,6 +74,9 @@ interface MessageDao {
     @Query("UPDATE messages SET status = :status WHERE messageId = :messageId")
     suspend fun updateStatus(messageId: String, status: MessageStatus)
 
+    @Query("UPDATE messages SET mediaProgress = :progress, mediaUri = :mediaUri, status = :status WHERE messageId = :messageId")
+    suspend fun updateMediaTransfer(messageId: String, progress: Float, mediaUri: String?, status: MessageStatus)
+
     @Query("DELETE FROM messages")
     suspend fun deleteAll()
 }

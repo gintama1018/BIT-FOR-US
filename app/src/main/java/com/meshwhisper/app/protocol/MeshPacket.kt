@@ -117,6 +117,31 @@ data class MeshPacket(
                 null
             }
         }
+        fun computeAad(
+            type: PacketType,
+            messageId: UUID,
+            senderId: Long,
+            recipientId: Long,
+            timestamp: Long
+        ): ByteArray {
+            val buffer = ByteBuffer.allocate(37).order(ByteOrder.BIG_ENDIAN)
+            buffer.put(type.code)
+            buffer.putLong(messageId.mostSignificantBits)
+            buffer.putLong(messageId.leastSignificantBits)
+            buffer.putLong(senderId)
+            buffer.putLong(recipientId)
+            buffer.putInt((timestamp and 0xFFFFFFFFL).toInt())
+            return buffer.array()
+        }
+    }
+
+    /**
+     * Serializes immutable header fields into canonical bytes used as AEAD Additional Authenticated Data (AAD).
+     * Binds message type, message ID, sender ID, recipient ID, and timestamp to the AES-GCM authentication tag.
+     * Any tampering with these fields by intermediary relay nodes will cause AEAD decryption failure.
+     */
+    fun getAuthenticatedHeaderBytes(): ByteArray {
+        return computeAad(type, messageId, senderId, recipientId, timestamp)
     }
 
     /**

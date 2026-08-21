@@ -23,6 +23,7 @@
    [Phone B (Relay)] ──BLE──▶ [Phone C (Relay)] ──BLE──▶ [Phone D (Recipient)]
 (Cannot read payload)       (Cannot read payload)           (Decrypted locally)
 ```
+*(Note: Complete payload secrecy across intermediate relays applies to the end-to-end encrypted `DIRECT_MESSAGE` channel. The `BROADCAST_MESSAGE` channel is encrypted with a shared mesh community key for open public rooms).*
 
 ---
 
@@ -32,23 +33,24 @@
 graph TD
     subgraph UI ["Jetpack Compose UI (Material 3 Dark Theme)"]
         PublicChat["Public Mesh Channel"]
-        DirectChat["Private Encrypted DMs (E2EE)"]
+        DirectChat["Private Encrypted DMs (E2EE + Safety Alerts)"]
         MeshRadar["Mesh Topology Radar Canvas"]
         PacketLog["Live Packet Telemetry Inspector"]
         Identity["Identity & TOFU QR Manager"]
     end
 
-    subgraph Core ["Mesh Core & Routing Engine"]
-        MeshService["MeshForegroundService"]
-        MeshRouter["MeshRouter (Flood + TTL + Dedup Cache)"]
+    subgraph Core ["Mesh Core & Security Engine"]
+        MeshService["MeshForegroundService (Continuous Wakelock)"]
+        MeshRouter["MeshRouter (Flood + TTL + Dedup + Replay Window)"]
         StoreForward["Store-and-Forward Cache Queue"]
-        CryptoEngine["CryptoEngine (X25519 + HKDF + AES-256-GCM)"]
+        CryptoEngine["CryptoEngine (X25519 + HKDF + AES-256-GCM + AAD)"]
+        KeyStore["Android Keystore (Master Key Protection)"]
     end
 
     subgraph BLE ["Dual-Role BLE Subsystem"]
-        Central["Central Engine (Scanner + GATT Client)"]
-        Peripheral["Peripheral Engine (Advertiser + GATT Server)"]
-        Framer["BleFrameFramer (512B MTU Chunking / Reassembly)"]
+        Central["Central Engine (Scanner + GATT Client + MTU 512)"]
+        Peripheral["Peripheral Engine (Advertiser + GATT Server + MTU Tracking)"]
+        Framer["BleFrameFramer (Negotiated MTU Chunking / Reassembly)"]
     end
 
     subgraph Storage ["Local Persistence (Room DB)"]
@@ -58,6 +60,7 @@ graph TD
     UI --> MeshService
     MeshService --> MeshRouter
     MeshRouter --> CryptoEngine
+    CryptoEngine --> KeyStore
     MeshRouter --> StoreForward
     MeshRouter --> Framer
     Framer --> Central
@@ -67,15 +70,16 @@ graph TD
 
 ---
 
-## 3. Simultaneous Dual-Role BLE
+## 3. Simultaneous Dual-Role BLE & MTU Optimization
 
 Every device runs both roles concurrently:
 
 | Role | Component | Responsibility |
 | :--- | :--- | :--- |
-| **Peripheral** | `BluetoothLeAdvertiser` + `BluetoothGattServer` | Advertises custom Service UUID `0000B170...`, hosts Write (`0000B171...`) and Notify (`0000B172...`) characteristics. |
-| **Central** | `BluetoothLeScanner` + `BluetoothGatt` | Continuously scans for nodes, initiates GATT connections, requests MTU negotiation (up to 512 bytes), and subscribes to CCCD notifications. |
+| **Peripheral** | `BluetoothLeAdvertiser` + `BluetoothGattServer` | Advertises custom Service UUID `0000B170...`, hosts Write (`0000B171...`) and Notify (`0000B172...`) characteristics. Tracks negotiated MTU per connected central dynamically. |
+| **Central** | `BluetoothLeScanner` + `BluetoothGatt` | Continuously scans for nodes, initiates GATT connections, negotiates MTU up to 512 bytes, and subscribes to CCCD notifications. |
 | **Hardware Fallback** | `FEATURE_BLUETOOTH_LE_PERIPHERAL` check | If a budget device lacks hardware peripheral mode, it seamlessly degrades to **Central Relay Mode** (scanning, connecting, and relaying without advertising). |
+| **Flood/DoS Protection** | Per-Address Write Rate Limiting | Inbound GATT characteristic writes are rate-limited per remote MAC to protect the radio from spam/DoS attacks. |
 
 ---
 
@@ -107,15 +111,15 @@ Every device runs both roles concurrently:
 ```
 
 ### Packet Types:
-- `0x00` — `BROADCAST_MESSAGE`: Public channel broadcast across all mesh hops.
-- `0x01` — `DIRECT_MESSAGE`: End-to-end encrypted 1-to-1 message.
+- `0x00` — `BROADCAST_MESSAGE`: Public channel broadcast across all mesh hops (encrypted with shared mesh community key).
+- `0x01` — `DIRECT_MESSAGE`: Point-to-point end-to-end encrypted 1-to-1 message (unreadable by relay nodes).
 - `0x02` — `KEY_EXCHANGE`: Peer identity handshake & public key distribution.
 - `0x03` — `ACK`: Cryptographic delivery receipt returning to sender.
 - `0x04` — `PEER_ANNOUNCE`: Periodic heartbeat and discovery advertisement.
 
 ---
 
-## 5. End-to-End Cryptography (Zero Hand-Rolling)
+## 5. End-to-End Cryptography & WhatsApp/Signal-Grade Hardening
 
 ```mermaid
 sequenceDiagram
@@ -124,23 +128,30 @@ sequenceDiagram
     participant Relay as Node B (Relay Node)
     participant NodeD as Node D (David)
 
-    Note over NodeA: Generates X25519 Keypair<br/>(Curve25519)
-    Note over NodeD: Generates X25519 Keypair<br/>(Curve25519)
+    Note over NodeA: Generates X25519 Keypair (Curve25519)<br/>Private key protected by Android Keystore
+    Note over NodeD: Generates X25519 Keypair (Curve25519)<br/>Private key protected by Android Keystore
 
     NodeA->>NodeD: Peer Announce (Public Key + Alias)
-    Note over NodeA,NodeD: TOFU: Trust-On-First-Use Key Record
+    Note over NodeA,NodeD: TOFU: Trust-On-First-Use Key Record<br/>Warns if Safety Number changes
 
     NodeA->>NodeA: Calculate ECDH Shared Secret: X25519(PrivA, PubD)<br/>Derive 256-bit AES Key via HKDF-SHA256
-    NodeA->>NodeA: Encrypt Plaintext with AES-256-GCM (IV = UUID prefix)
+    NodeA->>NodeA: Encrypt Plaintext with AES-256-GCM<br/>Bind Header as AAD (Type, UUID, Sender, Recipient, Ts)
 
     NodeA->>Relay: Transmit Encrypted MeshPacket (TTL=7)
-    Note over Relay: Inspects Recipient ID (Not for me)<br/>Cannot decrypt payload (Opaque ciphertext)<br/>Decrements TTL to 6 & forwards
+    Note over Relay: Inspects Recipient ID (Not for me)<br/>Cannot decrypt payload (Opaque ciphertext)<br/>Cannot tamper with headers (Protected by AAD)<br/>Decrements TTL to 6 & forwards
     Relay->>NodeD: Transmit Encrypted MeshPacket (TTL=6)
 
-    Note over NodeD: Matches Recipient ID = My ID<br/>Calculates ECDH: X25519(PrivD, PubA)<br/>Decrypts with AES-256-GCM & Verifies AEAD Auth Tag
+    Note over NodeD: Matches Recipient ID = My ID<br/>Calculates ECDH: X25519(PrivD, PubA)<br/>Decrypts AES-256-GCM & Verifies AEAD Auth Tag + AAD Header
     NodeD->>NodeA: Transmit ACK Packet (Message Delivered)
     Note over NodeA: Message status updated from Sent (✓) to Delivered (✓✓)
 ```
+
+### Key Security Features:
+1. **AEAD Additional Authenticated Data (AAD) Binding**: All immutable packet headers (`type`, `messageId`, `senderId`, `recipientId`, `timestamp`) are fed into AES-GCM as AAD. Malicious relays cannot tamper with routing headers without triggering authentication failure on the recipient.
+2. **Hardware-Backed Android Keystore Master Key**: The X25519 identity private key is encrypted with an AES-256-GCM master key stored inside Android Keystore (backed by hardware TEE/SE). `android:allowBackup="false"` prevents USB extraction via `adb backup`.
+3. **Safety Number / Identity Change Warnings**: If a peer's announced public key changes from what was previously stored (TOFU), MeshWhisper alerts the user with an in-chat security warning banner.
+4. **Peer Blocking & Ingress Filtering**: Blocked contacts are dropped at router ingress before decryption or ACK generation.
+5. **Replay Protection**: Live packets are validated against a bounded timestamp window (±10 minutes) and deduplicated via memory cache and unique message UUIDs.
 
 ---
 
@@ -155,7 +166,7 @@ sequenceDiagram
 ## 7. App Screens & UI Features
 
 - **Public Mesh Room**: Live decentralized chat room with dynamic hop badges (`⚡ Direct` vs `⚡ 2 hops (Relayed)`).
-- **Private Encrypted DMs**: 1-to-1 conversations with delivery status checkmarks (`✓` Sent, `✓✓` Delivered ACK) and TOFU fingerprint verification.
+- **Private Encrypted DMs**: 1-to-1 conversations with delivery status checkmarks (`✓` Sent, `✓✓` Delivered ACK), TOFU fingerprint verification, safety number change alerts, and contact blocking.
 - **Mesh Topology Radar**: Interactive animated pulse canvas displaying concentric radar rings, center node ("YOU"), connected links, and multi-hop peers.
 - **Live Packet Telemetry Inspector**: Real-time diagnostic terminal streaming raw packet events (`[TX]`, `[RX]`, `[RELAY]`, `[DROP]`, `[ACK]`), byte metrics, and direction filter chips.
 - **Identity & QR Manager**: Node alias customization, 64-bit Hex ID display, X25519 fingerprint generator, and QR code generator for in-person visual verification.

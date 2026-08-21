@@ -26,6 +26,12 @@ interface PeerDao {
     @Update
     suspend fun update(peer: PeerEntity)
 
+    @Query("UPDATE peers SET isBlocked = :blocked WHERE nodeId = :nodeId")
+    suspend fun setPeerBlocked(nodeId: Long, blocked: Boolean)
+
+    @Query("UPDATE peers SET hasKeyChanged = :hasChanged, previousFingerprint = :prevFp WHERE nodeId = :nodeId")
+    suspend fun markKeyChanged(nodeId: Long, hasChanged: Boolean, prevFp: String?)
+
     @Query("DELETE FROM peers WHERE nodeId = :nodeId")
     suspend fun deletePeer(nodeId: Long)
 
@@ -41,7 +47,21 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE isBroadcast = 0 AND (senderId = :peerNodeId OR recipientId = :peerNodeId) ORDER BY timestamp ASC")
     fun getDirectMessagesForPeer(peerNodeId: Long): Flow<List<MessageEntity>>
 
-    @Query("SELECT * FROM messages WHERE isBroadcast = 0 GROUP BY CASE WHEN isOutgoing = 1 THEN recipientId ELSE senderId END ORDER BY timestamp DESC")
+    @Query("""
+        SELECT m.* FROM messages m
+        INNER JOIN (
+            SELECT 
+                CASE WHEN isOutgoing = 1 THEN recipientId ELSE senderId END AS peerId,
+                MAX(timestamp) AS maxTs
+            FROM messages
+            WHERE isBroadcast = 0
+            GROUP BY peerId
+        ) latest ON (CASE WHEN m.isOutgoing = 1 THEN m.recipientId ELSE m.senderId END) = latest.peerId
+        AND m.timestamp = latest.maxTs
+        WHERE m.isBroadcast = 0
+        GROUP BY (CASE WHEN m.isOutgoing = 1 THEN m.recipientId ELSE m.senderId END)
+        ORDER BY m.timestamp DESC
+    """)
     fun getRecentDirectConversations(): Flow<List<MessageEntity>>
 
     @Query("SELECT * FROM messages WHERE messageId = :messageId LIMIT 1")

@@ -61,6 +61,14 @@ class MeshRouter(
         val packet = MeshPacket.deserialize(rawBytes) ?: return
         _totalPacketsReceived.value += 1
 
+        // Replay / Timestamp sanity check (allow ±10 minutes clock drift for live mesh packets)
+        val nowSec = System.currentTimeMillis() / 1000L
+        val packetAge = nowSec - packet.timestamp
+        if (packetAge > 600 || packetAge < -300) {
+            logPacket("DROP", packet, rawBytes.size, "Packet dropped: timestamp outside validity window (age: ${packetAge}s)")
+            return
+        }
+
         // Loop / Deduplication check
         synchronized(dedupCache) {
             if (dedupCache.get(packet.messageId) != null) {
@@ -116,6 +124,17 @@ class MeshRouter(
         val fingerprint = CryptoEngine.generateFingerprint(pubKeyBytes)
         val pubHex = CryptoEngine.bytesToHex(pubKeyBytes)
 
+        // Check if existing peer has rotated or changed public key (TOFU safety check)
+        val existingPeer = database.peerDao().getPeerById(packet.senderId)
+        val hasKeyChanged = (existingPeer != null && existingPeer.publicKeyHex != pubHex)
+        val prevFp = if (hasKeyChanged) existingPeer?.fingerprint else existingPeer?.previousFingerprint
+        val isBlocked = existingPeer?.isBlocked ?: false
+
+        if (hasKeyChanged) {
+            Log.w(tag, "SECURITY ALERT: Safety number / Public key changed for peer ${packet.senderId}! (Old: ${existingPeer?.fingerprint}, New: $fingerprint)")
+            cryptoEngine.invalidateSessionKey(packet.senderId)
+        }
+
         val peer = PeerEntity(
             nodeId = packet.senderId,
             alias = alias,
@@ -123,7 +142,10 @@ class MeshRouter(
             fingerprint = fingerprint,
             lastSeen = System.currentTimeMillis(),
             isDirect = (packet.ttl >= MeshPacket.DEFAULT_TTL - 1),
-            hopCount = maxOf(1, MeshPacket.DEFAULT_TTL - packet.ttl)
+            hopCount = maxOf(1, MeshPacket.DEFAULT_TTL - packet.ttl),
+            isBlocked = isBlocked,
+            hasKeyChanged = hasKeyChanged || (existingPeer?.hasKeyChanged ?: false),
+            previousFingerprint = prevFp
         )
         database.peerDao().insertOrUpdate(peer)
 
@@ -147,13 +169,14 @@ class MeshRouter(
     ) {
         logPacket("RX", packet, rawBytes.size, "Broadcast msg from ${packet.senderId}")
 
-        // Decrypt public payload
+        // Decrypt public payload with AAD header verification
         try {
             val decryptedBytes = cryptoEngine.decrypt(
                 ciphertext = packet.payload,
                 authTag = packet.authTag,
                 messageId = packet.messageId,
-                aesKey = cryptoEngine.publicChannelKey
+                aesKey = cryptoEngine.publicChannelKey,
+                aad = packet.getAuthenticatedHeaderBytes()
             )
             val text = String(decryptedBytes, Charsets.UTF_8)
             val sender = database.peerDao().getPeerById(packet.senderId)
@@ -173,7 +196,7 @@ class MeshRouter(
             )
             database.messageDao().insert(messageEntity)
         } catch (e: Exception) {
-            Log.e(tag, "Failed to decrypt broadcast packet: ${e.message}")
+            Log.e(tag, "Failed to decrypt or authenticate broadcast packet (AEAD header mismatch / corrupt): ${e.message}")
         }
 
         // Flood relay if hops remain
@@ -197,6 +220,12 @@ class MeshRouter(
 
             val senderPeer = database.peerDao().getPeerById(packet.senderId)
             if (senderPeer != null) {
+                // Ingress check: Drop if peer is blocked
+                if (senderPeer.isBlocked) {
+                    logPacket("DROP", packet, rawBytes.size, "Dropped direct message from BLOCKED peer ${packet.senderId}")
+                    return
+                }
+
                 try {
                     val peerPubKey = CryptoEngine.hexToBytes(senderPeer.publicKeyHex)
                     val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey)
@@ -204,7 +233,8 @@ class MeshRouter(
                         ciphertext = packet.payload,
                         authTag = packet.authTag,
                         messageId = packet.messageId,
-                        aesKey = sessionKey
+                        aesKey = sessionKey,
+                        aad = packet.getAuthenticatedHeaderBytes()
                     )
                     val text = String(decryptedBytes, Charsets.UTF_8)
 
@@ -225,7 +255,7 @@ class MeshRouter(
                     // Send Delivery ACK back to sender
                     sendAck(packet.senderId, packet.messageId)
                 } catch (e: Exception) {
-                    Log.e(tag, "Failed to decrypt private DM: ${e.message}")
+                    Log.e(tag, "Failed to decrypt private DM (AEAD auth tag failure or header tampered): ${e.message}")
                 }
             } else {
                 Log.w(tag, "Received DM from unknown peer ${packet.senderId}, requesting announce...")
@@ -307,11 +337,21 @@ class MeshRouter(
     suspend fun sendBroadcastMessage(text: String): String {
         val msgId = UUID.randomUUID()
         val textBytes = text.toByteArray(Charsets.UTF_8)
+        val timestamp = System.currentTimeMillis() / 1000L
+
+        val aad = MeshPacket.computeAad(
+            type = PacketType.BROADCAST_MESSAGE,
+            messageId = msgId,
+            senderId = cryptoEngine.nodeId,
+            recipientId = MeshPacket.BROADCAST_RECIPIENT_ID,
+            timestamp = timestamp
+        )
 
         val encResult = cryptoEngine.encrypt(
             plaintext = textBytes,
             messageId = msgId,
-            aesKey = cryptoEngine.publicChannelKey
+            aesKey = cryptoEngine.publicChannelKey,
+            aad = aad
         )
 
         val packet = MeshPacket(
@@ -320,7 +360,7 @@ class MeshRouter(
             senderId = cryptoEngine.nodeId,
             recipientId = MeshPacket.BROADCAST_RECIPIENT_ID,
             ttl = MeshPacket.DEFAULT_TTL,
-            timestamp = System.currentTimeMillis() / 1000L,
+            timestamp = timestamp,
             payload = encResult.ciphertext,
             authTag = encResult.authTag
         )
@@ -331,7 +371,7 @@ class MeshRouter(
             recipientId = MeshPacket.BROADCAST_RECIPIENT_ID,
             senderAlias = cryptoEngine.alias,
             text = text,
-            timestamp = System.currentTimeMillis(),
+            timestamp = timestamp * 1000L,
             isOutgoing = true,
             isBroadcast = true,
             status = MessageStatus.SENT,
@@ -351,16 +391,31 @@ class MeshRouter(
 
     suspend fun sendDirectMessage(recipientNodeId: Long, text: String): String? {
         val peer = database.peerDao().getPeerById(recipientNodeId) ?: return null
+        if (peer.isBlocked) {
+            Log.w(tag, "Cannot send message to blocked peer $recipientNodeId")
+            return null
+        }
+
         val msgId = UUID.randomUUID()
         val textBytes = text.toByteArray(Charsets.UTF_8)
+        val timestamp = System.currentTimeMillis() / 1000L
 
         val peerPubKey = CryptoEngine.hexToBytes(peer.publicKeyHex)
         val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey)
 
+        val aad = MeshPacket.computeAad(
+            type = PacketType.DIRECT_MESSAGE,
+            messageId = msgId,
+            senderId = cryptoEngine.nodeId,
+            recipientId = recipientNodeId,
+            timestamp = timestamp
+        )
+
         val encResult = cryptoEngine.encrypt(
             plaintext = textBytes,
             messageId = msgId,
-            aesKey = sessionKey
+            aesKey = sessionKey,
+            aad = aad
         )
 
         val packet = MeshPacket(
@@ -369,7 +424,7 @@ class MeshRouter(
             senderId = cryptoEngine.nodeId,
             recipientId = recipientNodeId,
             ttl = MeshPacket.DEFAULT_TTL,
-            timestamp = System.currentTimeMillis() / 1000L,
+            timestamp = timestamp,
             payload = encResult.ciphertext,
             authTag = encResult.authTag
         )
@@ -380,7 +435,7 @@ class MeshRouter(
             recipientId = recipientNodeId,
             senderAlias = cryptoEngine.alias,
             text = text,
-            timestamp = System.currentTimeMillis(),
+            timestamp = timestamp * 1000L,
             isOutgoing = true,
             isBroadcast = false,
             status = MessageStatus.SENT,
@@ -422,7 +477,7 @@ class MeshRouter(
 
         val raw = MeshPacket.serialize(ackPacket)
         synchronized(dedupCache) {
-            dedupCache.put(UUID.randomUUID(), System.currentTimeMillis())
+            dedupCache.put(originalMsgId, System.currentTimeMillis())
         }
         bleEngine.broadcastPacket(raw)
         logPacket("ACK_TX", ackPacket, raw.size, "Sent ACK for msg $originalMsgId to $recipientNodeId")

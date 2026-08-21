@@ -32,7 +32,7 @@ class MeshForegroundService : Service() {
 
         val powerManager = getSystemService(POWER_SERVICE) as? PowerManager
         wakeLock = powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MeshWhisper:ServiceWakeLock")
-        wakeLock?.acquire(10 * 60 * 1000L /* 10 minutes timeout */)
+        wakeLock?.acquire()
 
         startInForeground()
 

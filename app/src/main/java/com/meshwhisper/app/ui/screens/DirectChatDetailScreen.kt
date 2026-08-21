@@ -129,6 +129,76 @@ fun DirectChatDetailScreen(
                         fontSize = 11.sp
                     )
                 }
+
+                // Block / Unblock Toggle Button
+                val isBlocked = peer?.isBlocked == true
+                androidx.compose.material3.TextButton(
+                    onClick = { viewModel.toggleBlockPeer(peerNodeId, !isBlocked) }
+                ) {
+                    Text(
+                        text = if (isBlocked) "Unblock" else "Block",
+                        color = if (isBlocked) EmeraldAccent else com.meshwhisper.app.ui.theme.RedAccent,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+
+        // Safety Number Changed Security Alert Banner (WhatsApp / Signal grade TOFU warning)
+        if (peer?.hasKeyChanged == true) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF3B1E08)),
+                shape = RoundedCornerShape(0.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, com.meshwhisper.app.ui.theme.AmberAccent),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp)
+                ) {
+                    Text(
+                        text = "⚠️ SAFETY NUMBER CHANGED",
+                        color = com.meshwhisper.app.ui.theme.AmberAccent,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "This contact's cryptographic identity key has changed (Previous: ${peer.previousFingerprint ?: "N/A"}). This happens if they reinstalled or an adversary is attempting an impersonation.",
+                        color = TextPrimary,
+                        fontSize = 11.sp,
+                        lineHeight = 15.sp
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    androidx.compose.material3.Button(
+                        onClick = { viewModel.acknowledgeSafetyWarning(peerNodeId) },
+                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = com.meshwhisper.app.ui.theme.AmberAccent),
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                    ) {
+                        Text("Trust & Verify New Safety Number", color = Color.Black, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
+        // Blocked Banner
+        if (peer?.isBlocked == true) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF2A0000)),
+                shape = RoundedCornerShape(0.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, com.meshwhisper.app.ui.theme.RedAccent),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = "🚫 You have blocked this contact. Incoming messages are dropped.",
+                    color = com.meshwhisper.app.ui.theme.RedAccent,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.padding(10.dp)
+                )
             }
         }
 
@@ -164,18 +234,34 @@ fun DirectChatDetailScreen(
             }
         }
 
-        // Message Input Field
-        ChatInputBar(
-            text = textInput,
-            onTextChanged = { textInput = it },
-            onSend = {
-                if (textInput.isNotBlank()) {
-                    viewModel.sendDirect(peerNodeId, textInput)
-                    textInput = ""
-                }
-            },
-            placeholder = "Send private message..."
-        )
+        // Message Input Field (Disabled if peer is blocked)
+        if (peer?.isBlocked == true) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(DarkSurface)
+                    .padding(16.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "Unblock this contact to send messages",
+                    color = TextMuted,
+                    fontSize = 13.sp
+                )
+            }
+        } else {
+            ChatInputBar(
+                text = textInput,
+                onTextChanged = { textInput = it },
+                onSend = {
+                    if (textInput.isNotBlank()) {
+                        viewModel.sendDirect(peerNodeId, textInput)
+                        textInput = ""
+                    }
+                },
+                placeholder = "Send private message..."
+            )
+        }
     }
 }
 

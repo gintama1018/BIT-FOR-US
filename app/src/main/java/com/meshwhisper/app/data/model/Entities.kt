@@ -13,7 +13,9 @@ data class PeerEntity(
     val isDirect: Boolean,
     val rssi: Int = 0,
     val hopCount: Int = 1,
-    val isBlocked: Boolean = false
+    val isBlocked: Boolean = false,
+    val hasKeyChanged: Boolean = false,
+    val previousFingerprint: String? = null
 ) {
     val nodeIdHex: String
         get() = String.format("%016X", nodeId)

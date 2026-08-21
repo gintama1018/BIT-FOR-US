@@ -20,7 +20,7 @@ import com.meshwhisper.app.data.model.StoreForwardEntity
         StoreForwardEntity::class,
         PacketLogEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class MeshDatabase : RoomDatabase() {

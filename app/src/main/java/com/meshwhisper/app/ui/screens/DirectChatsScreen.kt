@@ -221,6 +221,24 @@ fun PeerConversationCard(
                 Spacer(modifier = Modifier.height(4.dp))
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (peer.hasKeyChanged) {
+                        Text(
+                            text = "⚠️ Key Changed",
+                            color = com.meshwhisper.app.ui.theme.AmberAccent,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                    } else if (peer.isBlocked) {
+                        Text(
+                            text = "🚫 Blocked",
+                            color = com.meshwhisper.app.ui.theme.RedAccent,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                    }
+
                     Text(
                         text = "FP: ${peer.fingerprint.take(9)}...",
                         color = EmeraldAccent,

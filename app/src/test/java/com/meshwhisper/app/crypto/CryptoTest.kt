@@ -112,4 +112,59 @@ class CryptoTest {
             cipherDecrypt.doFinal(ciphertextWithTag)
         }
     }
+
+    @Test
+    fun testAesGcmAadHeaderBindingAndAuthentication() {
+        val (privA, pubA) = generateKeyPair()
+        val (privB, pubB) = generateKeyPair()
+        val sessionKey = deriveSharedKey(privA, pubB)
+
+        val messageId = UUID.randomUUID()
+        val senderId = 0x1122334455667788L
+        val recipientId = 0x1234567890ABCDEFL
+        val timestamp = 1720000000L
+
+        val aad = com.meshwhisper.app.protocol.MeshPacket.computeAad(
+            type = com.meshwhisper.app.protocol.PacketType.DIRECT_MESSAGE,
+            messageId = messageId,
+            senderId = senderId,
+            recipientId = recipientId,
+            timestamp = timestamp
+        )
+
+        val plaintext = "Authenticated header payload".toByteArray(Charsets.UTF_8)
+        val iv = CryptoEngine.extractIvFromUuid(messageId)
+
+        // Encrypt with AAD
+        val cipherEncrypt = Cipher.getInstance("AES/GCM/NoPadding")
+        cipherEncrypt.init(Cipher.ENCRYPT_MODE, SecretKeySpec(sessionKey, "AES"), GCMParameterSpec(128, iv))
+        cipherEncrypt.updateAAD(aad)
+        val ciphertextWithTag = cipherEncrypt.doFinal(plaintext)
+
+        // Decrypt with correct AAD
+        val cipherDecrypt = Cipher.getInstance("AES/GCM/NoPadding")
+        cipherDecrypt.init(Cipher.DECRYPT_MODE, SecretKeySpec(sessionKey, "AES"), GCMParameterSpec(128, iv))
+        cipherDecrypt.updateAAD(aad)
+        val decrypted = cipherDecrypt.doFinal(ciphertextWithTag)
+
+        assertThat(decrypted).isEqualTo(plaintext)
+
+        // Tamper with recipientId in AAD (e.g. malicious relay misrouting the DM)
+        val tamperedAad = com.meshwhisper.app.protocol.MeshPacket.computeAad(
+            type = com.meshwhisper.app.protocol.PacketType.DIRECT_MESSAGE,
+            messageId = messageId,
+            senderId = senderId,
+            recipientId = 0x7EADBEEFCAFEBABEL, // Tampered recipient!
+            timestamp = timestamp
+        )
+
+        val cipherDecryptTampered = Cipher.getInstance("AES/GCM/NoPadding")
+        cipherDecryptTampered.init(Cipher.DECRYPT_MODE, SecretKeySpec(sessionKey, "AES"), GCMParameterSpec(128, iv))
+        cipherDecryptTampered.updateAAD(tamperedAad)
+
+        // Must reject header-tampered packet with AEADBadTagException
+        assertThrows(AEADBadTagException::class.java) {
+            cipherDecryptTampered.doFinal(ciphertextWithTag)
+        }
+    }
 }

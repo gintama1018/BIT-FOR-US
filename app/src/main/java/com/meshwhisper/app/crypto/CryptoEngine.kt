@@ -2,6 +2,10 @@ package com.meshwhisper.app.crypto
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.os.Build
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import android.util.Log
 import com.meshwhisper.app.protocol.MeshPacket
 import org.bouncycastle.crypto.agreement.X25519Agreement
 import org.bouncycastle.crypto.digests.SHA256Digest
@@ -12,11 +16,14 @@ import org.bouncycastle.crypto.params.X25519KeyGenerationParameters
 import org.bouncycastle.crypto.params.X25519PrivateKeyParameters
 import org.bouncycastle.crypto.params.X25519PublicKeyParameters
 import java.nio.ByteBuffer
+import java.security.KeyStore
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
@@ -54,32 +61,127 @@ class CryptoEngine private constructor(private val context: Context) {
     val publicFingerprint: String
 
     init {
-        val storedPriv = prefs.getString(PREF_PRIVATE_KEY, null)
-        val storedPub = prefs.getString(PREF_PUBLIC_KEY, null)
-
-        if (storedPriv != null && storedPub != null) {
-            privateKeyBytes = hexToBytes(storedPriv)
-            publicKeyBytes = hexToBytes(storedPub)
-        } else {
-            val keyGen = X25519KeyPairGenerator()
-            keyGen.init(X25519KeyGenerationParameters(secureRandom))
-            val keyPair = keyGen.generateKeyPair()
-
-            val privParams = keyPair.private as X25519PrivateKeyParameters
-            val pubParams = keyPair.public as X25519PublicKeyParameters
-
-            privateKeyBytes = privParams.encoded
-            publicKeyBytes = pubParams.encoded
-
-            prefs.edit()
-                .putString(PREF_PRIVATE_KEY, bytesToHex(privateKeyBytes))
-                .putString(PREF_PUBLIC_KEY, bytesToHex(publicKeyBytes))
-                .apply()
-        }
+        val loadedKeys = loadOrGenerateIdentityKeys()
+        privateKeyBytes = loadedKeys.first
+        publicKeyBytes = loadedKeys.second
 
         nodeId = deriveNodeId(publicKeyBytes)
         nodeIdHex = String.format("%016X", nodeId)
         publicFingerprint = generateFingerprint(publicKeyBytes)
+    }
+
+    private fun loadOrGenerateIdentityKeys(): Pair<ByteArray, ByteArray> {
+        val encPrivHex = prefs.getString(PREF_PRIVATE_KEY_ENC, null)
+        val ivHex = prefs.getString(PREF_PRIVATE_KEY_IV, null)
+        val storedPubHex = prefs.getString(PREF_PUBLIC_KEY, null)
+        val legacyPrivHex = prefs.getString(PREF_LEGACY_PRIVATE_KEY, null)
+
+        // 1. Try loading Keystore-encrypted private key
+        if (encPrivHex != null && ivHex != null && storedPubHex != null) {
+            try {
+                val cipherBytes = hexToBytes(encPrivHex)
+                val iv = hexToBytes(ivHex)
+                val decryptedPriv = decryptWithKeystore(cipherBytes, iv)
+                val pubBytes = hexToBytes(storedPubHex)
+                return Pair(decryptedPriv, pubBytes)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to decrypt identity key with Keystore, checking fallback", e)
+            }
+        }
+
+        // 2. Migrate legacy unencrypted private key if present
+        if (legacyPrivHex != null && storedPubHex != null) {
+            val privBytes = hexToBytes(legacyPrivHex)
+            val pubBytes = hexToBytes(storedPubHex)
+            persistEncryptedPrivateKey(privBytes, pubBytes)
+            prefs.edit().remove(PREF_LEGACY_PRIVATE_KEY).apply()
+            return Pair(privBytes, pubBytes)
+        }
+
+        // 3. Generate new X25519 Identity Keypair
+        val keyGen = X25519KeyPairGenerator()
+        keyGen.init(X25519KeyGenerationParameters(secureRandom))
+        val keyPair = keyGen.generateKeyPair()
+
+        val privParams = keyPair.private as X25519PrivateKeyParameters
+        val pubParams = keyPair.public as X25519PublicKeyParameters
+
+        val privBytes = privParams.encoded
+        val pubBytes = pubParams.encoded
+
+        persistEncryptedPrivateKey(privBytes, pubBytes)
+        return Pair(privBytes, pubBytes)
+    }
+
+    private fun persistEncryptedPrivateKey(privBytes: ByteArray, pubBytes: ByteArray) {
+        val (encBytes, iv) = encryptWithKeystore(privBytes)
+        prefs.edit()
+            .putString(PREF_PRIVATE_KEY_ENC, bytesToHex(encBytes))
+            .putString(PREF_PRIVATE_KEY_IV, bytesToHex(iv))
+            .putString(PREF_PUBLIC_KEY, bytesToHex(pubBytes))
+            .apply()
+    }
+
+    private fun getOrCreateMasterSecretKey(): SecretKey {
+        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE)
+        keyStore.load(null)
+
+        if (keyStore.containsAlias(KEYSTORE_ALIAS)) {
+            val entry = keyStore.getEntry(KEYSTORE_ALIAS, null) as? KeyStore.SecretKeyEntry
+            if (entry != null) {
+                return entry.secretKey
+            }
+        }
+
+        val keyGenerator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
+        val spec = KeyGenParameterSpec.Builder(
+            KEYSTORE_ALIAS,
+            KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+        )
+            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+            .setKeySize(256)
+            .setRandomizedEncryptionRequired(true)
+            .build()
+
+        keyGenerator.init(spec)
+        return keyGenerator.generateKey()
+    }
+
+    private fun encryptWithKeystore(plaintext: ByteArray): Pair<ByteArray, ByteArray> {
+        return try {
+            val secretKey = getOrCreateMasterSecretKey()
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.ENCRYPT_MODE, secretKey)
+            val ciphertext = cipher.doFinal(plaintext)
+            val iv = cipher.iv
+            Pair(ciphertext, iv)
+        } catch (e: Throwable) {
+            // Software fallback for non-Android JVM / unit test environments
+            val fallbackKey = deriveKeyFromMasterSalt("SOFTWARE_FALLBACK_KEY".toByteArray(), "AT_REST".toByteArray())
+            val iv = ByteArray(12).also { secureRandom.nextBytes(it) }
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(fallbackKey, "AES"), GCMParameterSpec(128, iv))
+            val ciphertext = cipher.doFinal(plaintext)
+            Pair(ciphertext, iv)
+        }
+    }
+
+    private fun decryptWithKeystore(ciphertext: ByteArray, iv: ByteArray): ByteArray {
+        return try {
+            val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE)
+            keyStore.load(null)
+            val secretKey = (keyStore.getEntry(KEYSTORE_ALIAS, null) as KeyStore.SecretKeyEntry).secretKey
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, secretKey, GCMParameterSpec(128, iv))
+            cipher.doFinal(ciphertext)
+        } catch (e: Throwable) {
+            // Software fallback for non-Android JVM / unit test environments
+            val fallbackKey = deriveKeyFromMasterSalt("SOFTWARE_FALLBACK_KEY".toByteArray(), "AT_REST".toByteArray())
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(fallbackKey, "AES"), GCMParameterSpec(128, iv))
+            cipher.doFinal(ciphertext)
+        }
     }
 
     var alias: String
@@ -124,16 +226,39 @@ class CryptoEngine private constructor(private val context: Context) {
     }
 
     /**
+     * Invalidates cached session key for a given peer (used when key rotation occurs).
+     */
+    fun invalidateSessionKey(peerNodeId: Long) {
+        sessionKeyCache.remove(peerNodeId)
+    }
+
+    /**
+     * Clears all session keys in memory.
+     */
+    fun clearAllSessionKeys() {
+        sessionKeyCache.clear()
+    }
+
+    /**
      * Encrypts plaintext using AES-256-GCM.
      * Uses the first 12 bytes of messageId as IV (ensuring unique IV per message).
+     * Binds Additional Authenticated Data (AAD) to the ciphertext and auth tag if provided.
      */
-    fun encrypt(plaintext: ByteArray, messageId: UUID, aesKey: ByteArray): EncryptedResult {
+    fun encrypt(
+        plaintext: ByteArray,
+        messageId: UUID,
+        aesKey: ByteArray,
+        aad: ByteArray? = null
+    ): EncryptedResult {
         val iv = extractIvFromUuid(messageId)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         val keySpec = SecretKeySpec(aesKey, "AES")
         val gcmSpec = GCMParameterSpec(128, iv) // 128-bit auth tag
 
         cipher.init(Cipher.ENCRYPT_MODE, keySpec, gcmSpec)
+        if (aad != null) {
+            cipher.updateAAD(aad)
+        }
         val encryptedWithTag = cipher.doFinal(plaintext)
 
         // Split encryptedWithTag into ciphertext and 16-byte authTag
@@ -149,14 +274,16 @@ class CryptoEngine private constructor(private val context: Context) {
     }
 
     /**
-     * Decrypts ciphertext and verifies AEAD auth tag using AES-256-GCM.
-     * Throws an exception if auth tag verification fails or ciphertext has been tampered with.
+     * Decrypts ciphertext and verifies AEAD auth tag and AAD header binding using AES-256-GCM.
+     * Throws an AEADBadTagException if auth tag verification fails, ciphertext has been tampered with,
+     * or any authenticated header byte was altered.
      */
     fun decrypt(
         ciphertext: ByteArray,
         authTag: ByteArray,
         messageId: UUID,
-        aesKey: ByteArray
+        aesKey: ByteArray,
+        aad: ByteArray? = null
     ): ByteArray {
         val iv = extractIvFromUuid(messageId)
         val combined = ByteArray(ciphertext.size + authTag.size)
@@ -168,11 +295,19 @@ class CryptoEngine private constructor(private val context: Context) {
         val gcmSpec = GCMParameterSpec(128, iv)
 
         cipher.init(Cipher.DECRYPT_MODE, keySpec, gcmSpec)
+        if (aad != null) {
+            cipher.updateAAD(aad)
+        }
         return cipher.doFinal(combined)
     }
 
     companion object {
-        private const val PREF_PRIVATE_KEY = "identity_private_key_hex"
+        private const val TAG = "CryptoEngine"
+        private const val ANDROID_KEYSTORE = "AndroidKeyStore"
+        private const val KEYSTORE_ALIAS = "MeshWhisperIdentityMasterKey"
+        private const val PREF_PRIVATE_KEY_ENC = "identity_private_key_enc_hex"
+        private const val PREF_PRIVATE_KEY_IV = "identity_private_key_iv_hex"
+        private const val PREF_LEGACY_PRIVATE_KEY = "identity_private_key_hex"
         private const val PREF_PUBLIC_KEY = "identity_public_key_hex"
         private const val PREF_NODE_ALIAS = "node_alias"
 
@@ -241,3 +376,4 @@ class CryptoEngine private constructor(private val context: Context) {
         }
     }
 }
+

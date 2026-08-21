@@ -57,6 +57,24 @@ class MeshBleEngine(private val context: Context) {
 
     // Connected centrals on our GATT server (Peripheral role)
     private val connectedCentrals = ConcurrentHashMap<String, BluetoothDevice>()
+    private val centralMtus = ConcurrentHashMap<String, Int>()
+
+    // Rate limiting for inbound GATT writes (Max 50 writes per second per remote device address)
+    private val writeRateTracker = ConcurrentHashMap<String, MutableList<Long>>()
+    private val maxWritesPerSecond = 50
+
+    private fun isWriteRateAllowed(address: String): Boolean {
+        val now = System.currentTimeMillis()
+        val timestamps = writeRateTracker.getOrPut(address) { mutableListOf() }
+        synchronized(timestamps) {
+            timestamps.removeAll { now - it > 1000L }
+            if (timestamps.size >= maxWritesPerSecond) {
+                return false
+            }
+            timestamps.add(now)
+            return true
+        }
+    }
 
     // Connected peripheral GATT clients (Central role)
     data class ClientConnection(
@@ -239,6 +257,8 @@ class MeshBleEngine(private val context: Context) {
             gattServer?.close()
             gattServer = null
             connectedCentrals.clear()
+            centralMtus.clear()
+            writeRateTracker.clear()
         } catch (e: Exception) {
             Log.e(tag, "Error closing GATT server", e)
         }
@@ -311,9 +331,17 @@ class MeshBleEngine(private val context: Context) {
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 Log.d(tag, "Central disconnected from GATT server: $address")
                 connectedCentrals.remove(address)
+                centralMtus.remove(address)
+                writeRateTracker.remove(address)
                 updatePeerCount()
                 onPeerDisconnectedListener?.invoke(address)
             }
+        }
+
+        override fun onMtuChanged(device: BluetoothDevice?, mtu: Int) {
+            val address = device?.address ?: return
+            Log.d(tag, "Central negotiated MTU on GATT server: $address -> $mtu")
+            centralMtus[address] = mtu
         }
 
         @SuppressLint("MissingPermission")
@@ -332,6 +360,12 @@ class MeshBleEngine(private val context: Context) {
 
             val address = device?.address ?: return
             val rawBytes = value ?: return
+
+            // Flood / DoS write rate limiter check
+            if (!isWriteRateAllowed(address)) {
+                Log.w(tag, "Dropping rate-limited write request from spamming device: $address")
+                return
+            }
 
             val fullPacket = framer.receiveFrame(address, rawBytes)
             if (fullPacket != null) {
@@ -573,6 +607,7 @@ class MeshBleEngine(private val context: Context) {
     /**
      * Sends packet bytes to all directly-connected peers (both Centrals and Peripherals),
      * optionally excluding the ingress peer address to prevent immediate echo back.
+     * Uses negotiated MTU per central/peripheral connection for optimal throughput and low latency.
      */
     @SuppressLint("MissingPermission")
     fun broadcastPacket(packetBytes: ByteArray, excludeAddress: String? = null) {
@@ -584,7 +619,8 @@ class MeshBleEngine(private val context: Context) {
         if (server != null && notifyChar != null) {
             for ((addr, device) in connectedCentrals) {
                 if (addr == excludeAddress) continue
-                val frames = framer.fragment(packetBytes, BleConstants.DEFAULT_MTU)
+                val centralMtu = centralMtus[addr] ?: BleConstants.DEFAULT_MTU
+                val frames = framer.fragment(packetBytes, centralMtu)
                 for (frame in frames) {
                     try {
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {

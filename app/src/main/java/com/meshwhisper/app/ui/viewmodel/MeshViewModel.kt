@@ -87,6 +87,21 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun toggleBlockPeer(peerNodeId: Long, isBlocked: Boolean) {
+        viewModelScope.launch {
+            database.peerDao().setPeerBlocked(peerNodeId, isBlocked)
+        }
+    }
+
+    fun acknowledgeSafetyWarning(peerNodeId: Long) {
+        viewModelScope.launch {
+            val peer = database.peerDao().getPeerById(peerNodeId)
+            if (peer != null) {
+                database.peerDao().markKeyChanged(peerNodeId, hasChanged = false, prevFp = null)
+            }
+        }
+    }
+
     fun clearAllData() {
         viewModelScope.launch {
             database.messageDao().deleteAll()

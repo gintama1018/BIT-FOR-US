@@ -42,7 +42,10 @@ class MediaTransferManager(
     private val ackSender: (recipientId: Long, messageId: UUID) -> Unit
 ) {
     private val tag = "MediaTransferManager"
-    private val scope = CoroutineScope(Dispatchers.IO)
+    private val exceptionHandler = kotlinx.coroutines.CoroutineExceptionHandler { _, throwable ->
+        android.util.Log.e(tag, "Uncaught coroutine exception in MediaTransferManager: ${throwable.message}", throwable)
+    }
+    private val scope = CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO + exceptionHandler)
     private val outboundMutex = Mutex() // Strict 1 concurrent outbound media transfer cap
 
     private val _transferProgress = MutableSharedFlow<MediaTransferProgress>(extraBufferCapacity = 64)

@@ -68,6 +68,11 @@ abstract class MeshDatabase : RoomDatabase() {
         }
 
         private fun buildDatabase(appContext: Context): MeshDatabase {
+            try {
+                System.loadLibrary("sqlcipher")
+            } catch (t: Throwable) {
+                Log.e(TAG, "Error loading sqlcipher native library: ${t.message}", t)
+            }
             val dbPassphrase = getOrCreateDatabasePassphrase(appContext)
             val supportFactory = SupportOpenHelperFactory(dbPassphrase)
 

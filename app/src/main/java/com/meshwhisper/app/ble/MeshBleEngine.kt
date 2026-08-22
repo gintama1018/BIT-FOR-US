@@ -42,7 +42,10 @@ class MeshBleEngine(private val context: Context) {
 
     private val tag = "MeshBleEngine"
     private val framer = BleFrameFramer()
-    private val scope = CoroutineScope(Dispatchers.IO)
+    private val exceptionHandler = kotlinx.coroutines.CoroutineExceptionHandler { _, throwable ->
+        Log.e(tag, "Uncaught coroutine exception in MeshBleEngine: ${throwable.message}", throwable)
+    }
+    private val scope = CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO + exceptionHandler)
 
     private val bluetoothManager: BluetoothManager? =
         context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager

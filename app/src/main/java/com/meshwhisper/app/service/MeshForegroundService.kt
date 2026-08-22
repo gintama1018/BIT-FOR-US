@@ -24,7 +24,10 @@ import kotlinx.coroutines.launch
 class MeshForegroundService : Service() {
 
     private val tag = "MeshForegroundService"
-    private val serviceScope = CoroutineScope(Dispatchers.IO)
+    private val exceptionHandler = kotlinx.coroutines.CoroutineExceptionHandler { _, throwable ->
+        Log.e(tag, "Uncaught coroutine exception in MeshForegroundService: ${throwable.message}", throwable)
+    }
+    private val serviceScope = CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO + exceptionHandler)
     private var heartbeatJob: Job? = null
     private var statsJob: Job? = null
     private var wakeLock: PowerManager.WakeLock? = null

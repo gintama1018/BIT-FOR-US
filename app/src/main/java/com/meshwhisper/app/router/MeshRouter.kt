@@ -29,7 +29,10 @@ class MeshRouter(
     private val database: MeshDatabase
 ) {
     private val tag = "MeshRouter"
-    private val scope = CoroutineScope(Dispatchers.IO)
+    private val exceptionHandler = kotlinx.coroutines.CoroutineExceptionHandler { _, throwable ->
+        Log.e(tag, "Uncaught coroutine exception in MeshRouter: ${throwable.message}", throwable)
+    }
+    private val scope = CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO + exceptionHandler)
 
     // Deduplication Cache (Capacity: 4000 keys) - Keyed by messageId:packetType to prevent ACK/DM collision
     private val dedupCache = LruCache<String, Long>(4000)
@@ -486,7 +489,8 @@ class MeshRouter(
     }
 
     suspend fun announcePresence() {
-        val aliasBytes = cryptoEngine.alias.toByteArray(Charsets.UTF_8)
+        val rawAliasBytes = cryptoEngine.alias.toByteArray(Charsets.UTF_8)
+        val aliasBytes = if (rawAliasBytes.size > 255) rawAliasBytes.copyOf(255) else rawAliasBytes
         val pubKeyBytes = cryptoEngine.publicKeyBytes
 
         // Collect live direct neighbor node IDs (strictly from active GATT links)

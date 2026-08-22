@@ -23,6 +23,12 @@ class MeshApplication : Application() {
         super.onCreate()
         instance = this
 
+        try {
+            System.loadLibrary("sqlcipher")
+        } catch (t: Throwable) {
+            android.util.Log.e("MeshApplication", "Failed to load sqlcipher native library: ${t.message}", t)
+        }
+
         createNotificationChannel()
 
         cryptoEngine = CryptoEngine.getInstance(this)

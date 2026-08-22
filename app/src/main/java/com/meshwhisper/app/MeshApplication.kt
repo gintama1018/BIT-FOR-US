@@ -32,11 +32,20 @@ class MeshApplication : Application() {
     }
 
     fun startMeshService() {
-        val intent = Intent(this, MeshForegroundService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
-        } else {
-            startService(intent)
+        try {
+            val intent = Intent(this, MeshForegroundService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("MeshApplication", "startForegroundService failed: ${e.message}", e)
+            try {
+                bleEngine.start(cryptoEngine.nodeId)
+            } catch (ex: Exception) {
+                android.util.Log.e("MeshApplication", "In-process bleEngine start failed: ${ex.message}", ex)
+            }
         }
     }
 

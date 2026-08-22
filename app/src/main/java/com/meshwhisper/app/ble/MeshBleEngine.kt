@@ -155,24 +155,36 @@ class MeshBleEngine(private val context: Context) {
 
     init {
         // Check advertiser capability directly from BluetoothAdapter (more reliable than packageManager feature flag)
-        val canAdvertise = (bluetoothAdapter?.isMultipleAdvertisementSupported == true) ||
-                (bluetoothAdapter?.bluetoothLeAdvertiser != null)
+        val canAdvertise = try {
+            (bluetoothAdapter?.isMultipleAdvertisementSupported == true) ||
+                    (bluetoothAdapter?.bluetoothLeAdvertiser != null)
+        } catch (e: Exception) {
+            false
+        }
         _supportsPeripheral.value = canAdvertise
 
         // Register receiver for Bluetooth state changes (Android 14+ safe with RECEIVER_NOT_EXPORTED)
         val filter = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
-        ContextCompat.registerReceiver(
-            context,
-            bluetoothStateReceiver,
-            filter,
-            ContextCompat.RECEIVER_NOT_EXPORTED
-        )
+        try {
+            ContextCompat.registerReceiver(
+                context,
+                bluetoothStateReceiver,
+                filter,
+                ContextCompat.RECEIVER_NOT_EXPORTED
+            )
+        } catch (e: Exception) {
+            Log.w(tag, "Failed to register bluetoothStateReceiver: ${e.message}")
+        }
     }
 
     @SuppressLint("MissingPermission")
     fun start(nodeId: Long) {
         this.myNodeId = nodeId
-        val isEnabled = bluetoothAdapter?.isEnabled == true
+        val isEnabled = try {
+            bluetoothAdapter?.isEnabled == true
+        } catch (e: Exception) {
+            false
+        }
         _isBluetoothEnabled.value = isEnabled
 
         if (!isEnabled) {
@@ -188,9 +200,23 @@ class MeshBleEngine(private val context: Context) {
         isEngineRunning = true
         Log.i(tag, "Starting Mesh BLE Engine for Node ID: $nodeId")
 
-        startGattServer()
-        startAdvertising()
-        startScanning()
+        try {
+            startGattServer()
+        } catch (e: Exception) {
+            Log.e(tag, "Failed starting GATT server", e)
+        }
+
+        try {
+            startAdvertising()
+        } catch (e: Exception) {
+            Log.e(tag, "Failed starting advertising", e)
+        }
+
+        try {
+            startScanning()
+        } catch (e: Exception) {
+            Log.e(tag, "Failed starting scanning", e)
+        }
     }
 
     @SuppressLint("MissingPermission")

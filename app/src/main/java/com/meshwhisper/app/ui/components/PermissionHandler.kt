@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -29,7 +31,6 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -40,17 +41,21 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
-import com.meshwhisper.app.ui.theme.AmberAccent
-import com.meshwhisper.app.ui.theme.DarkCardBorder
-import com.meshwhisper.app.ui.theme.DarkSurface
-import com.meshwhisper.app.ui.theme.EmeraldAccent
+import com.meshwhisper.app.ui.theme.BurntSienna
+import com.meshwhisper.app.ui.theme.EBGaramondFamily
+import com.meshwhisper.app.ui.theme.ManropeFamily
 import com.meshwhisper.app.ui.theme.TextPrimary
 import com.meshwhisper.app.ui.theme.TextSecondary
+import com.meshwhisper.app.ui.theme.WarmAmber
+import com.meshwhisper.app.ui.theme.WarmCardBorder
+import com.meshwhisper.app.ui.theme.WarmLinen
+import com.meshwhisper.app.ui.theme.WarmSurface
 
 @Composable
 fun PermissionHandler(
@@ -58,8 +63,20 @@ fun PermissionHandler(
     content: @Composable () -> Unit
 ) {
     val context = LocalContext.current
-    val bluetoothManager = remember { context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager }
-    val bluetoothAdapter = remember { bluetoothManager?.adapter }
+    val bluetoothManager = remember {
+        try {
+            context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+        } catch (e: Exception) {
+            null
+        }
+    }
+    val bluetoothAdapter = remember {
+        try {
+            bluetoothManager?.adapter
+        } catch (e: Exception) {
+            null
+        }
+    }
 
     val requiredPermissions = remember {
         val list = mutableListOf<String>()
@@ -74,19 +91,33 @@ fun PermissionHandler(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             list.add(Manifest.permission.POST_NOTIFICATIONS)
         }
+        list.add(Manifest.permission.RECORD_AUDIO)
         list.toTypedArray()
     }
 
+    fun checkCorePermissions(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_ADVERTISE) == PackageManager.PERMISSION_GRANTED &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+        } else {
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        }
+    }
+
     var allPermissionsGranted by remember {
-        mutableStateOf(
-            requiredPermissions.all {
-                ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
-            }
-        )
+        mutableStateOf(checkCorePermissions())
     }
 
     var isBluetoothEnabled by remember {
-        mutableStateOf(bluetoothAdapter?.isEnabled == true)
+        mutableStateOf(
+            try {
+                bluetoothAdapter?.isEnabled == true
+            } catch (e: Exception) {
+                false
+            }
+        )
     }
 
     // Broadcast receiver for Bluetooth ON/OFF toggles
@@ -100,12 +131,17 @@ fun PermissionHandler(
             }
         }
         val filter = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
-        ContextCompat.registerReceiver(
-            context,
-            receiver,
-            filter,
-            ContextCompat.RECEIVER_NOT_EXPORTED
-        )
+        try {
+            ContextCompat.registerReceiver(
+                context,
+                receiver,
+                filter,
+                ContextCompat.RECEIVER_NOT_EXPORTED
+            )
+        } catch (e: Exception) {
+            Log.w("PermissionHandler", "Failed to register bluetooth receiver: ${e.message}")
+        }
+
         onDispose {
             try {
                 context.unregisterReceiver(receiver)
@@ -118,21 +154,33 @@ fun PermissionHandler(
     // Permission request launcher
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
-    ) { results ->
-        allPermissionsGranted = results.values.all { it }
-        isBluetoothEnabled = bluetoothAdapter?.isEnabled == true
+    ) { _ ->
+        allPermissionsGranted = checkCorePermissions()
+        isBluetoothEnabled = try {
+            bluetoothAdapter?.isEnabled == true
+        } catch (e: Exception) {
+            true // Assume enabled if unable to query to avoid soft-lock
+        }
     }
 
     // Bluetooth enable dialog launcher
     val enableBtLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { _ ->
-        isBluetoothEnabled = bluetoothAdapter?.isEnabled == true
+        isBluetoothEnabled = try {
+            bluetoothAdapter?.isEnabled == true
+        } catch (e: Exception) {
+            true
+        }
     }
 
     LaunchedEffect(allPermissionsGranted, isBluetoothEnabled) {
         if (allPermissionsGranted && isBluetoothEnabled) {
-            onPermissionsGranted()
+            try {
+                onPermissionsGranted()
+            } catch (e: Exception) {
+                Log.e("PermissionHandler", "Error during onPermissionsGranted: ${e.message}", e)
+            }
         }
     }
 
@@ -146,14 +194,15 @@ fun PermissionHandler(
         allPermissionsGranted && !isBluetoothEnabled -> {
             Box(
                 modifier = Modifier
-                    .fillMaxWidth()
+                    .fillMaxSize()
+                    .background(WarmLinen)
                     .padding(24.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Card(
-                    colors = CardDefaults.cardColors(containerColor = DarkSurface),
-                    shape = RoundedCornerShape(16.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, DarkCardBorder),
+                    colors = CardDefaults.cardColors(containerColor = WarmSurface),
+                    shape = RoundedCornerShape(8.dp),
+                    border = androidx.compose.foundation.BorderStroke(0.8.dp, WarmCardBorder),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(
@@ -163,43 +212,53 @@ fun PermissionHandler(
                         Icon(
                             imageVector = Icons.Default.BluetoothDisabled,
                             contentDescription = "Bluetooth Disabled",
-                            tint = AmberAccent,
+                            tint = WarmAmber,
                             modifier = Modifier.size(52.dp)
                         )
                         Spacer(modifier = Modifier.height(16.dp))
                         Text(
                             text = "Bluetooth is Disabled",
                             color = TextPrimary,
-                            fontSize = 18.sp,
+                            fontSize = 20.sp,
+                            fontFamily = EBGaramondFamily,
                             fontWeight = FontWeight.Bold
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = "MeshWhisper operates strictly peer-to-peer over Bluetooth Low Energy. Please enable Bluetooth on this device to connect to the mesh.",
+                            text = "MeshWhisper operates strictly peer-to-peer over Bluetooth Low Energy. Please turn on Bluetooth on this device to connect to the mesh.",
                             color = TextSecondary,
-                            fontSize = 14.sp,
-                            lineHeight = 20.sp
+                            fontFamily = ManropeFamily,
+                            fontSize = 13.sp,
+                            lineHeight = 18.sp
                         )
                         Spacer(modifier = Modifier.height(24.dp))
                         Button(
                             onClick = {
-                                @Suppress("DEPRECATION")
-                                enableBtLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+                                try {
+                                    @Suppress("DEPRECATION")
+                                    enableBtLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+                                } catch (e: Exception) {
+                                    Log.e("PermissionHandler", "Failed to launch enable BT dialog: ${e.message}")
+                                }
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = EmeraldAccent),
-                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = BurntSienna,
+                                contentColor = Color.White
+                            ),
+                            shape = RoundedCornerShape(8.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Bluetooth,
                                 contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onPrimary,
+                                tint = Color.White,
                                 modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.size(8.dp))
                             Text(
                                 text = "Turn On Bluetooth",
-                                color = MaterialTheme.colorScheme.onPrimary,
+                                color = Color.White,
+                                fontFamily = ManropeFamily,
                                 fontWeight = FontWeight.SemiBold
                             )
                         }
@@ -212,14 +271,15 @@ fun PermissionHandler(
         else -> {
             Box(
                 modifier = Modifier
-                    .fillMaxWidth()
+                    .fillMaxSize()
+                    .background(WarmLinen)
                     .padding(24.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Card(
-                    colors = CardDefaults.cardColors(containerColor = DarkSurface),
-                    shape = RoundedCornerShape(16.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, DarkCardBorder),
+                    colors = CardDefaults.cardColors(containerColor = WarmSurface),
+                    shape = RoundedCornerShape(8.dp),
+                    border = androidx.compose.foundation.BorderStroke(0.8.dp, WarmCardBorder),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(
@@ -229,33 +289,45 @@ fun PermissionHandler(
                         Icon(
                             imageVector = Icons.Default.Bluetooth,
                             contentDescription = "Bluetooth",
-                            tint = EmeraldAccent,
+                            tint = BurntSienna,
                             modifier = Modifier.size(48.dp)
                         )
                         Spacer(modifier = Modifier.height(16.dp))
                         Text(
                             text = "Bluetooth Mesh Permissions",
                             color = TextPrimary,
-                            fontSize = 18.sp,
+                            fontSize = 20.sp,
+                            fontFamily = EBGaramondFamily,
                             fontWeight = FontWeight.Bold
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
                             text = "MeshWhisper requires Bluetooth and Nearby Device permissions to discover and route peer-to-peer messages without internet or servers.",
                             color = TextSecondary,
-                            fontSize = 14.sp,
-                            lineHeight = 20.sp
+                            fontFamily = ManropeFamily,
+                            fontSize = 13.sp,
+                            lineHeight = 18.sp
                         )
                         Spacer(modifier = Modifier.height(24.dp))
                         Button(
-                            onClick = { permissionLauncher.launch(requiredPermissions) },
-                            colors = ButtonDefaults.buttonColors(containerColor = EmeraldAccent),
-                            shape = RoundedCornerShape(10.dp),
+                            onClick = {
+                                try {
+                                    permissionLauncher.launch(requiredPermissions)
+                                } catch (e: Exception) {
+                                    Log.e("PermissionHandler", "Failed to launch permission request: ${e.message}")
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = BurntSienna,
+                                contentColor = Color.White
+                            ),
+                            shape = RoundedCornerShape(8.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Text(
                                 text = "Grant Permissions",
-                                color = MaterialTheme.colorScheme.onPrimary,
+                                color = Color.White,
+                                fontFamily = ManropeFamily,
                                 fontWeight = FontWeight.SemiBold
                             )
                         }

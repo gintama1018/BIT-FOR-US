@@ -9,6 +9,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.meshwhisper.app.MeshApplication
 import com.meshwhisper.app.R
@@ -22,6 +23,7 @@ import kotlinx.coroutines.launch
 
 class MeshForegroundService : Service() {
 
+    private val tag = "MeshForegroundService"
     private val serviceScope = CoroutineScope(Dispatchers.IO)
     private var heartbeatJob: Job? = null
     private var statsJob: Job? = null
@@ -30,27 +32,43 @@ class MeshForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
 
-        val powerManager = getSystemService(POWER_SERVICE) as? PowerManager
-        wakeLock = powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MeshWhisper:ServiceWakeLock")
-        wakeLock?.acquire(10 * 60 * 1000L) // 10-minute safe timeout
+        try {
+            val powerManager = getSystemService(POWER_SERVICE) as? PowerManager
+            wakeLock = powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MeshWhisper:ServiceWakeLock")
+            wakeLock?.acquire(10 * 60 * 1000L) // 10-minute safe timeout
+        } catch (e: Exception) {
+            Log.w(tag, "WakeLock acquire failed: ${e.message}")
+        }
 
         startInForeground()
 
         val app = MeshApplication.instance
-        app.bleEngine.start(app.cryptoEngine.nodeId)
+        try {
+            app.bleEngine.start(app.cryptoEngine.nodeId)
+        } catch (e: Exception) {
+            Log.e(tag, "Failed to start BLE engine in service: ${e.message}", e)
+        }
 
         // Periodic heartbeat & presence announcement every 4 seconds (fast discovery & recovery)
         heartbeatJob = serviceScope.launch {
             var lastWakeLockRenew = System.currentTimeMillis()
             while (isActive) {
-                app.router.announcePresence()
+                try {
+                    app.router.announcePresence()
+                } catch (e: Exception) {
+                    Log.e(tag, "Error during announcePresence heartbeat: ${e.message}")
+                }
 
                 // Periodically refresh 10-minute wakelock every 8 minutes
                 val now = System.currentTimeMillis()
                 if (now - lastWakeLockRenew > 8 * 60 * 1000L) {
-                    wakeLock?.let {
-                        if (it.isHeld) it.release()
-                        it.acquire(10 * 60 * 1000L)
+                    try {
+                        wakeLock?.let {
+                            if (it.isHeld) it.release()
+                            it.acquire(10 * 60 * 1000L)
+                        }
+                    } catch (e: Exception) {
+                        Log.w(tag, "Failed to renew wakeLock: ${e.message}")
                     }
                     lastWakeLockRenew = now
                 }
@@ -62,27 +80,35 @@ class MeshForegroundService : Service() {
         // Live notification status updater
         statsJob = serviceScope.launch {
             while (isActive) {
-                updateNotification()
+                try {
+                    updateNotification()
+                } catch (e: Exception) {
+                    Log.w(tag, "Failed to update notification: ${e.message}")
+                }
                 delay(5000L)
             }
         }
     }
 
     private fun startInForeground() {
-        val notification = buildNotification(
-            peersCount = 0,
-            relayedCount = 0,
-            myAlias = MeshApplication.instance.cryptoEngine.alias
-        )
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+        try {
+            val notification = buildNotification(
+                peersCount = 0,
+                relayedCount = 0,
+                myAlias = MeshApplication.instance.cryptoEngine.alias
             )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (e: Exception) {
+            Log.e(tag, "startForeground error: ${e.message}", e)
         }
     }
 
@@ -93,8 +119,8 @@ class MeshForegroundService : Service() {
         val alias = app.cryptoEngine.alias
 
         val notification = buildNotification(peers, relayed, alias)
-        val manager = getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager
-        manager.notify(NOTIFICATION_ID, notification)
+        val manager = getSystemService(NOTIFICATION_SERVICE) as? android.app.NotificationManager
+        manager?.notify(NOTIFICATION_ID, notification)
     }
 
     private fun buildNotification(peersCount: Int, relayedCount: Int, myAlias: String): Notification {
@@ -117,7 +143,7 @@ class MeshForegroundService : Service() {
         return NotificationCompat.Builder(this, MeshApplication.CHANNEL_ID)
             .setContentTitle("MeshWhisper: $myAlias (Active)")
             .setContentText(statusText)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(R.drawable.ic_mesh_notification)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -128,7 +154,11 @@ class MeshForegroundService : Service() {
         super.onDestroy()
         heartbeatJob?.cancel()
         statsJob?.cancel()
-        MeshApplication.instance.bleEngine.stop()
+        try {
+            MeshApplication.instance.bleEngine.stop()
+        } catch (e: Exception) {
+            Log.e(tag, "Error stopping bleEngine on service destroy: ${e.message}")
+        }
 
         try {
             if (wakeLock?.isHeld == true) {

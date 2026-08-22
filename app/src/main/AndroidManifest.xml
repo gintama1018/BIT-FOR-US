@@ -37,6 +37,7 @@
         android:name="android.permission.POST_NOTIFICATIONS"
         tools:targetApi="tiramisu" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <!-- Hardware requirements -->
     <uses-feature

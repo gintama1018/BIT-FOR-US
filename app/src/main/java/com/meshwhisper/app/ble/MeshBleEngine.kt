@@ -328,6 +328,28 @@ class MeshBleEngine(private val context: Context) {
         }
     }
 
+    private var isLowLatencyMode: Boolean = true
+
+    /**
+     * Dynamically switches BLE radio power mode between Foreground (LOW_LATENCY)
+     * and Background (BALANCED duty-cycled). Active GATT connections remain untouched.
+     */
+    @SuppressLint("MissingPermission")
+    fun setLowLatencyMode(isForeground: Boolean) {
+        if (isLowLatencyMode == isForeground) return
+        isLowLatencyMode = isForeground
+        Log.i(tag, "Switching BLE radio duty-cycle: isForeground=$isForeground (Mode: ${if (isForeground) "LOW_LATENCY" else "BALANCED"})")
+
+        if (isScanning.value && isEngineRunning) {
+            stopScanning()
+            startScanning()
+        }
+        if (isAdvertising.value && isEngineRunning) {
+            stopAdvertising()
+            startAdvertising()
+        }
+    }
+
     @SuppressLint("MissingPermission")
     private fun startAdvertising() {
         advertiser = bluetoothAdapter?.bluetoothLeAdvertiser
@@ -337,11 +359,22 @@ class MeshBleEngine(private val context: Context) {
             return
         }
 
+        val advMode = if (isLowLatencyMode) {
+            AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY
+        } else {
+            AdvertiseSettings.ADVERTISE_MODE_BALANCED
+        }
+        val txPower = if (isLowLatencyMode) {
+            AdvertiseSettings.ADVERTISE_TX_POWER_HIGH
+        } else {
+            AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM
+        }
+
         val settings = AdvertiseSettings.Builder()
-            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+            .setAdvertiseMode(advMode)
             .setConnectable(true)
             .setTimeout(0)
-            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
+            .setTxPowerLevel(txPower)
             .build()
 
         val data = AdvertiseData.Builder()
@@ -483,8 +516,14 @@ class MeshBleEngine(private val context: Context) {
             ScanFilter.Builder().build() // Catch all for devices whose OEM drops UUID filters
         )
 
+        val scanMode = if (isLowLatencyMode) {
+            ScanSettings.SCAN_MODE_LOW_LATENCY
+        } else {
+            ScanSettings.SCAN_MODE_BALANCED
+        }
+
         val settings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .setScanMode(scanMode)
             .setReportDelay(0)
             .build()
 

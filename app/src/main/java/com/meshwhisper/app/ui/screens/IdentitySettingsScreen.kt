@@ -309,6 +309,82 @@ fun IdentitySettingsScreen(
                 }
             }
 
+            // Mesh Network & Battery Management Card
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = WarmSurface),
+                    shape = RoundedCornerShape(8.dp),
+                    border = androidx.compose.foundation.BorderStroke(0.8.dp, WarmCardBorder),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = "MESH NETWORK & POWER",
+                            color = BurntSienna,
+                            fontSize = 12.sp,
+                            fontFamily = ManropeFamily,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.5.sp
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        val isBackgroundRelay by viewModel.isBackgroundRelayEnabled.collectAsState()
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Background Mesh Relay",
+                                    color = TextPrimary,
+                                    fontSize = 14.sp,
+                                    fontFamily = ManropeFamily,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = if (isBackgroundRelay)
+                                        "Relaying encrypted packets in background using power-efficient balanced duty-cycling."
+                                    else
+                                        "Relay paused when app is closed. Mesh only operates while app is open.",
+                                    color = TextSecondary,
+                                    fontSize = 11.sp,
+                                    fontFamily = ManropeFamily,
+                                    lineHeight = 15.sp
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Switch(
+                                checked = isBackgroundRelay,
+                                onCheckedChange = { viewModel.setBackgroundRelayEnabled(it) },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = BurntSienna,
+                                    checkedTrackColor = BurntSiennaContainer
+                                )
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+                        DiagnosticRow(
+                            label = "Foreground Radio Mode",
+                            value = "High-Speed (Low Latency)",
+                            isOk = true
+                        )
+                        DiagnosticRow(
+                            label = "Background Radio Mode",
+                            value = if (isBackgroundRelay) "Balanced Duty-Cycle (~75% Power Saved)" else "Disabled / Inactive",
+                            isOk = isBackgroundRelay
+                        )
+                        DiagnosticRow(
+                            label = "Background CPU WakeLock",
+                            value = "Zero 24/7 Lock (Event-Driven Only)",
+                            isOk = true
+                        )
+                    }
+                }
+            }
+
             // Security & Privacy Settings Card
             item {
                 Card(

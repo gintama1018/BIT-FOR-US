@@ -174,6 +174,37 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private val appPrefs = application.getSharedPreferences(com.meshwhisper.app.service.MeshForegroundService.PREFS_NAME, android.content.Context.MODE_PRIVATE)
+    private val _isBackgroundRelayEnabled = MutableStateFlow(appPrefs.getBoolean(com.meshwhisper.app.service.MeshForegroundService.KEY_BACKGROUND_RELAY, true))
+    val isBackgroundRelayEnabled: StateFlow<Boolean> = _isBackgroundRelayEnabled.asStateFlow()
+
+    private val prefListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == com.meshwhisper.app.service.MeshForegroundService.KEY_BACKGROUND_RELAY) {
+            _isBackgroundRelayEnabled.value = appPrefs.getBoolean(com.meshwhisper.app.service.MeshForegroundService.KEY_BACKGROUND_RELAY, true)
+        }
+    }
+
+    init {
+        appPrefs.registerOnSharedPreferenceChangeListener(prefListener)
+    }
+
+    fun setBackgroundRelayEnabled(enabled: Boolean) {
+        appPrefs.edit().putBoolean(com.meshwhisper.app.service.MeshForegroundService.KEY_BACKGROUND_RELAY, enabled).apply()
+        _isBackgroundRelayEnabled.value = enabled
+        val intent = android.content.Intent(app, com.meshwhisper.app.service.MeshForegroundService::class.java).apply {
+            action = if (enabled) com.meshwhisper.app.service.MeshForegroundService.ACTION_RESUME_RELAY else com.meshwhisper.app.service.MeshForegroundService.ACTION_PAUSE_RELAY
+        }
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                app.startForegroundService(intent)
+            } else {
+                app.startService(intent)
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("MeshViewModel", "Failed to dispatch relay intent: ${e.message}")
+        }
+    }
+
     fun clearLogs() {
         viewModelScope.launch {
             database.packetLogDao().deleteAll()
@@ -183,10 +214,13 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         super.onCleared()
         audioPlayer.stop()
+        appPrefs.unregisterOnSharedPreferenceChangeListener(prefListener)
     }
 
     fun startService() {
-        app.startMeshService()
+        if (isBackgroundRelayEnabled.value) {
+            app.startMeshService()
+        }
     }
 
     fun stopService() {

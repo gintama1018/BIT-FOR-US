@@ -4,19 +4,21 @@ import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
-import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.meshwhisper.app.MeshApplication
 import com.meshwhisper.app.R
 import com.meshwhisper.app.ui.MainActivity
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -24,60 +26,34 @@ import kotlinx.coroutines.launch
 class MeshForegroundService : Service() {
 
     private val tag = "MeshForegroundService"
-    private val exceptionHandler = kotlinx.coroutines.CoroutineExceptionHandler { _, throwable ->
+    private val exceptionHandler = CoroutineExceptionHandler { _, throwable ->
         Log.e(tag, "Uncaught coroutine exception in MeshForegroundService: ${throwable.message}", throwable)
     }
-    private val serviceScope = CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO + exceptionHandler)
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + exceptionHandler)
     private var heartbeatJob: Job? = null
     private var statsJob: Job? = null
-    private var wakeLock: PowerManager.WakeLock? = null
+
+    private var isRelayPaused: Boolean = false
 
     override fun onCreate() {
         super.onCreate()
 
-        try {
-            val powerManager = getSystemService(POWER_SERVICE) as? PowerManager
-            wakeLock = powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MeshWhisper:ServiceWakeLock")
-            wakeLock?.acquire(10 * 60 * 1000L) // 10-minute safe timeout
-        } catch (e: Exception) {
-            Log.w(tag, "WakeLock acquire failed: ${e.message}")
-        }
+        // Read initial persisted background relay preference
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val isEnabled = prefs.getBoolean(KEY_BACKGROUND_RELAY, true)
+        isRelayPaused = !isEnabled
 
         startInForeground()
 
-        val app = MeshApplication.instance
-        try {
-            app.bleEngine.start(app.cryptoEngine.nodeId)
-        } catch (e: Exception) {
-            Log.e(tag, "Failed to start BLE engine in service: ${e.message}", e)
-        }
-
-        // Periodic heartbeat & presence announcement every 4 seconds (fast discovery & recovery)
-        heartbeatJob = serviceScope.launch {
-            var lastWakeLockRenew = System.currentTimeMillis()
-            while (isActive) {
-                try {
-                    app.router.announcePresence()
-                } catch (e: Exception) {
-                    Log.e(tag, "Error during announcePresence heartbeat: ${e.message}")
-                }
-
-                // Periodically refresh 10-minute wakelock every 8 minutes
-                val now = System.currentTimeMillis()
-                if (now - lastWakeLockRenew > 8 * 60 * 1000L) {
-                    try {
-                        wakeLock?.let {
-                            if (it.isHeld) it.release()
-                            it.acquire(10 * 60 * 1000L)
-                        }
-                    } catch (e: Exception) {
-                        Log.w(tag, "Failed to renew wakeLock: ${e.message}")
-                    }
-                    lastWakeLockRenew = now
-                }
-
-                delay(4000L)
+        if (!isRelayPaused) {
+            val app = MeshApplication.instance
+            try {
+                app.bleEngine.setLowLatencyMode(false) // Balanced power mode for background
+                app.bleEngine.start(app.cryptoEngine.nodeId)
+            } catch (e: Exception) {
+                Log.e(tag, "Failed to start BLE engine in service: ${e.message}", e)
             }
+            startHeartbeatLoop()
         }
 
         // Live notification status updater
@@ -93,12 +69,86 @@ class MeshForegroundService : Service() {
         }
     }
 
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_PAUSE_RELAY -> {
+                pauseRelay()
+            }
+            ACTION_RESUME_RELAY -> {
+                resumeRelay()
+            }
+            ACTION_STOP_SERVICE -> {
+                stopSelf()
+            }
+        }
+        return START_STICKY
+    }
+
+    private fun pauseRelay() {
+        Log.i(tag, "Pausing Mesh Relay via service action")
+        isRelayPaused = true
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_BACKGROUND_RELAY, false)
+            .apply()
+
+        heartbeatJob?.cancel()
+        heartbeatJob = null
+        try {
+            MeshApplication.instance.bleEngine.stop()
+        } catch (e: Exception) {
+            Log.e(tag, "Error stopping BLE engine on pause: ${e.message}")
+        }
+        updateNotification()
+    }
+
+    private fun resumeRelay() {
+        Log.i(tag, "Resuming Mesh Relay via service action")
+        isRelayPaused = false
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_BACKGROUND_RELAY, true)
+            .apply()
+
+        val app = MeshApplication.instance
+        try {
+            app.bleEngine.setLowLatencyMode(false) // Balanced power mode
+            app.bleEngine.start(app.cryptoEngine.nodeId)
+        } catch (e: Exception) {
+            Log.e(tag, "Error starting BLE engine on resume: ${e.message}")
+        }
+        startHeartbeatLoop()
+        updateNotification()
+    }
+
+    private fun startHeartbeatLoop() {
+        heartbeatJob?.cancel()
+        heartbeatJob = serviceScope.launch {
+            val app = MeshApplication.instance
+            while (isActive) {
+                try {
+                    app.router.announcePresence()
+                } catch (e: Exception) {
+                    Log.e(tag, "Error during announcePresence heartbeat: ${e.message}")
+                }
+
+                // Adaptive heartbeat backoff:
+                // 4 seconds when active direct peers are connected
+                // 12 seconds when idle / 0 peers to conserve radio power
+                val connectedPeers = app.bleEngine.connectedPeersCount.value
+                val interval = if (connectedPeers > 0) 4000L else 12000L
+                delay(interval)
+            }
+        }
+    }
+
     private fun startInForeground() {
         try {
             val notification = buildNotification(
                 peersCount = 0,
                 relayedCount = 0,
-                myAlias = MeshApplication.instance.cryptoEngine.alias
+                myAlias = MeshApplication.instance.cryptoEngine.alias,
+                isPaused = isRelayPaused
             )
 
             val hasPerms = try {
@@ -127,36 +177,78 @@ class MeshForegroundService : Service() {
         val relayed = app.router.relayedPacketsCount.value
         val alias = app.cryptoEngine.alias
 
-        val notification = buildNotification(peers, relayed, alias)
+        val notification = buildNotification(peers, relayed, alias, isRelayPaused)
         val manager = getSystemService(NOTIFICATION_SERVICE) as? android.app.NotificationManager
         manager?.notify(NOTIFICATION_ID, notification)
     }
 
-    private fun buildNotification(peersCount: Int, relayedCount: Int, myAlias: String): Notification {
-        val intent = Intent(this, MainActivity::class.java).apply {
+    private fun buildNotification(
+        peersCount: Int,
+        relayedCount: Int,
+        myAlias: String,
+        isPaused: Boolean
+    ): Notification {
+        val mainIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
-        val pendingIntent = PendingIntent.getActivity(
+        val mainPendingIntent = PendingIntent.getActivity(
             this,
             0,
-            intent,
+            mainIntent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        val statusText = if (peersCount == 0) {
-            "Scanning for mesh nodes..."
-        } else {
-            "$peersCount node${if (peersCount > 1) "s" else ""} connected • $relayedCount packets relayed"
-        }
-
-        return NotificationCompat.Builder(this, MeshApplication.CHANNEL_ID)
-            .setContentTitle("MeshWhisper: $myAlias (Active)")
-            .setContentText(statusText)
+        val builder = NotificationCompat.Builder(this, MeshApplication.CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_mesh_notification)
-            .setContentIntent(pendingIntent)
+            .setContentIntent(mainPendingIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
-            .build()
+
+        if (isPaused) {
+            val resumeIntent = Intent(this, MeshForegroundService::class.java).apply {
+                action = ACTION_RESUME_RELAY
+            }
+            val resumePendingIntent = PendingIntent.getService(
+                this,
+                101,
+                resumeIntent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+
+            builder.setContentTitle("MeshWhisper: $myAlias (Relay Paused)")
+                .setContentText("Background relaying is paused. Tap Resume to connect.")
+                .addAction(
+                    android.R.drawable.ic_media_play,
+                    "Resume Relay",
+                    resumePendingIntent
+                )
+        } else {
+            val pauseIntent = Intent(this, MeshForegroundService::class.java).apply {
+                action = ACTION_PAUSE_RELAY
+            }
+            val pausePendingIntent = PendingIntent.getService(
+                this,
+                102,
+                pauseIntent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+
+            val statusText = if (peersCount == 0) {
+                "Scanning for mesh nodes (Balanced)..."
+            } else {
+                "$peersCount node${if (peersCount > 1) "s" else ""} connected • $relayedCount packets relayed"
+            }
+
+            builder.setContentTitle("MeshWhisper: $myAlias (Active)")
+                .setContentText(statusText)
+                .addAction(
+                    android.R.drawable.ic_media_pause,
+                    "Pause Relay",
+                    pausePendingIntent
+                )
+        }
+
+        return builder.build()
     }
 
     override fun onDestroy() {
@@ -168,19 +260,17 @@ class MeshForegroundService : Service() {
         } catch (e: Exception) {
             Log.e(tag, "Error stopping bleEngine on service destroy: ${e.message}")
         }
-
-        try {
-            if (wakeLock?.isHeld == true) {
-                wakeLock?.release()
-            }
-        } catch (e: Exception) {
-            // Ignored
-        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
-        private const val NOTIFICATION_ID = 1001
+        const val NOTIFICATION_ID = 1001
+        const val PREFS_NAME = "meshwhisper_prefs"
+        const val KEY_BACKGROUND_RELAY = "pref_background_relay_enabled"
+
+        const val ACTION_PAUSE_RELAY = "com.meshwhisper.app.action.PAUSE_RELAY"
+        const val ACTION_RESUME_RELAY = "com.meshwhisper.app.action.RESUME_RELAY"
+        const val ACTION_STOP_SERVICE = "com.meshwhisper.app.action.STOP_SERVICE"
     }
 }

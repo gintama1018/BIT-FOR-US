@@ -89,12 +89,42 @@ class MainActivity : FragmentActivity() {
         ActivityCompat.requestPermissions(this, getRequiredPermissions(), PERMISSION_REQUEST_CODE)
     }
 
+    override fun onStart() {
+        super.onStart()
+        val app = application as com.meshwhisper.app.MeshApplication
+        if (checkHasPermissions()) {
+            app.bleEngine.setLowLatencyMode(true) // Upshift to high-speed scan in foreground
+            app.bleEngine.start(app.cryptoEngine.nodeId)
+            if (viewModel.isBackgroundRelayEnabled.value) {
+                viewModel.startService()
+            }
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        val app = application as com.meshwhisper.app.MeshApplication
+        if (viewModel.isBackgroundRelayEnabled.value) {
+            // Downshift to balanced duty-cycle mode in background service
+            app.bleEngine.setLowLatencyMode(false)
+        } else {
+            // User disabled background relay -> fully stop radio when app is minimized/closed
+            app.bleEngine.stop()
+            app.stopMeshService()
+        }
+    }
+
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         val granted = checkHasPermissions()
         isPermissionsGrantedState.value = granted
         if (granted) {
-            viewModel.startService()
+            val app = application as com.meshwhisper.app.MeshApplication
+            app.bleEngine.setLowLatencyMode(true)
+            app.bleEngine.start(app.cryptoEngine.nodeId)
+            if (viewModel.isBackgroundRelayEnabled.value) {
+                viewModel.startService()
+            }
         }
     }
 
@@ -103,7 +133,12 @@ class MainActivity : FragmentActivity() {
         val granted = checkHasPermissions()
         isPermissionsGrantedState.value = granted
         if (granted) {
-            viewModel.startService()
+            val app = application as com.meshwhisper.app.MeshApplication
+            app.bleEngine.setLowLatencyMode(true)
+            app.bleEngine.start(app.cryptoEngine.nodeId)
+            if (viewModel.isBackgroundRelayEnabled.value) {
+                viewModel.startService()
+            }
         }
     }
 
@@ -111,7 +146,12 @@ class MainActivity : FragmentActivity() {
         super.onCreate(savedInstanceState)
         isPermissionsGrantedState.value = checkHasPermissions()
         if (isPermissionsGrantedState.value) {
-            viewModel.startService()
+            val app = application as com.meshwhisper.app.MeshApplication
+            app.bleEngine.setLowLatencyMode(true)
+            app.bleEngine.start(app.cryptoEngine.nodeId)
+            if (viewModel.isBackgroundRelayEnabled.value) {
+                viewModel.startService()
+            }
         }
 
         setContent {

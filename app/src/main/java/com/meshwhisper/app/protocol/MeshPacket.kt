@@ -42,7 +42,13 @@ data class MeshPacket(
         const val AUTH_TAG_SIZE: Int = 16
         const val OVERHEAD_SIZE: Int = HEADER_SIZE + AUTH_TAG_SIZE // 56 bytes
         const val MAX_PAYLOAD_SIZE: Int = 2048 // Suitable for BLE MTU fragment/chunking
-        const val CHUNK_PAYLOAD_SIZE: Int = 1800 // Payload byte slice per MEDIA_CHUNK
+        // Payload byte slice per MEDIA_CHUNK packet.
+        // Sizing: at MTU 512, BleFrameFramer safe payload = 512 - 3 (ATT header) - 4 (framer overhead) = 505 bytes.
+        // A serialized MEDIA_CHUNK has 56 bytes of fixed MeshPacket overhead + 18-byte media envelope
+        // (16B mediaId + 2B chunkIndex) = 74 bytes total overhead → max chunk payload = 505 - 74 = 431 bytes.
+        // We use 400 for a 31-byte safety margin so each chunk stays a FRAME_TYPE_SINGLE even at slightly
+        // lower negotiated MTUs — the same reliable single-frame path text messages already use.
+        const val CHUNK_PAYLOAD_SIZE: Int = 400
 
         /**
          * Serializes a MeshPacket into a compact binary byte array.

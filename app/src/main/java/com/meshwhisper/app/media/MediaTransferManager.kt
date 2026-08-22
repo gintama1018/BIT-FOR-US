@@ -39,7 +39,7 @@ class MediaTransferManager(
     private val context: Context,
     private val database: MeshDatabase,
     private val cryptoEngine: CryptoEngine,
-    private val packetBroadcaster: (ByteArray) -> Unit,
+    private val packetBroadcaster: suspend (ByteArray) -> Unit,
     private val ackSender: (recipientId: Long, messageId: UUID) -> Unit
 ) {
     private val tag = "MediaTransferManager"

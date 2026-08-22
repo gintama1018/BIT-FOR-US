@@ -716,7 +716,7 @@ class MeshBleEngine(private val context: Context) {
      * Uses negotiated MTU per central/peripheral connection for optimal throughput and low latency.
      */
     @SuppressLint("MissingPermission")
-    fun broadcastPacket(packetBytes: ByteArray, excludeAddress: String? = null) {
+    suspend fun broadcastPacket(packetBytes: ByteArray, excludeAddress: String? = null) {
         // Transmit to Centrals connected to our GATT server
         val server = gattServer
         val service = server?.getService(BleConstants.MESH_SERVICE_UUID)
@@ -730,16 +730,23 @@ class MeshBleEngine(private val context: Context) {
                 for (frame in frames) {
                     try {
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                            server.notifyCharacteristicChanged(device, notifyChar, false, frame)
+                            val status = server.notifyCharacteristicChanged(device, notifyChar, false, frame)
+                            if (status != BluetoothGatt.GATT_SUCCESS) {
+                                Log.w(tag, "notifyCharacteristicChanged rejected for central $addr (status=$status, frameSize=${frame.size})")
+                            }
                         } else {
                             @Suppress("DEPRECATION")
                             notifyChar.value = frame
                             @Suppress("DEPRECATION")
-                            server.notifyCharacteristicChanged(device, notifyChar, false)
+                            val ok = server.notifyCharacteristicChanged(device, notifyChar, false)
+                            if (!ok) {
+                                Log.w(tag, "notifyCharacteristicChanged returned false for central $addr (frameSize=${frame.size})")
+                            }
                         }
                     } catch (e: Exception) {
                         Log.e(tag, "Failed to notify central $addr", e)
                     }
+                    delay(15L) // Pace raw BLE frame writes to prevent write-queue saturation
                 }
             }
         }
@@ -753,22 +760,29 @@ class MeshBleEngine(private val context: Context) {
             for (frame in frames) {
                 try {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        conn.gatt.writeCharacteristic(
+                        val status = conn.gatt.writeCharacteristic(
                             writeChar,
                             frame,
                             BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
                         )
+                        if (status != BluetoothGatt.GATT_SUCCESS) {
+                            Log.w(tag, "writeCharacteristic rejected for peripheral $addr (status=$status, frameSize=${frame.size})")
+                        }
                     } else {
                         @Suppress("DEPRECATION")
                         writeChar.value = frame
                         @Suppress("DEPRECATION")
                         writeChar.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
                         @Suppress("DEPRECATION")
-                        conn.gatt.writeCharacteristic(writeChar)
+                        val ok = conn.gatt.writeCharacteristic(writeChar)
+                        if (!ok) {
+                            Log.w(tag, "writeCharacteristic returned false for peripheral $addr (frameSize=${frame.size})")
+                        }
                     }
                 } catch (e: Exception) {
                     Log.e(tag, "Failed to write to client $addr", e)
                 }
+                delay(15L) // Pace raw BLE frame writes to prevent write-queue saturation
             }
         }
     }

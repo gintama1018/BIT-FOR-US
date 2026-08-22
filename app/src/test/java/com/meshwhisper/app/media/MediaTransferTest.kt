@@ -17,7 +17,7 @@ class MediaTransferTest {
         val chunkSize = MeshPacket.CHUNK_PAYLOAD_SIZE
         val totalChunks = ceil(originalPayload.size.toDouble() / chunkSize).toInt()
 
-        assertThat(totalChunks).isEqualTo(26)
+        assertThat(totalChunks).isEqualTo(116)
 
         // Split into chunks
         val chunkMap = mutableMapOf<Int, ByteArray>()

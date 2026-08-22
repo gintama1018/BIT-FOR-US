@@ -62,21 +62,35 @@ class MeshApplication : Application() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+            // 1. Persistent background mesh service channel (Low priority)
+            val serviceChannel = NotificationChannel(
                 CHANNEL_ID,
                 getString(R.string.channel_name_mesh),
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
                 description = getString(R.string.channel_desc_mesh)
             }
+            manager.createNotificationChannel(serviceChannel)
 
-            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            manager.createNotificationChannel(channel)
+            // 2. High priority chat message notification channel (Heads-up alert)
+            val messagesChannel = NotificationChannel(
+                MESSAGES_CHANNEL_ID,
+                "Mesh Messages",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Direct and broadcast mesh chat alerts"
+                enableVibration(true)
+                enableLights(true)
+            }
+            manager.createNotificationChannel(messagesChannel)
         }
     }
 
     companion object {
         const val CHANNEL_ID = "mesh_service_channel"
+        const val MESSAGES_CHANNEL_ID = "mesh_messages_channel"
         lateinit var instance: MeshApplication private set
     }
 }

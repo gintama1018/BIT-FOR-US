@@ -117,38 +117,56 @@ class MediaTransferManager(
         val timestampSec = System.currentTimeMillis() / 1000L
 
         // Save local copy in app-private storage
-        val ext = if (mediaType == MediaType.IMAGE) "jpg" else "m4a"
-        val localFile = File(context.filesDir, "media/${mediaId}.$ext")
+        val ext = when (mediaType) {
+            MediaType.IMAGE -> "jpg"
+            MediaType.VOICE -> "m4a"
+            MediaType.AVATAR -> "jpg"
+            MediaType.NONE -> "bin"
+        }
+        val localDir = if (mediaType == MediaType.AVATAR) {
+            File(context.filesDir, "avatars").also { if (!it.exists()) it.mkdirs() }
+        } else {
+            File(context.filesDir, "media").also { if (!it.exists()) it.mkdirs() }
+        }
+        val localFile = File(localDir, "${mediaId}.$ext")
         localFile.writeBytes(mediaBytes)
 
         val totalChunks = ceil(mediaBytes.size.toDouble() / MeshPacket.CHUNK_PAYLOAD_SIZE).toInt()
         val captionBytes = caption.toByteArray(Charsets.UTF_8).take(255).toByteArray()
 
-        // 1. Insert local DB record as PENDING
-        val message = MessageEntity(
-            messageId = mediaId.toString(),
-            senderId = cryptoEngine.nodeId,
-            recipientId = recipientNodeId,
-            senderAlias = cryptoEngine.alias,
-            text = caption.ifBlank { if (mediaType == MediaType.IMAGE) "📷 Photo" else "🎤 Voice note" },
-            timestamp = System.currentTimeMillis(),
-            isOutgoing = true,
-            isBroadcast = isBroadcast,
-            status = MessageStatus.PENDING,
-            mediaType = mediaType,
-            mediaUri = localFile.absolutePath,
-            mediaSizeBytes = mediaBytes.size.toLong(),
-            mediaProgress = 0.0f,
-            mediaDurationMs = durationMs
-        )
-        database.messageDao().insert(message)
+        // 1. Insert local DB record as PENDING (only for chat media, not avatar transfers)
+        if (mediaType != MediaType.AVATAR) {
+            val message = MessageEntity(
+                messageId = mediaId.toString(),
+                senderId = cryptoEngine.nodeId,
+                recipientId = recipientNodeId,
+                senderAlias = cryptoEngine.alias,
+                text = caption.ifBlank { if (mediaType == MediaType.IMAGE) "📷 Photo" else "🎤 Voice note" },
+                timestamp = System.currentTimeMillis(),
+                isOutgoing = true,
+                isBroadcast = isBroadcast,
+                status = MessageStatus.PENDING,
+                mediaType = mediaType,
+                mediaUri = localFile.absolutePath,
+                mediaSizeBytes = mediaBytes.size.toLong(),
+                mediaProgress = 0.0f,
+                mediaDurationMs = durationMs
+            )
+            database.messageDao().insert(message)
+        }
 
         // 2. Build and Send MEDIA_INIT packet (fresh packet.messageId for unique AES-GCM IV)
+        val typeByte = when (mediaType) {
+            MediaType.IMAGE -> 0.toByte()
+            MediaType.VOICE -> 1.toByte()
+            MediaType.AVATAR -> 2.toByte()
+            MediaType.NONE -> 0.toByte()
+        }
         val initPayloadSize = 16 + 1 + 2 + 4 + 4 + 1 + captionBytes.size
         val initBuffer = ByteBuffer.allocate(initPayloadSize).order(ByteOrder.BIG_ENDIAN)
         initBuffer.putLong(mediaId.mostSignificantBits)
         initBuffer.putLong(mediaId.leastSignificantBits)
-        initBuffer.put(if (mediaType == MediaType.IMAGE) 0.toByte() else 1.toByte())
+        initBuffer.put(typeByte)
         initBuffer.putShort((totalChunks and 0xFFFF).toShort())
         initBuffer.putInt(mediaBytes.size)
         initBuffer.putInt(durationMs.toInt())
@@ -250,12 +268,14 @@ class MediaTransferManager(
             packetBroadcaster(MeshPacket.serialize(chunkPacket))
 
             val progress = (chunkIndex + 1).toFloat() / totalChunks
-            database.messageDao().updateMediaTransfer(
-                messageId = mediaId.toString(),
-                progress = progress,
-                mediaUri = localFile.absolutePath,
-                status = if (chunkIndex == totalChunks - 1) MessageStatus.SENT else MessageStatus.PENDING
-            )
+            if (mediaType != MediaType.AVATAR) {
+                database.messageDao().updateMediaTransfer(
+                    messageId = mediaId.toString(),
+                    progress = progress,
+                    mediaUri = localFile.absolutePath,
+                    status = if (chunkIndex == totalChunks - 1) MessageStatus.SENT else MessageStatus.PENDING
+                )
+            }
 
             _transferProgress.emit(
                 MediaTransferProgress(
@@ -307,7 +327,12 @@ class MediaTransferManager(
         val mediaIdLeast = buffer.getLong()
         val mediaId = UUID(mediaIdMost, mediaIdLeast)
         val typeCode = buffer.get()
-        val mediaType = if (typeCode == 0.toByte()) MediaType.IMAGE else MediaType.VOICE
+        val mediaType = when (typeCode) {
+            0.toByte() -> MediaType.IMAGE
+            1.toByte() -> MediaType.VOICE
+            2.toByte() -> MediaType.AVATAR
+            else -> MediaType.IMAGE
+        }
         val totalChunks = buffer.getShort().toInt() and 0xFFFF
         val totalSizeBytes = buffer.getInt()
         val durationMs = buffer.getInt().toLong()
@@ -336,24 +361,26 @@ class MediaTransferManager(
         )
         inboundSessions[sessionKey] = session
 
-        // Insert placeholder message in Room
-        val placeholder = MessageEntity(
-            messageId = mediaId.toString(),
-            senderId = packet.senderId,
-            recipientId = packet.recipientId,
-            senderAlias = senderAlias,
-            text = caption.ifBlank { if (mediaType == MediaType.IMAGE) "📷 Photo" else "🎤 Voice note" },
-            timestamp = packet.timestamp * 1000L,
-            isOutgoing = false,
-            isBroadcast = isBroadcast,
-            status = MessageStatus.PENDING,
-            mediaType = mediaType,
-            mediaUri = null,
-            mediaSizeBytes = totalSizeBytes.toLong(),
-            mediaProgress = 0.0f,
-            mediaDurationMs = durationMs
-        )
-        database.messageDao().insert(placeholder)
+        // Insert placeholder message in Room (only for chat media, not avatar transfers)
+        if (mediaType != MediaType.AVATAR) {
+            val placeholder = MessageEntity(
+                messageId = mediaId.toString(),
+                senderId = packet.senderId,
+                recipientId = packet.recipientId,
+                senderAlias = senderAlias,
+                text = caption.ifBlank { if (mediaType == MediaType.IMAGE) "📷 Photo" else "🎤 Voice note" },
+                timestamp = packet.timestamp * 1000L,
+                isOutgoing = false,
+                isBroadcast = isBroadcast,
+                status = MessageStatus.PENDING,
+                mediaType = mediaType,
+                mediaUri = null,
+                mediaSizeBytes = totalSizeBytes.toLong(),
+                mediaProgress = 0.0f,
+                mediaDurationMs = durationMs
+            )
+            database.messageDao().insert(placeholder)
+        }
         Log.d(tag, "Received MEDIA_INIT: $mediaId ($mediaType, $totalChunks chunks, $totalSizeBytes bytes)")
     }
 
@@ -409,19 +436,28 @@ class MediaTransferManager(
 
         // If not all chunks received yet, update progress in DB
         if (receivedCount < session.totalChunks) {
-            database.messageDao().updateMediaTransfer(
-                messageId = mediaId.toString(),
-                progress = progress,
-                mediaUri = null,
-                status = MessageStatus.PENDING
-            )
+            if (session.mediaType != MediaType.AVATAR) {
+                database.messageDao().updateMediaTransfer(
+                    messageId = mediaId.toString(),
+                    progress = progress,
+                    mediaUri = null,
+                    status = MessageStatus.PENDING
+                )
+            }
             return
         }
 
         // All chunks received! Reassemble file in order
         inboundSessions.remove(sessionKey)
-        val ext = if (session.mediaType == MediaType.IMAGE) "jpg" else "m4a"
-        val destFile = File(context.filesDir, "media/${mediaId}.$ext")
+        val isAvatar = (session.mediaType == MediaType.AVATAR)
+        val destDir = if (isAvatar) {
+            File(context.filesDir, "avatars").also { if (!it.exists()) it.mkdirs() }
+        } else {
+            File(context.filesDir, "media").also { if (!it.exists()) it.mkdirs() }
+        }
+        val ext = if (session.mediaType == MediaType.VOICE) "m4a" else "jpg"
+        val fileName = if (isAvatar) "avatar_${session.senderId}.$ext" else "${mediaId}.$ext"
+        val destFile = File(destDir, fileName)
 
         try {
             FileOutputStream(destFile).use { fos ->
@@ -431,14 +467,20 @@ class MediaTransferManager(
                 }
             }
 
-            database.messageDao().updateMediaTransfer(
-                messageId = mediaId.toString(),
-                progress = 1.0f,
-                mediaUri = destFile.absolutePath,
-                status = MessageStatus.DELIVERED
-            )
-
-            Log.i(tag, "Successfully reassembled media $mediaId to: ${destFile.absolutePath}")
+            if (isAvatar) {
+                val fileBytes = destFile.readBytes()
+                val avatarHash = (fileBytes.fold(0) { acc, b -> (acc * 31 + b.toInt()) } and 0xFF).toByte()
+                database.peerDao().updateAvatar(session.senderId, destFile.absolutePath, avatarHash)
+                Log.i(tag, "Successfully updated peer ${session.senderId} avatar: ${destFile.absolutePath} (hash=$avatarHash)")
+            } else {
+                database.messageDao().updateMediaTransfer(
+                    messageId = mediaId.toString(),
+                    progress = 1.0f,
+                    mediaUri = destFile.absolutePath,
+                    status = MessageStatus.DELIVERED
+                )
+                Log.i(tag, "Successfully reassembled media $mediaId to: ${destFile.absolutePath}")
+            }
 
             // Send delivery ACK back to sender for private DMs
             if (!session.isBroadcast) {

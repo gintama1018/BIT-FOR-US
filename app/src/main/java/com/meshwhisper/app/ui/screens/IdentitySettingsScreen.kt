@@ -85,6 +85,9 @@ fun IdentitySettingsScreen(
     val clipboardManager = LocalClipboardManager.current
 
     val myAlias by viewModel.myAlias.collectAsState()
+    val myAvatarUri by viewModel.myAvatarUri.collectAsState()
+    val isNotificationsEnabled by viewModel.isNotificationsEnabled.collectAsState()
+    val showNotificationPreviews by viewModel.showNotificationPreviews.collectAsState()
     val supportsPeripheral by viewModel.supportsPeripheral.collectAsState()
     val identityVersion by viewModel.identityVersion.collectAsState()
 
@@ -92,6 +95,15 @@ fun IdentitySettingsScreen(
     var aliasInput by remember { mutableStateOf(myAlias) }
     var showQrDialog by remember { mutableStateOf(false) }
     var showClearDialog by remember { mutableStateOf(false) }
+
+    val avatarPickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.updateMyAvatar(context, uri)
+            Toast.makeText(context, "Profile photo updated", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     val qrContent = remember(myAlias, viewModel.myNodeIdHex, viewModel.myPublicKeyHex, identityVersion) {
         "meshwhisper://node?id=${viewModel.myNodeIdHex}&alias=$myAlias&pub=${viewModel.myPublicKeyHex}"
@@ -187,7 +199,77 @@ fun IdentitySettingsScreen(
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // Profile Photo & Avatar Row
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            com.meshwhisper.app.ui.components.NodeAvatar(
+                                nodeId = viewModel.myNodeId,
+                                alias = myAlias,
+                                size = 60.dp,
+                                avatarUri = myAvatarUri
+                            )
+
+                            Spacer(modifier = Modifier.width(14.dp))
+
+                            Column {
+                                Row {
+                                    Button(
+                                        onClick = {
+                                            try {
+                                                avatarPickerLauncher.launch(
+                                                    androidx.activity.result.PickVisualMediaRequest(
+                                                        androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly
+                                                    )
+                                                )
+                                            } catch (e: Exception) {
+                                                Toast.makeText(context, "No photo picker available", Toast.LENGTH_SHORT).show()
+                                            }
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = BurntSiennaContainer),
+                                        shape = RoundedCornerShape(6.dp),
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                                    ) {
+                                        Text(
+                                            text = if (myAvatarUri != null) "Change Photo" else "Add Photo",
+                                            color = BurntSienna,
+                                            fontSize = 12.sp,
+                                            fontFamily = ManropeFamily,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+
+                                    if (myAvatarUri != null) {
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        TextButton(
+                                            onClick = {
+                                                viewModel.removeMyAvatar()
+                                                Toast.makeText(context, "Profile photo removed", Toast.LENGTH_SHORT).show()
+                                            },
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                                        ) {
+                                            Text(
+                                                text = "Remove",
+                                                color = WarmRed,
+                                                fontSize = 12.sp,
+                                                fontFamily = ManropeFamily
+                                            )
+                                        }
+                                    }
+                                }
+                                Text(
+                                    text = "Synced automatically with peers over BLE",
+                                    color = TextSecondary,
+                                    fontSize = 10.sp,
+                                    fontFamily = ManropeFamily
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(14.dp))
 
                         // Alias Editor
                         if (isEditingAlias) {
@@ -447,6 +529,74 @@ fun IdentitySettingsScreen(
                                     checkedTrackColor = BurntSiennaContainer
                                 )
                             )
+                        }
+
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        // Message Notifications Master Toggle
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Message Notifications",
+                                    color = TextPrimary,
+                                    fontSize = 14.sp,
+                                    fontFamily = ManropeFamily,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = "Heads-up notification alerts when off-chat or backgrounded",
+                                    color = TextSecondary,
+                                    fontSize = 11.sp,
+                                    fontFamily = ManropeFamily
+                                )
+                            }
+                            Switch(
+                                checked = isNotificationsEnabled,
+                                onCheckedChange = { viewModel.setNotificationsEnabled(it) },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = BurntSienna,
+                                    checkedTrackColor = BurntSiennaContainer
+                                )
+                            )
+                        }
+
+                        if (isNotificationsEnabled) {
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            // Show Message Previews Toggle (Signal-style Privacy)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Show Message Previews",
+                                        color = TextPrimary,
+                                        fontSize = 14.sp,
+                                        fontFamily = ManropeFamily,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Text(
+                                        text = "Show message text snippet in notification banners",
+                                        color = TextSecondary,
+                                        fontSize = 11.sp,
+                                        fontFamily = ManropeFamily
+                                    )
+                                }
+                                Switch(
+                                    checked = showNotificationPreviews,
+                                    onCheckedChange = { viewModel.setShowNotificationPreviews(it) },
+                                    colors = SwitchDefaults.colors(
+                                        checkedThumbColor = BurntSienna,
+                                        checkedTrackColor = BurntSiennaContainer
+                                    )
+                                )
+                            }
                         }
 
                         Spacer(modifier = Modifier.height(10.dp))

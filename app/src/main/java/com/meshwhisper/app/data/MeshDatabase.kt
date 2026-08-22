@@ -38,7 +38,7 @@ import javax.crypto.spec.SecretKeySpec
         ProcessedPacketEntity::class,
         TopologyEdgeEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class MeshDatabase : RoomDatabase() {
@@ -57,6 +57,14 @@ abstract class MeshDatabase : RoomDatabase() {
         private const val PREFS_DB_SECURITY = "meshwhisper_db_security_prefs"
         private const val PREF_DB_KEY_ENC = "db_passphrase_enc_hex"
         private const val PREF_DB_KEY_IV = "db_passphrase_iv_hex"
+
+        val MIGRATION_5_6 = object : androidx.room.migration.Migration(5, 6) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE peers ADD COLUMN avatarUri TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE peers ADD COLUMN avatarHash INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE peers ADD COLUMN isMuted INTEGER NOT NULL DEFAULT 0")
+            }
+        }
 
         @Volatile
         private var INSTANCE: MeshDatabase? = null
@@ -82,6 +90,7 @@ abstract class MeshDatabase : RoomDatabase() {
                 "meshwhisper_encrypted_db"
             )
                 .openHelperFactory(supportFactory)
+                .addMigrations(MIGRATION_5_6)
                 .fallbackToDestructiveMigration()
                 .build()
         }

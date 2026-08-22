@@ -15,7 +15,9 @@ enum class PacketType(val code: Byte) {
     ACK(0x03),
     PEER_ANNOUNCE(0x04),
     MEDIA_INIT(0x05),
-    MEDIA_CHUNK(0x06);
+    MEDIA_CHUNK(0x06),
+    AVATAR_REQUEST(0x07),
+    TYPING_INDICATOR(0x08);
 
     companion object {
         fun fromCode(code: Byte): PacketType? {

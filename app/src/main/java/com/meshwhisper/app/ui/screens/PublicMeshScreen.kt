@@ -2,6 +2,7 @@ package com.meshwhisper.app.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,6 +35,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -83,6 +85,14 @@ fun PublicMeshScreen(
     val connectedNodes by viewModel.connectedPeersCount.collectAsState()
     var textInput by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
+
+    // Track active chat lifecycle for Smart Notifications (suppresses public notifications when open)
+    DisposableEffect(Unit) {
+        viewModel.setCurrentOpenChat(-1L)
+        onDispose {
+            viewModel.setCurrentOpenChat(null)
+        }
+    }
 
     // Auto-scroll on new message
     LaunchedEffect(messages.size) {
@@ -353,6 +363,8 @@ fun ChatInputBar(
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var isRecording by remember { mutableStateOf(false) }
+    var showEmojiPicker by remember { mutableStateOf(false) }
+    var selectedCategoryIndex by remember { mutableStateOf(0) }
     var recordTimeSec by remember { mutableStateOf(0) }
     var recordOutputFile by remember { mutableStateOf<java.io.File?>(null) }
 
@@ -509,6 +521,16 @@ fun ChatInputBar(
                                 fontSize = 14.sp
                             )
                         },
+                        trailingIcon = {
+                            IconButton(
+                                onClick = { showEmojiPicker = !showEmojiPicker }
+                            ) {
+                                Text(
+                                    text = if (showEmojiPicker) "⌨️" else "😊",
+                                    fontSize = 18.sp
+                                )
+                            }
+                        },
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = BurntSienna,
                             unfocusedBorderColor = WarmCardBorder,
@@ -560,6 +582,74 @@ fun ChatInputBar(
                                 tint = BurntSienna,
                                 modifier = Modifier.size(22.dp)
                             )
+                        }
+                    }
+                }
+
+                // Sahara Emoji Drawer
+                if (showEmojiPicker) {
+                    val emojiCategories = listOf(
+                        "Smileys" to listOf("😊", "😂", "🤣", "😍", "🥰", "😎", "🤔", "🤫", "🤐", "😴", "🥳", "🥺", "😭", "😱", "🤯", "🥵", "🥶", "💀", "💩", "🤡", "🤠", "😈", "😇", "🤩"),
+                        "Gestures" to listOf("👍", "👎", "👌", "✌️", "🤞", "🤝", "👏", "🙌", "👐", "🤲", "🙏", "✍️", "💪", "🤙", "👊", "✊", "🤛", "🤜", "🖐", "✋", "🖖", "👋", "👉", "👈"),
+                        "Hearts" to listOf("❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍", "🤎", "💔", "❣️", "💕", "💞", "💓", "💗", "💖", "💘", "💝", "🔥", "✨", "⚡", "🌟", "⭐", "💫"),
+                        "Objects" to listOf("🎉", "🎊", "🎈", "🎁", "🏆", "🥇", "🎯", "🎲", "🎮", "🕹", "🎧", "🎤", "📱", "💻", "📡", "🔋", "💡", "🔑", "🛡", "🔒", "📦", "🚀", "☕", "🍕")
+                    )
+
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(WarmSurface)
+                            .padding(8.dp)
+                    ) {
+                        // Category Tabs
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceAround
+                        ) {
+                            emojiCategories.forEachIndexed { idx, (catName, _) ->
+                                val isSelected = (selectedCategoryIndex == idx)
+                                androidx.compose.material3.TextButton(
+                                    onClick = { selectedCategoryIndex = idx },
+                                    colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
+                                        contentColor = if (isSelected) BurntSienna else TextMuted
+                                    )
+                                ) {
+                                    Text(
+                                        text = catName,
+                                        fontSize = 12.sp,
+                                        fontFamily = ManropeFamily,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                }
+                            }
+                        }
+
+                        HorizontalDivider(color = WarmCardBorder, thickness = 0.5.dp)
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        // Emoji Grid
+                        val currentEmojis = emojiCategories[selectedCategoryIndex].second
+                        androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
+                            columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(8),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(160.dp),
+                            contentPadding = PaddingValues(4.dp)
+                        ) {
+                            items(currentEmojis.size) { idx ->
+                                val em = currentEmojis[idx]
+                                Box(
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .clickable {
+                                            onTextChanged(text + em)
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(text = em, fontSize = 20.sp)
+                                }
+                            }
                         }
                     }
                 }

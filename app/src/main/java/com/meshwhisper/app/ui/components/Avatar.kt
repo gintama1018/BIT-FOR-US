@@ -1,5 +1,7 @@
 package com.meshwhisper.app.ui.components
 
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
@@ -13,6 +15,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -20,6 +24,7 @@ import androidx.compose.ui.unit.sp
 import com.meshwhisper.app.ui.theme.ManropeFamily
 import com.meshwhisper.app.ui.theme.WarmGreen
 import com.meshwhisper.app.ui.theme.WarmLinen
+import java.io.File
 import kotlin.math.abs
 
 // Sahara Warm-Shifted Avatar Palette (Burnt Sienna, Terracotta, Dusty Rose, Ochre, Raw Umber)
@@ -42,9 +47,19 @@ fun NodeAvatar(
     alias: String,
     modifier: Modifier = Modifier,
     size: Dp = 44.dp,
+    avatarUri: String? = null,
     isDirect: Boolean = false,
     showOnlineBadge: Boolean = false
 ) {
+    val bitmap = remember(avatarUri) {
+        if (!avatarUri.isNullOrBlank()) {
+            val file = File(avatarUri)
+            if (file.exists() && file.length() > 0) {
+                BitmapFactory.decodeFile(file.absolutePath)?.asImageBitmap()
+            } else null
+        } else null
+    }
+
     val bgColor = remember(nodeId) {
         val hash = (nodeId xor (nodeId ushr 32)) and 0x7FFFFFFF
         val index = (hash % AVATAR_PALETTE.size).toInt()
@@ -73,20 +88,31 @@ fun NodeAvatar(
         modifier = modifier.size(size),
         contentAlignment = Alignment.Center
     ) {
-        Box(
-            modifier = Modifier
-                .size(size)
-                .clip(CircleShape)
-                .background(bgColor),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = initials,
-                color = Color.White,
-                fontSize = fontSize,
-                fontFamily = ManropeFamily,
-                fontWeight = FontWeight.Bold
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap,
+                contentDescription = "$alias avatar",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .size(size)
+                    .clip(CircleShape)
             )
+        } else {
+            Box(
+                modifier = Modifier
+                    .size(size)
+                    .clip(CircleShape)
+                    .background(bgColor),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = initials,
+                    color = Color.White,
+                    fontSize = fontSize,
+                    fontFamily = ManropeFamily,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
 
         if (showOnlineBadge && isDirect) {

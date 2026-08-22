@@ -36,6 +36,12 @@ interface PeerDao {
     @Query("UPDATE peers SET hasKeyChanged = :hasChanged, previousFingerprint = :prevFp WHERE nodeId = :nodeId")
     suspend fun markKeyChanged(nodeId: Long, hasChanged: Boolean, prevFp: String?)
 
+    @Query("UPDATE peers SET avatarUri = :avatarUri, avatarHash = :avatarHash WHERE nodeId = :nodeId")
+    suspend fun updateAvatar(nodeId: Long, avatarUri: String?, avatarHash: Byte)
+
+    @Query("UPDATE peers SET isMuted = :isMuted WHERE nodeId = :nodeId")
+    suspend fun setPeerMuted(nodeId: Long, isMuted: Boolean)
+
     @Query("DELETE FROM peers WHERE nodeId = :nodeId")
     suspend fun deletePeer(nodeId: Long)
 

@@ -158,6 +158,77 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         _isAppLockEnabled.value = enabled
     }
 
+    // Avatar Management
+    private val _myAvatarUri = MutableStateFlow<String?>(
+        java.io.File(application.filesDir, "avatars/my_avatar.jpg").let { if (it.exists()) it.absolutePath else null }
+    )
+    val myAvatarUri: StateFlow<String?> = _myAvatarUri.asStateFlow()
+
+    fun updateMyAvatar(context: android.content.Context, uri: android.net.Uri) {
+        viewModelScope.launch {
+            val bytes = com.meshwhisper.app.media.MediaCompressor.compressAvatar(context, uri)
+            if (bytes != null) {
+                val avatarDir = java.io.File(app.filesDir, "avatars").also { if (!it.exists()) it.mkdirs() }
+                val avatarFile = java.io.File(avatarDir, "my_avatar.jpg")
+                avatarFile.writeBytes(bytes)
+                _myAvatarUri.value = avatarFile.absolutePath
+                router.announcePresence()
+            }
+        }
+    }
+
+    fun removeMyAvatar() {
+        viewModelScope.launch {
+            val avatarFile = java.io.File(app.filesDir, "avatars/my_avatar.jpg")
+            if (avatarFile.exists()) avatarFile.delete()
+            _myAvatarUri.value = null
+            router.announcePresence()
+        }
+    }
+
+    // Notification State & On-Chat / Off-Chat Tracking
+    val currentOpenChatNodeId = MutableStateFlow<Long?>(null) // -1L = Public, >0 = Direct peer, null = None
+
+    private val notifPrefs = application.getSharedPreferences("meshwhisper_notification_prefs", android.content.Context.MODE_PRIVATE)
+    private val _isNotificationsEnabled = MutableStateFlow(notifPrefs.getBoolean("notifications_enabled", true))
+    val isNotificationsEnabled: StateFlow<Boolean> = _isNotificationsEnabled.asStateFlow()
+
+    private val _showNotificationPreviews = MutableStateFlow(notifPrefs.getBoolean("notification_previews", false))
+    val showNotificationPreviews: StateFlow<Boolean> = _showNotificationPreviews.asStateFlow()
+
+    fun setNotificationsEnabled(enabled: Boolean) {
+        notifPrefs.edit().putBoolean("notifications_enabled", enabled).apply()
+        _isNotificationsEnabled.value = enabled
+    }
+
+    fun setShowNotificationPreviews(enabled: Boolean) {
+        notifPrefs.edit().putBoolean("notification_previews", enabled).apply()
+        _showNotificationPreviews.value = enabled
+    }
+
+    fun setPeerMuted(peerNodeId: Long, isMuted: Boolean) {
+        viewModelScope.launch {
+            database.peerDao().setPeerMuted(peerNodeId, isMuted)
+        }
+    }
+
+    fun setCurrentOpenChat(nodeId: Long?) {
+        currentOpenChatNodeId.value = nodeId
+        if (nodeId != null) {
+            com.meshwhisper.app.service.MessageNotifier.clearNotification(app, nodeId)
+        }
+    }
+
+    // Typing State
+    private val _typingPeers = MutableStateFlow<Map<Long, Long>>(emptyMap()) // peerNodeId -> timestamp
+    val typingPeers: StateFlow<Map<Long, Long>> = _typingPeers.asStateFlow()
+
+    fun sendTyping(recipientNodeId: Long, isTyping: Boolean) {
+        viewModelScope.launch {
+            router.sendTypingIndicator(recipientNodeId, isTyping)
+        }
+    }
+
     val audioRecorder = com.meshwhisper.app.media.AudioRecorder(application)
     val audioPlayer = com.meshwhisper.app.media.AudioPlayer()
 
@@ -188,9 +259,12 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             audioPlayer.stop()
             com.meshwhisper.app.data.MeshDatabase.executeSecureWipe(app, database)
-            // Clean local media directory
+            // Clean local media and avatar directories
             val mediaDir = java.io.File(app.filesDir, "media")
             mediaDir.deleteRecursively()
+            val avatarDir = java.io.File(app.filesDir, "avatars")
+            avatarDir.deleteRecursively()
+            _myAvatarUri.value = null
             cryptoEngine.regenerateIdentity()
             setAppLockEnabled(false)
             _myAlias.value = "Node-${cryptoEngine.nodeIdHex.takeLast(4)}"
@@ -208,6 +282,9 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
             database.topologyEdgeDao().deleteAll()
             val mediaDir = java.io.File(app.filesDir, "media")
             mediaDir.deleteRecursively()
+            val avatarDir = java.io.File(app.filesDir, "avatars")
+            avatarDir.deleteRecursively()
+            _myAvatarUri.value = null
         }
     }
 
@@ -223,6 +300,44 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         appPrefs.registerOnSharedPreferenceChangeListener(prefListener)
+
+        // Incoming typing indicators
+        router.onTypingIndicatorListener = { senderId, isTyping ->
+            val now = System.currentTimeMillis()
+            val map = _typingPeers.value.toMutableMap()
+            if (isTyping) {
+                map[senderId] = now
+            } else {
+                map.remove(senderId)
+            }
+            _typingPeers.value = map
+        }
+
+        // WhatsApp-Style Smart Notifications (On-Chat vs Off-Chat)
+        router.onIncomingMessageListener = { senderId, senderAlias, text, isBroadcast ->
+            if (_isNotificationsEnabled.value) {
+                viewModelScope.launch {
+                    val peer = database.peerDao().getPeerById(senderId)
+                    val isMuted = peer?.isMuted == true
+                    if (!isMuted) {
+                        val activeChat = currentOpenChatNodeId.value
+                        val targetChat = if (isBroadcast) -1L else senderId
+                        val isOnChat = (activeChat == targetChat)
+                        if (!isOnChat) {
+                            com.meshwhisper.app.service.MessageNotifier.showMessageNotification(
+                                context = app,
+                                senderId = senderId,
+                                senderAlias = senderAlias,
+                                text = text,
+                                isBroadcast = isBroadcast,
+                                showPreview = _showNotificationPreviews.value,
+                                avatarUri = peer?.avatarUri
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fun setBackgroundRelayEnabled(enabled: Boolean) {

@@ -77,4 +77,68 @@ object MediaCompressor {
             null
         }
     }
+
+    private const val MAX_AVATAR_DIMENSION = 128
+    private const val MAX_AVATAR_BYTES = 8 * 1024 // 8 KB limit
+
+    fun compressAvatar(context: Context, imageUri: Uri): ByteArray? {
+        return try {
+            val contentResolver = context.contentResolver
+
+            val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            contentResolver.openInputStream(imageUri)?.use { input ->
+                BitmapFactory.decodeStream(input, null, options)
+            }
+
+            val origWidth = options.outWidth
+            val origHeight = options.outHeight
+            if (origWidth <= 0 || origHeight <= 0) return null
+
+            var inSampleSize = 1
+            val maxOrigDim = max(origWidth, origHeight)
+            if (maxOrigDim > MAX_AVATAR_DIMENSION) {
+                inSampleSize = maxOrigDim / MAX_AVATAR_DIMENSION
+            }
+
+            val decodeOptions = BitmapFactory.Options().apply {
+                this.inSampleSize = inSampleSize
+                inPreferredConfig = Bitmap.Config.RGB_565
+            }
+
+            val sampledBitmap = contentResolver.openInputStream(imageUri)?.use { input ->
+                BitmapFactory.decodeStream(input, null, decodeOptions)
+            } ?: return null
+
+            val width = sampledBitmap.width
+            val height = sampledBitmap.height
+            val scaleFactor = minOf(
+                MAX_AVATAR_DIMENSION.toFloat() / width,
+                MAX_AVATAR_DIMENSION.toFloat() / height,
+                1.0f
+            )
+
+            val scaledBitmap = if (scaleFactor < 1.0f) {
+                val newW = (width * scaleFactor).toInt()
+                val newH = (height * scaleFactor).toInt()
+                Bitmap.createScaledBitmap(sampledBitmap, newW, newH, true)
+            } else {
+                sampledBitmap
+            }
+
+            var quality = 65
+            var compressedBytes: ByteArray
+            do {
+                val outputStream = ByteArrayOutputStream()
+                scaledBitmap.compress(Bitmap.CompressFormat.JPEG, quality, outputStream)
+                compressedBytes = outputStream.toByteArray()
+                quality -= 10
+            } while (compressedBytes.size > MAX_AVATAR_BYTES && quality >= 20)
+
+            Log.d(TAG, "Compressed avatar to (${scaledBitmap.width}x${scaledBitmap.height}), size: ${compressedBytes.size} bytes (target <= 8KB)")
+            compressedBytes
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to compress avatar from URI: $imageUri", e)
+            null
+        }
+    }
 }

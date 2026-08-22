@@ -70,4 +70,34 @@ class PacketSerializationTest {
         val result = MeshPacket.deserialize(bytes)
         assertThat(result).isNull()
     }
+
+    @Test
+    fun testAvatarRequestAndTypingIndicatorSerialization() {
+        val avatarReq = MeshPacket(
+            type = PacketType.AVATAR_REQUEST,
+            messageId = UUID.randomUUID(),
+            senderId = 100L,
+            recipientId = 200L,
+            ttl = 7,
+            timestamp = 1000L,
+            payload = ByteArray(0)
+        )
+        val serializedReq = MeshPacket.serialize(avatarReq)
+        val deserializedReq = MeshPacket.deserialize(serializedReq)
+        assertThat(deserializedReq?.type).isEqualTo(PacketType.AVATAR_REQUEST)
+
+        val typing = MeshPacket(
+            type = PacketType.TYPING_INDICATOR,
+            messageId = UUID.randomUUID(),
+            senderId = 100L,
+            recipientId = 200L,
+            ttl = 1,
+            timestamp = 1000L,
+            payload = byteArrayOf(1)
+        )
+        val serializedTyping = MeshPacket.serialize(typing)
+        val deserializedTyping = MeshPacket.deserialize(serializedTyping)
+        assertThat(deserializedTyping?.type).isEqualTo(PacketType.TYPING_INDICATOR)
+        assertThat(deserializedTyping?.payload).isEqualTo(byteArrayOf(1))
+    }
 }

@@ -59,6 +59,9 @@ class MeshRouter(
     // Cooldown map to prevent spamming store-and-forward drains on every 4s heartbeat
     private val lastDrainTimes = java.util.concurrent.ConcurrentHashMap<Long, Long>()
 
+    var onTypingIndicatorListener: ((senderId: Long, isTyping: Boolean) -> Unit)? = null
+    var onIncomingMessageListener: ((senderId: Long, senderAlias: String, text: String, isBroadcast: Boolean) -> Unit)? = null
+
     init {
         bleEngine.onPacketReceivedListener = { packetBytes, ingressAddress ->
             handleIncomingPacket(packetBytes, ingressAddress)
@@ -159,6 +162,12 @@ class MeshRouter(
                 PacketType.MEDIA_CHUNK -> {
                     handleMediaChunk(packet, rawBytes, ingressAddress)
                 }
+                PacketType.AVATAR_REQUEST -> {
+                    handleAvatarRequest(packet, rawBytes, ingressAddress)
+                }
+                PacketType.TYPING_INDICATOR -> {
+                    handleTypingIndicator(packet, rawBytes, ingressAddress)
+                }
             }
         }
     }
@@ -227,6 +236,11 @@ class MeshRouter(
             )
         }
 
+        var peerAvatarHash: Byte = 0
+        if (buffer.hasRemaining()) {
+            peerAvatarHash = buffer.get()
+        }
+
         // Check if existing peer has rotated or changed public key (TOFU safety check)
         val existingPeer = database.peerDao().getPeerById(packet.senderId)
         val hasKeyChanged = (existingPeer != null && existingPeer.publicKeyHex != pubHex)
@@ -248,9 +262,19 @@ class MeshRouter(
             hopCount = maxOf(1, MeshPacket.DEFAULT_TTL - packet.ttl),
             isBlocked = isBlocked,
             hasKeyChanged = hasKeyChanged || (existingPeer?.hasKeyChanged ?: false),
-            previousFingerprint = prevFp
+            previousFingerprint = prevFp,
+            avatarUri = existingPeer?.avatarUri,
+            avatarHash = if (peerAvatarHash != 0.toByte()) peerAvatarHash else (existingPeer?.avatarHash ?: 0),
+            isMuted = existingPeer?.isMuted ?: false
         )
         database.peerDao().insertOrUpdate(peer)
+
+        // If peer announced a new/updated avatar hash, trigger unicast avatar request
+        if (peerAvatarHash != 0.toByte() && peerAvatarHash != existingPeer?.avatarHash) {
+            scope.launch {
+                requestAvatar(packet.senderId)
+            }
+        }
 
         // Drain store-and-forward queue for this newly available peer
         drainStoreAndForwardQueueForPeer(packet.senderId)
@@ -298,6 +322,10 @@ class MeshRouter(
                 hopCount = MeshPacket.DEFAULT_TTL - packet.ttl
             )
             database.messageDao().insert(messageEntity)
+
+            if (packet.senderId != cryptoEngine.nodeId) {
+                onIncomingMessageListener?.invoke(packet.senderId, senderAlias, text, true)
+            }
         } catch (e: Exception) {
             Log.e(tag, "Failed to decrypt or authenticate broadcast packet (AEAD header mismatch / corrupt): ${e.message}")
         }
@@ -354,6 +382,8 @@ class MeshRouter(
                         hopCount = MeshPacket.DEFAULT_TTL - packet.ttl
                     )
                     database.messageDao().insert(messageEntity)
+
+                    onIncomingMessageListener?.invoke(packet.senderId, senderPeer.alias, text, false)
 
                     // Send Delivery ACK back to sender
                     sendAck(packet.senderId, packet.messageId)
@@ -514,7 +544,16 @@ class MeshRouter(
             .take(10)
             .toList()
 
-        val payload = ByteArray(1 + aliasBytes.size + pubKeyBytes.size + 1 + (directNeighbors.size * 8))
+        // Read local avatar hash
+        val avatarFile = java.io.File(context.filesDir, "avatars/my_avatar.jpg")
+        val avatarHash = if (avatarFile.exists()) {
+            val bytes = avatarFile.readBytes()
+            (bytes.fold(0) { acc, b -> (acc * 31 + b.toInt()) } and 0xFF).toByte()
+        } else {
+            0.toByte()
+        }
+
+        val payload = ByteArray(1 + aliasBytes.size + pubKeyBytes.size + 1 + (directNeighbors.size * 8) + 1)
         val buffer = ByteBuffer.wrap(payload)
         buffer.put((aliasBytes.size and 0xFF).toByte())
         buffer.put(aliasBytes)
@@ -523,6 +562,7 @@ class MeshRouter(
         for (nId in directNeighbors) {
             buffer.putLong(nId)
         }
+        buffer.put(avatarHash)
 
         val packet = MeshPacket(
             type = PacketType.PEER_ANNOUNCE,
@@ -753,6 +793,92 @@ class MeshRouter(
         for (item in pending) {
             bleEngine.broadcastPacket(item.packetData)
             logPacket("SF_DRAIN", null, item.packetData.size, "Draining store-and-forward msg ${item.messageId} to $recipientNodeId")
+        }
+    }
+
+    suspend fun requestAvatar(peerNodeId: Long) {
+        val peer = database.peerDao().getPeerById(peerNodeId) ?: return
+        val timestamp = System.currentTimeMillis() / 1000L
+        val msgId = UUID.randomUUID()
+
+        val peerPubKey = CryptoEngine.hexToBytes(peer.publicKeyHex)
+        val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey, timestamp)
+
+        val aad = MeshPacket.computeAad(
+            type = PacketType.AVATAR_REQUEST,
+            messageId = msgId,
+            senderId = cryptoEngine.nodeId,
+            recipientId = peerNodeId,
+            timestamp = timestamp
+        )
+
+        val encResult = cryptoEngine.encrypt(
+            plaintext = ByteArray(0),
+            messageId = msgId,
+            aesKey = sessionKey,
+            aad = aad
+        )
+
+        val packet = MeshPacket(
+            type = PacketType.AVATAR_REQUEST,
+            messageId = msgId,
+            senderId = cryptoEngine.nodeId,
+            recipientId = peerNodeId,
+            ttl = MeshPacket.DEFAULT_TTL,
+            timestamp = timestamp,
+            payload = encResult.ciphertext,
+            authTag = encResult.authTag
+        )
+
+        val raw = MeshPacket.serialize(packet)
+        bleEngine.broadcastPacket(raw)
+        logPacket("TX", packet, raw.size, "Requested avatar from $peerNodeId")
+    }
+
+    private suspend fun handleAvatarRequest(packet: MeshPacket, rawBytes: ByteArray, ingressAddress: String?) {
+        if (packet.recipientId == cryptoEngine.nodeId) {
+            logPacket("RX", packet, rawBytes.size, "Avatar request received from ${packet.senderId}")
+            val avatarFile = java.io.File(context.filesDir, "avatars/my_avatar.jpg")
+            if (avatarFile.exists()) {
+                val avatarBytes = avatarFile.readBytes()
+                mediaTransferManager.sendMedia(
+                    recipientNodeId = packet.senderId,
+                    mediaType = com.meshwhisper.app.data.model.MediaType.AVATAR,
+                    mediaBytes = avatarBytes
+                )
+            }
+        } else if (packet.ttl > 1) {
+            val relayedPacket = packet.decrementTtl()
+            val relayedBytes = MeshPacket.serialize(relayedPacket)
+            bleEngine.broadcastPacket(relayedBytes, ingressAddress)
+            _relayedPacketsCount.value += 1
+            logPacket("RELAY", relayedPacket, relayedBytes.size, "Relaying avatar request for ${packet.recipientId}")
+        }
+    }
+
+    suspend fun sendTypingIndicator(recipientNodeId: Long, isTyping: Boolean) {
+        val msgId = UUID.randomUUID()
+        val timestamp = System.currentTimeMillis() / 1000L
+        val payload = byteArrayOf(if (isTyping) 1 else 0)
+
+        val packet = MeshPacket(
+            type = PacketType.TYPING_INDICATOR,
+            messageId = msgId,
+            senderId = cryptoEngine.nodeId,
+            recipientId = recipientNodeId,
+            ttl = 1, // Single-hop ephemeral
+            timestamp = timestamp,
+            payload = payload
+        )
+
+        val raw = MeshPacket.serialize(packet)
+        bleEngine.broadcastPacket(raw)
+    }
+
+    private fun handleTypingIndicator(packet: MeshPacket, rawBytes: ByteArray, ingressAddress: String?) {
+        if (packet.recipientId == cryptoEngine.nodeId || packet.recipientId == MeshPacket.BROADCAST_RECIPIENT_ID) {
+            val isTyping = packet.payload.isNotEmpty() && packet.payload[0] == 1.toByte()
+            onTypingIndicatorListener?.invoke(packet.senderId, isTyping)
         }
     }
 

@@ -15,7 +15,10 @@ data class PeerEntity(
     val hopCount: Int = 1,
     val isBlocked: Boolean = false,
     val hasKeyChanged: Boolean = false,
-    val previousFingerprint: String? = null
+    val previousFingerprint: String? = null,
+    val avatarUri: String? = null,
+    val avatarHash: Byte = 0,
+    val isMuted: Boolean = false
 ) {
     val nodeIdHex: String
         get() = String.format("%016X", nodeId)
@@ -32,7 +35,8 @@ enum class MessageStatus {
 enum class MediaType {
     NONE,
     IMAGE,
-    VOICE
+    VOICE,
+    AVATAR
 }
 
 @Entity(tableName = "messages")

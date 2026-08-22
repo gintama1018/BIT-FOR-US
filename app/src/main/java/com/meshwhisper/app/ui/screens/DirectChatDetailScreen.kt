@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
@@ -90,12 +91,27 @@ fun DirectChatDetailScreen(
     val messages by viewModel.getDirectMessagesForPeer(peerNodeId).collectAsState(initial = emptyList())
     val peers by viewModel.peers.collectAsState()
     val connectedNodeIds by viewModel.connectedNodeIds.collectAsState()
+    val typingPeers by viewModel.typingPeers.collectAsState()
     val peer = peers.firstOrNull { it.nodeId == peerNodeId }
     val isDirect = connectedNodeIds.contains(peerNodeId)
 
+    val isPeerTyping = remember(typingPeers, peerNodeId) {
+        val lastTyping = typingPeers[peerNodeId] ?: 0L
+        System.currentTimeMillis() - lastTyping < 4000L
+    }
+
     var textInput by remember { mutableStateOf("") }
     var menuExpanded by remember { mutableStateOf(false) }
+    var lastTypingSentMs by remember { mutableStateOf(0L) }
     val listState = rememberLazyListState()
+
+    // Track active chat lifecycle for Smart Notifications (suppresses notifications when open)
+    androidx.compose.runtime.DisposableEffect(peerNodeId) {
+        viewModel.setCurrentOpenChat(peerNodeId)
+        onDispose {
+            viewModel.setCurrentOpenChat(null)
+        }
+    }
 
     // Auto-scroll on new message
     LaunchedEffect(messages.size) {
@@ -134,6 +150,7 @@ fun DirectChatDetailScreen(
                         nodeId = peerNodeId,
                         alias = peer?.alias ?: "Node",
                         size = 40.dp,
+                        avatarUri = peer?.avatarUri,
                         isDirect = isDirect,
                         showOnlineBadge = true
                     )
@@ -149,20 +166,23 @@ fun DirectChatDetailScreen(
                             fontWeight = FontWeight.Bold
                         )
                         Row(verticalAlignment = Alignment.CenterVertically) {
+                            val subtitleText = when {
+                                isPeerTyping -> "Typing..."
+                                isDirect -> "⚡ Direct BLE link"
+                                peer != null -> {
+                                    val diffMs = System.currentTimeMillis() - peer.lastSeen
+                                    if (diffMs < 60_000L) "⚡ Active just now"
+                                    else if (diffMs < 3600_000L) "Active ${diffMs / 60_000L}m ago (${peer.hopCount} hops)"
+                                    else "Offline"
+                                }
+                                else -> "Offline"
+                            }
                             Text(
-                                text = "ID: ${String.format("%016X", peerNodeId).take(8)}...",
-                                color = TextMuted,
-                                fontSize = 11.sp,
-                                fontFamily = ManropeFamily
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            val linkStatus = if (isDirect) "⚡ Direct BLE link" else "⚡ ${peer?.hopCount ?: 1} hops away (Relayed)"
-                            Text(
-                                text = linkStatus,
-                                color = if (isDirect) WarmGreen else TextSecondary,
+                                text = subtitleText,
+                                color = if (isPeerTyping) BurntSienna else if (isDirect) WarmGreen else TextSecondary,
                                 fontSize = 11.sp,
                                 fontFamily = ManropeFamily,
-                                fontWeight = if (isDirect) FontWeight.SemiBold else FontWeight.Normal
+                                fontWeight = if (isPeerTyping || isDirect) FontWeight.SemiBold else FontWeight.Normal
                             )
                         }
                     }
@@ -184,6 +204,23 @@ fun DirectChatDetailScreen(
                                 .border(0.8.dp, WarmCardBorder, RoundedCornerShape(8.dp))
                         ) {
                             val isBlocked = peer?.isBlocked == true
+                            val isMuted = peer?.isMuted == true
+
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = if (isMuted) "Unmute Notifications" else "Mute Notifications",
+                                        color = TextPrimary,
+                                        fontFamily = ManropeFamily,
+                                        fontSize = 14.sp
+                                    )
+                                },
+                                onClick = {
+                                    menuExpanded = false
+                                    viewModel.setPeerMuted(peerNodeId, !isMuted)
+                                }
+                            )
+
                             DropdownMenuItem(
                                 text = {
                                     Text(
@@ -362,11 +399,19 @@ fun DirectChatDetailScreen(
         } else {
             ChatInputBar(
                 text = textInput,
-                onTextChanged = { textInput = it },
+                onTextChanged = {
+                    textInput = it
+                    val now = System.currentTimeMillis()
+                    if (now - lastTypingSentMs > 2500L) {
+                        lastTypingSentMs = now
+                        viewModel.sendTyping(peerNodeId, true)
+                    }
+                },
                 onSend = {
                     if (textInput.isNotBlank()) {
                         viewModel.sendDirect(peerNodeId, textInput)
                         textInput = ""
+                        viewModel.sendTyping(peerNodeId, false)
                     }
                 },
                 onSendMedia = { mediaType, bytes, caption, durationMs ->
@@ -497,20 +542,39 @@ fun DirectMessageBubble(
                     )
                     if (isMe) {
                         Spacer(modifier = Modifier.width(4.dp))
-                        if (msg.status == MessageStatus.DELIVERED) {
-                            Icon(
-                                imageVector = Icons.Default.DoneAll,
-                                contentDescription = "Delivered (ACK)",
-                                tint = WarmGreen,
-                                modifier = Modifier.size(14.dp)
-                            )
-                        } else {
-                            Icon(
-                                imageVector = Icons.Default.Check,
-                                contentDescription = "Sent",
-                                tint = BurntSiennaDim,
-                                modifier = Modifier.size(14.dp)
-                            )
+                        when (msg.status) {
+                            MessageStatus.DELIVERED -> {
+                                Icon(
+                                    imageVector = Icons.Default.DoneAll,
+                                    contentDescription = "Delivered (ACK)",
+                                    tint = WarmGreen,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
+                            MessageStatus.RELAYED -> {
+                                Icon(
+                                    imageVector = Icons.Default.DoneAll,
+                                    contentDescription = "Relayed",
+                                    tint = BurntSiennaDim,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
+                            MessageStatus.FAILED -> {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Failed",
+                                    tint = WarmRed,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
+                            else -> {
+                                Icon(
+                                    imageVector = Icons.Default.Check,
+                                    contentDescription = "Sent",
+                                    tint = BurntSiennaDim,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
                         }
                     }
                 }

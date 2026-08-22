@@ -1,197 +1,248 @@
 # MeshWhisper
 
-Offline peer-to-peer messaging for Android over Bluetooth Low Energy (BLE) multi-hop flood-relay mesh networks.
+Offline peer-to-peer messaging over a Bluetooth Low Energy (BLE) multi-hop flood-relay mesh network.
+
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Min SDK](https://img.shields.io/badge/Min%20SDK-26%20(Android%208.0)-brightgreen.svg)](https://developer.android.com)
+[![Target SDK](https://img.shields.io/badge/Target%20SDK-35%20(Android%2015)-orange.svg)](https://developer.android.com)
+[![Kotlin](https://img.shields.io/badge/Kotlin-2.0.21-purple.svg)](https://kotlinlang.org)
 
 ---
 
-## 1. Problem and Motivation
+## 1. Problem Statement
 
-In disaster response zones, remote field operations, dense public gatherings, or network-denied environments, centralized communications infrastructure (cellular towers, DNS root servers, and ISP backbones) frequently suffers catastrophic failure, severe congestion, or intentional shutdowns. MeshWhisper provides local, internet-independent text and multimedia messaging directly between nearby Android devices without requiring cellular towers, SIM cards, Wi-Fi access points, or external servers.
+Centralized communication infrastructure depends on cellular base stations, DNS root servers, centralized switches, and internet service provider backbones. In disaster response zones, remote search-and-rescue operations, dense protests or stadiums, and network-denied environments, centralized infrastructure fails via physical destruction, severe RF congestion, or intentional shutdowns.
 
----
-
-## 2. Key Features
-
-- **Multi-Hop Flood Relay**: Automatically relays packets through intermediate devices so nodes out of direct Bluetooth radio range can communicate.
-- **End-to-End Encryption**: 1-to-1 direct chats are encrypted with ephemeral session keys derived via X25519 Elliptic Curve Diffie-Hellman and HKDF-SHA256.
-- **Authenticated Additional Data (AAD)**: 40-byte binary packet headers are cryptographically bound to the AES-256-GCM authentication tag to prevent tampering by intermediate relays.
-- **Encrypted Local Database**: Local SQLite storage (messages, contacts, logs, and store-and-forward queues) is encrypted at rest using SQLCipher with its 256-bit passphrase sealed inside the Android Keystore.
-- **TOFU Safety Number Verification**: Detects public key fingerprint changes and displays visual alert banners to prevent man-in-the-middle impersonation.
-- **Decentralized Topology Visualization**: Real-time force-directed canvas ("Web of Nodes") driven by a neighbor-gossip protocol extension showing real direct vs. relayed links.
-- **Paced Multimedia Messaging**: Chunked transfer of downscaled images (max 640px JPEG, ≤60KB) and voice notes (AAC mono at 24kbps, ≤30s) with single-transfer concurrency caps and 70ms chunk pacing.
-- **Two-Layer Replay Protection**: Fast 4,000-entry in-memory `LruCache` coupled with a persistent Room database replay table.
-- **Store-and-Forward for DMs**: Caches undelivered direct messages on intermediate relay nodes for up to 24 hours until the destination node announces presence.
-- **Emergency Panic Duress Wipe**: Hardware Keystore master key purge and cryptographic database zeroization.
+MeshWhisper provides local, infrastructure-free text and media communications directly between Android devices over Bluetooth Low Energy (BLE). It requires no internet connectivity, SIM cards, Wi-Fi access points, base stations, or central servers. Every participating device acts as both an endpoint and an autonomous relay node.
 
 ---
 
-## 3. Architecture Overview
+## 2. Architecture Overview
 
-### Main Components
-- **`MeshBleEngine`** (`ble/MeshBleEngine.kt`): Manages simultaneous BLE Central (scanning, GATT client) and Peripheral (advertising, GATT server) roles, negotiates MTU up to 512 bytes, and exposes live connected GATT node sets (`connectedNodeIds`).
-- **`BleFrameFramer`** (`ble/BleFrameFramer.kt`): Fragments raw packets into MTU-bounded frames and reassembles them across concurrent multi-session Bluetooth connections.
-- **`MeshRouter`** (`router/MeshRouter.kt`): Manages packet deduplication, TTL decrementing, store-and-forward queueing, neighbor-gossip encoding, and packet dispatching.
-- **`CryptoEngine`** (`crypto/CryptoEngine.kt`): Generates X25519 identity keypairs, derives hourly epoch session keys via HKDF-SHA256, performs AES-256-GCM AEAD encryption/decryption with AAD binding, and wraps master keys in Android Keystore.
-- **`MediaTransferManager`** (`media/MediaTransferManager.kt`): Handles image compression, voice note recording/playback, chunked outbound transmission with fresh per-packet initialization vectors, and inbound out-of-order reassembly in private app storage.
-- **`GraphPhysics`** (`ui/graph/GraphPhysics.kt`): Pure-Kotlin force-directed physics simulation computing Coulomb repulsion, Hooke's spring attraction, centering gravity, and velocity damping.
-- **`MeshDatabase`** (`data/MeshDatabase.kt`): SQLCipher-backed Room database storing `PeerEntity`, `MessageEntity`, `StoreForwardEntity`, `PacketLogEntity`, `ProcessedPacketEntity`, and `TopologyEdgeEntity`.
+### Core Components
 
-### Message Flow (Compose to Display)
-1. **Compose**: User inputs a text or media message in `DirectChatDetailScreen` or `PublicMeshScreen`.
-2. **Encrypt**: `CryptoEngine` derives an epoch session key using the peer's X25519 public key and encrypts the payload using AES-256-GCM. The 40-byte routing header is authenticated as AAD, producing a 16-byte authentication tag.
-3. **Transmit**: `MeshRouter` builds the `MeshPacket` (`DEFAULT_TTL = 7` or `MEDIA_TTL = 4`) and passes the binary frame to `BleFrameFramer` to fragment across negotiated BLE MTU frames via `MeshBleEngine`.
-4. **Relay**: Intermediate nodes receive frames, reassemble the packet, verify timestamp validity (±10 minute window), and check the two-layer deduplication cache. If not the recipient and `TTL > 1`, the relay decrements the TTL by 1 and rebroadcasts the raw binary frame over BLE.
-5. **Decrypt & Display**: The recipient node verifies the AAD header and AEAD auth tag, decrypts the payload with its private session key, stores the message in `MeshDatabase`, and displays it in the Compose UI.
+```
+app/src/main/java/com/meshwhisper/app/
+├── ble/
+│   ├── MeshBleEngine.kt        # Dual Central + Peripheral GATT manager (MTU negotiation up to 512B)
+│   └── BleFrameFramer.kt       # Dynamic packet fragmentation and multi-session reassembly
+├── protocol/
+│   └── MeshPacket.kt           # 40-byte binary header serializer, deserializer, and AAD builder
+├── router/
+│   └── MeshRouter.kt           # TTL flood relay, 2-layer deduplication, store-and-forward, gossip
+├── crypto/
+│   └── CryptoEngine.kt         # X25519 keypairs, HKDF-SHA256 epoch derivation, AES-256-GCM AEAD
+├── media/
+│   └── MediaTransferManager.kt # Chunked image (≤60KB) and voice (AAC, ≤30s) transfer with flow control
+├── data/
+│   └── MeshDatabase.kt         # SQLCipher-encrypted Room database sealed with Android Keystore
+└── ui/
+    ├── graph/GraphPhysics.kt   # Force-directed Coulomb/Hooke topology simulation
+    └── screens/                # Jetpack Compose UI (Public, Direct, Radar, Logs, Settings)
+```
+
+### Send → Relay → Receive Flow
 
 ```mermaid
-graph TD
-    subgraph Sender ["Sender Node"]
-        UI_Send["Compose / Media Picker"] --> Crypto["CryptoEngine (X25519 + AES-256-GCM)"]
-        Crypto --> Router_Send["MeshRouter (TTL = 7 / 4)"]
-        Router_Send --> Framer_Send["BleFrameFramer (MTU Fragment)"]
-        Framer_Send --> BLE_TX["MeshBleEngine (GATT Server/Client)"]
-    end
+sequenceDiagram
+    autonumber
+    participant Alice as Sender (Alice)
+    participant Relay as Intermediate Relay
+    participant Bob as Recipient (Bob)
 
-    subgraph Relay ["Intermediate Relay Node"]
-        BLE_RX_R["MeshBleEngine"] --> Framer_Relay["BleFrameFramer (Reassemble)"]
-        Framer_Relay --> Router_Relay["MeshRouter (Dedup + TTL - 1)"]
-        Router_Relay --> BLE_TX_R["MeshBleEngine (Rebroadcast)"]
-    end
+    Note over Alice: 1. Plaintext & Routing Header<br/>40B Header: Sender, Recipient, MsgID, TTL=7, Time
+    Alice->>Alice: Derive Epoch Session Key (X25519 ECDH + HKDF)<br/>Encrypt via AES-256-GCM with Header as AAD
+    Alice->>Alice: Fragment Packet into MTU-Bounded Frames (BleFrameFramer)
+    Alice->>Relay: Broadcast BLE GATT Write / Notification Frames
 
-    subgraph Recipient ["Recipient Node"]
-        BLE_RX_Rec["MeshBleEngine"] --> Framer_Rec["BleFrameFramer (Reassemble)"]
-        Framer_Rec --> Router_Rec["MeshRouter (Destination Match)"]
-        Router_Rec --> Decrypt["CryptoEngine (AES-GCM Auth Tag + AAD Check)"]
-        Decrypt --> DB[("MeshDatabase (SQLCipher v5)")]
-        DB --> UI_Rec["UI Message Bubble / Media View"]
-    end
+    Note over Relay: 2. Reassemble & Deduplicate<br/>Check RAM LRU (4000) & SQLite Seen Table
+    Relay->>Relay: Record in Dedup Cache (Drop if already seen)
+    Relay->>Relay: Recipient != Me & TTL > 1 → Decrement TTL (7 → 6)
+    Relay->>Relay: Cache in Store-and-Forward Table (24h expiry)
+    Relay->>Bob: Rebroadcast BLE Binary Frames
 
-    BLE_TX -->|BLE Radio| BLE_RX_R
-    BLE_TX_R -->|BLE Radio| BLE_RX_Rec
+    Note over Bob: 3. Reassemble & Verify<br/>Header matches Bob's Node ID
+    Bob->>Bob: Verify AEAD Auth Tag & Header AAD Binding
+    Bob->>Bob: Decrypt Payload using Epoch Session Key
+    Bob->>Bob: Write to Encrypted SQLCipher Database
+    Bob-->>Relay: Broadcast Authenticated Delivery ACK
+    Relay-->>Alice: Relay ACK back to Alice (Updates status to DELIVERED)
 ```
 
 ---
 
-## 4. Security Model
+## 3. Security Model
 
 ### Cryptographic Primitives
-- **Identity & Key Exchange**: X25519 Elliptic Curve Diffie-Hellman (ECDH) via BouncyCastle (`X25519KeyPairGenerator`, `X25519Agreement`).
-- **Key Derivation**: HKDF-SHA256 (`HKDFBytesGenerator`) with epoch-bound info context (`"MESHWHISPER_SESSION_KEY_V1_EPOCH_<epoch>"`) rotating session keys every 3,600 seconds (1 hour).
-- **Symmetric Cipher**: AES-256-GCM (`AES/GCM/NoPadding`, 128-bit authentication tag) via Java Cryptography Architecture (JCA).
-- **Nonce / IV Generation**: 12-byte initialization vectors derived uniquely per transmission from `messageId` (UUID). Every individual packet (including each media chunk) generates a fresh `UUID.randomUUID()`, eliminating AES-GCM nonce reuse risks.
-- **At-Rest Storage Encryption**: 256-bit SQLCipher (`net.zetetic:sqlcipher-android:4.6.0`) database encryption with passphrase sealed in the Android Keystore (`AndroidKeyStore`, TEE/StrongBox backed).
 
-### Encrypted vs. Plaintext Data
-- **Encrypted**:
-  - `DIRECT_MESSAGE` payloads (end-to-end encrypted with peer session key).
-  - `MEDIA_INIT` and `MEDIA_CHUNK` payloads (end-to-end encrypted for DMs; community-key encrypted for public broadcast).
-  - `BROADCAST_MESSAGE` payloads (encrypted with shared community key derived from static salt).
-- **Plaintext (Unencrypted, but Authenticated)**:
-  - 40-byte routing headers: `type` (1B), `messageId` (16B), `senderId` (8B), `recipientId` (8B), `ttl` (1B), `timestamp` (4B), `payloadLength` (2B).
-  - *Header Authentication*: Headers are fed into AES-GCM as Additional Authenticated Data (AAD). If an intermediate relay tampers with routing fields (such as `senderId` or `timestamp`), the recipient's AEAD tag verification fails and the packet is dropped.
-  - `PEER_ANNOUNCE` payloads: `alias` (string), `publicKey` (32B), and `neighborNodeIds` (8B * N) are unencrypted to enable discovery and topology mapping.
+| Layer | Primitive | Implementation / Parameters |
+| :--- | :--- | :--- |
+| **Key Agreement** | X25519 ECDH | BouncyCastle `X25519KeyPairGenerator`, `X25519Agreement` |
+| **Key Derivation** | HKDF-SHA256 | BouncyCastle `HKDFBytesGenerator` (RFC 5869) |
+| **Authenticated Encryption** | AES-256-GCM | Standard JCA `AES/GCM/NoPadding` with 128-bit authentication tag |
+| **Nonce Generation** | Unique 12-byte IV | Deterministic derivation from per-packet `UUID.randomUUID()` |
+| **Database Encryption** | SQLCipher v4 | 256-bit AES database encryption (`net.zetetic:sqlcipher-android:4.6.0`) |
+| **Master Key Storage** | Android Keystore | 256-bit AES-GCM master wrapping key in hardware TEE / StrongBox |
 
-### TOFU (Trust-On-First-Use) Protection
-When a node receives a `PEER_ANNOUNCE`, it hashes the 32-byte public key to derive a 64-bit Node ID and a SHA-256 visual safety number (`XX:XX:XX:XX`). If a known Node ID broadcasts a different public key, `MeshRouter` flags `hasKeyChanged = true`, invalidates cached session keys, and displays an in-chat security warning banner to prevent impersonation attacks.
+### Header Authentication via AAD
+
+The 40-byte routing header (`type`, `messageId`, `senderId`, `recipientId`, `ttl`, `timestamp`, `payloadLength`) is supplied directly as Additional Authenticated Data (AAD) into the AES-256-GCM cipher during encryption. 
+
+Intermediate relay nodes must inspect the header to decrement the TTL and route the frame. However, if a malicious relay alters any routing field (e.g., modifying `senderId`, `recipientId`, or `timestamp`), the recipient's AEAD tag verification fails, and the packet is discarded immediately.
+
+### Epoch-Based Session Key Rotation
+
+Direct message session keys are derived using X25519 ECDH shared secrets passed through HKDF-SHA256 with an epoch-bound info string:
+
+$$\text{Epoch} = \left\lfloor \frac{\text{UNIX Timestamp}}{3600} \right\rfloor$$
+
+$$\text{SessionKey} = \text{HKDF-Extract-and-Expand}\left(\text{salt} = \emptyset, \text{IKM} = \text{ECDH}(sk_A, pk_B), \text{info} = \text{"MESHWHISPER\_SESSION\_KEY\_V1\_EPOCH\_"} \parallel \text{Epoch}, \text{len} = 32\right)$$
+
+Session keys automatically rotate every hour without requiring interactive key exchange handshakes over the air.
+
+### Trust-On-First-Use (TOFU) Verification
+
+Node public keys are bound to 64-bit Node IDs using `CryptoEngine.deriveNodeId()` (first 8 bytes of `SHA-256(publicKey)`). Public fingerprints are computed as a truncated visual hex string `XX:XX:XX:XX`.
+
+When a `PEER_ANNOUNCE` packet arrives:
+1. If the Node ID is unknown, the public key is saved to `MeshDatabase` (Trust-On-First-Use).
+2. If the Node ID was previously recorded with a *different* public key, `MeshRouter` flags the peer as `hasKeyChanged = true`, purges cached session keys, and displays a prominent verification alert banner in the chat UI to detect Man-In-The-Middle (MITM) impersonation.
+
+### At-Rest Database Protection & Panic Wipe
+
+All persistent entities (`peers`, `messages`, `store_forward`, `packet_logs`, `processed_packets`, `topology_edges`) are stored inside a SQLCipher database. The database passphrase is encrypted with an AES-256-GCM master key stored in the hardware-backed `AndroidKeyStore`.
+
+**Emergency Panic Wipe Routine**:
+1. Purges master keys from the `AndroidKeyStore`.
+2. Executes `PRAGMA secure_delete = ON;` and `VACUUM;` over the SQLCipher database.
+3. Deletes all local voice notes and compressed images from the internal app storage.
+4. Generates a completely new X25519 identity keypair and Node ID.
 
 ---
 
-## 5. How the Mesh Works
+### Limitations & Threat Model
 
-MeshWhisper uses a **TTL-based flood-relay** architecture. It does not maintain dynamic routing tables or compute shortest paths.
+*Tradeoffs and operational boundaries are documented below without omission:*
 
-### Relay Mechanics
-1. When a packet is broadcast over BLE, every reachable node receives and parses it.
-2. The node evaluates its **Two-Layer Deduplication Cache**:
-   - *Layer 1 (Fast RAM)*: 4,000-entry `LruCache` keyed by `"${messageId}:${packetType}"`.
-   - *Layer 2 (Persistent)*: `processed_packets` SQLite table.
-   If the packet was previously seen, it is dropped immediately to prevent broadcast loops.
-3. If the packet is not addressed to the receiving node (or is a broadcast), and `packet.ttl > 1`, the receiving node decrements the TTL by 1 (`packet.ttl - 1`) and rebroadcasts the raw binary frame to its local BLE neighborhood.
-
-### Protocol Parameters
-- **`DEFAULT_TTL = 7`**: Text messages traverse up to 6–7 serial hops.
-- **`MEDIA_TTL = 4`**: Lower TTL specifically for media chunks to reduce mesh traffic flood.
-- **`CHUNK_PAYLOAD_SIZE = 1800` bytes**: Maximum raw media slice per `MEDIA_CHUNK` packet (fits within `MAX_PAYLOAD_SIZE = 2048`).
-- **Transmission Pacing**: Outbound media chunks are paced with a `70ms` inter-chunk delay, with concurrency capped to 1 active media transfer per device.
-
-*Tradeoff Note*: Flood routing trades bandwidth efficiency for absolute architectural simplicity and resilience against node mobility. It requires no route discovery handshakes and has no single point of failure, but scales with $O(N)$ transmissions per message across the network.
+1. **Deterministic Rotation vs. True Forward Secrecy**: Hourly session key derivation is deterministic from static X25519 identity keys. If an attacker extracts a device's long-term private key from memory, all historical epoch keys can be derived retroactively. True forward secrecy via ephemeral Double Ratchet state is an open roadmap item.
+2. **Unauthenticated Peer Announcements**: `PEER_ANNOUNCE` and neighbor gossip packets are unauthenticated broadcast frames. Adversaries can inject arbitrary Node IDs into the radar topology visualization. End-to-end message integrity, however, remains enforced by AEAD session keys.
+3. **Flood Relay Scalability**: The network utilizes uncontrolled flood routing. Channel consumption scales as $\mathcal{O}(N)$ transmissions per message. Networks with dozens of concurrent active nodes in dense RF proximity will encounter packet collisions and elevated latency.
+4. **Live-Only Media Transfers**: Image and voice transmissions are **excluded from the store-and-forward queue** to protect relay storage. Media packets are forwarded live (`MEDIA_TTL = 4`); if the recipient is not currently online, the media payload is dropped.
+5. **Volatile In-Memory Chunk Reassembly**: Inbound media chunks are assembled in volatile memory before atomic commitment to disk. Terminating the application process mid-transfer discards in-flight chunks.
+6. **Physical Layer Attenuation**: 2.4 GHz Bluetooth signals cannot reliably penetrate reinforced concrete slabs. Multi-floor venue deployments require dedicated stairwell bridge nodes to maintain connectivity across vertical floors.
 
 ---
 
-## 6. Multi-Floor / Large-Venue Deployment Guide
+## 4. Protocol Internals
 
-Bluetooth Low Energy (2.4 GHz) signals travel 10–30 meters line-of-sight in open corridors, but suffer severe attenuation through reinforced concrete and rebar floor slabs (often dropping signal strength below receiver sensitivity in under 2 meters of solid concrete).
+### Binary Packet Format
+
+Packets are serialized as big-endian byte sequences with an exact 56-byte fixed overhead:
 
 ```
-[4th Floor: Room 402] ───BLE───▶ [Stairwell Bridge Node #4]
-                                            │ (Open stair airgap)
-                                            ▼
-[3rd Floor: Lab 301]  ◀───BLE─── [Stairwell Bridge Node #3]
-                                            │
-                                            ▼
-[2nd Floor: Aud-2]    ◀───BLE─── [Stairwell Bridge Node #2]
-                                            │
-                                            ▼
-[1st Floor: Lobby]    ◀───BLE─── [Stairwell Bridge Node #1]
++-------------------+--------------------+--------------------+--------------------+
+| PacketType (1B)   | MessageID (16B)    | SenderID (8B)      | RecipientID (8B)   |
+| Offset: 0         | Offset: 1..16      | Offset: 17..24     | Offset: 25..32     |
++-------------------+--------------------+--------------------+--------------------+
+| TTL (1B)          | Timestamp (4B)     | PayloadLength (2B) | Payload (N Bytes)  |
+| Offset: 33        | Offset: 34..37     | Offset: 38..39     | Offset: 40..40+N-1 |
++-------------------+--------------------+--------------------+--------------------+
+| AuthTag (16B)                                                                    |
+| Offset: 40+N..55+N                                                               |
++----------------------------------------------------------------------------------+
 ```
 
-### Deployment Recommendations:
-- **Station Stairwell Bridge Nodes**: Place a dedicated phone running MeshWhisper at each staircase landing. Stairwells provide an open vertical air corridor allowing BLE packets to hop between floors without penetrating solid slab.
-- **Avoid Elevator Shafts**: Metallic elevator cabs and reinforced counterweight shafts act as Faraday cages that block 2.4 GHz RF propagation.
-- **Disable OS Battery Optimization**: Ensure bridge devices have battery optimization set to **Unrestricted** (`Settings -> Apps -> MeshWhisper -> Battery -> Unrestricted`). This prevents Android OEM background execution limits from killing the foreground BLE service.
-- **TTL Budgeting**: With `DEFAULT_TTL = 7`, a message can traverse up to 6 intermediate relays. For venues exceeding 5 floors, ensure bridge nodes are placed directly along vertical stairwell axes to minimize wasted horizontal hops.
-- **Pre-Event Validation Protocol**: Send a test text from the top floor to the ground floor. Verify that the received message bubble displays `⚡ X hops (Relayed)`, confirming multi-hop propagation.
+| Field | Size | Type | Description |
+| :--- | :--- | :--- | :--- |
+| `type` | 1 byte | `enum` | Packet code (`0x00`: BROADCAST, `0x01`: DIRECT, `0x02`: KEY_EXCHANGE, `0x03`: ACK, `0x04`: ANNOUNCE, `0x05`: MEDIA_INIT, `0x06`: MEDIA_CHUNK) |
+| `messageId` | 16 bytes | `UUID` | 128-bit unique identifier used for deduplication and IV derivation |
+| `senderId` | 8 bytes | `Long` | 64-bit derived Node ID of the originating sender |
+| `recipientId` | 8 bytes | `Long` | 64-bit destination Node ID, or `-1` (`0xFFFFFFFFFFFFFFFF`) for public broadcast |
+| `ttl` | 1 byte | `UInt8` | Hop limit (`DEFAULT_TTL = 7`, `MEDIA_TTL = 4`); decremented at each relay hop |
+| `timestamp` | 4 bytes | `UInt32` | 32-bit UNIX epoch seconds; validated against a $\pm 10$ minute drift window |
+| `payloadLength`| 2 bytes | `UInt16` | Length $N$ of the ciphertext/payload (max 2048 bytes) |
+| `payload` | $N$ bytes | `ByteArray` | Ciphertext or raw discovery payload |
+| `authTag` | 16 bytes | `ByteArray` | 128-bit AES-256-GCM authentication tag computed over header (AAD) + payload |
+
+### Deduplication and Store-and-Forward
+
+1. **Two-Layer Deduplication**:
+   - *Layer 1*: 4,000-entry in-memory `LruCache` keyed by `"${messageId}:${packetType}"`.
+   - *Layer 2*: Persistent `processed_packets` table purged after 24 hours.
+   - Prevents broadcast amplification loops across dense mesh topologies.
+2. **Store-and-Forward Queue**:
+   - Intermediate relays store transit DMs in `store_forward` table for 24 hours.
+   - When the destination node announces presence via `PEER_ANNOUNCE`, stored frames are rebroadcast automatically.
+   - Verified delivery ACKs purge queued messages across all intermediate nodes.
 
 ---
 
-## 7. Getting Started
+## 5. Getting Started
 
 ### Prerequisites
-- Android Studio Ladybug / Meerkat (or JDK 17+)
+- Android Studio Ladybug / Meerkat or Command Line Tools
+- JDK 17+
 - Android SDK 35 (Minimum SDK: 26 — Android 8.0 Oreo)
-- Physical Android device with Bluetooth Low Energy support (emulators cannot test real BLE mesh functionality)
-
-### Required Android Permissions
-Configured in `app/src/main/AndroidManifest.xml`:
-- `android.permission.BLUETOOTH_SCAN` (`neverForLocation` flag on API 31+)
-- `android.permission.BLUETOOTH_ADVERTISE`
-- `android.permission.BLUETOOTH_CONNECT`
-- `android.permission.FOREGROUND_SERVICE` & `FOREGROUND_SERVICE_CONNECTED_DEVICE`
-- `android.permission.RECORD_AUDIO` (for voice notes)
-- `android.permission.WAKE_LOCK`
+- Physical Android hardware with Bluetooth Low Energy peripheral support
 
 ### Build Instructions
 
 ```powershell
-# 1. Run Unit Tests (Crypto, Routing, Deduplication, Graph Physics, Media)
+# 1. Execute Unit Test Suite (Crypto, Framing, Dedup Routing, Media Transfer, Physics)
 .\gradlew.bat testDebugUnitTest
 
-# 2. Build Sideloadable Debug APK
+# 2. Build Debug Sideload APK
 .\gradlew.bat assembleDebug
 
-# 3. Build Minified Release APK (R8 / ProGuard enabled)
+# 3. Build Minified Production APK (R8 / ProGuard optimized)
 .\gradlew.bat assembleRelease
 ```
 
-Debug APK output location: `app/build/outputs/apk/debug/app-debug.apk`  
-Release APK output location: `app/build/outputs/apk/release/app-release-unsigned.apk`
+Build outputs:
+- Debug APK: `app/build/outputs/apk/debug/app-debug.apk`
+- Release APK: `app/build/outputs/apk/release/app-release-unsigned.apk`
 
-### Sideloading to Device
+### Sideload Installation
+
 ```powershell
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
 ---
 
-## 8. Known Limitations
+## 6. Multi-Floor / Large-Venue Deployment Guide
 
-- **Flood Scalability**: Because every packet is relayed by every node in range until TTL expires, total radio channel utilization grows with $O(N)$ per transmission. Deployments with dozens of concurrent active talkers in dense RF environments will experience packet collisions.
-- **Live-Only Media Transfers**: To prevent intermediate relay devices from filling their encrypted databases with large binary chunks, `MEDIA_INIT` and `MEDIA_CHUNK` packets are **excluded from the store-and-forward queue**. If the recipient is offline when media is sent, the transfer will not be delivered later.
-- **In-Memory Chunk Buffering**: Inbound media chunk reassembly occurs in RAM before writing the finalized file to private storage. If the app process is terminated mid-transfer, in-flight chunks are lost and must be re-sent.
-- **Concrete Penetration**: BLE signals cannot reliably penetrate reinforced concrete floor slabs without dedicated bridge nodes placed in open air corridors.
+Because 2.4 GHz RF signals suffer 20–30 dB attenuation when traversing reinforced concrete floor slabs, vertical propagation requires dedicated bridge nodes placed along open stairwell shafts.
+
+```
+[Floor 4: Room 402] ──────BLE──────▶ [Stairwell Bridge Node #4]
+                                                │ (Vertical Airshaft)
+                                                ▼
+[Floor 3: Lab 301]  ◀─────BLE─────── [Stairwell Bridge Node #3]
+                                                │
+                                                ▼
+[Floor 2: Aud-2]    ◀─────BLE─────── [Stairwell Bridge Node #2]
+                                                │
+                                                ▼
+[Floor 1: Lobby]    ◀─────BLE─────── [Stairwell Bridge Node #1]
+```
+
+### Operational Guidelines
+
+- **Stairwell Placement**: Position bridge phones at stair landing platforms. Open stairwells form a continuous RF waveguide across building levels.
+- **Battery Optimization**: Set app battery usage to **Unrestricted** on dedicated bridge devices (`Settings -> Apps -> MeshWhisper -> Battery -> Unrestricted`) to prevent OEM power managers from killing background BLE services.
+- **Hop Budgeting**: With `DEFAULT_TTL = 7`, a packet traverses up to 6 intermediate relays. Aligning bridge nodes along vertical stairwell axes preserves TTL for horizontal distribution on target floors.
 
 ---
 
-## 9. License
+## 7. Roadmap
 
-This project is licensed under the Apache License 2.0 / MIT License. (See repository root for license details).
+- [ ] **Signal Double Ratchet Integration**: Replace deterministic epoch derivation with ephemeral Diffie-Hellman ratcheting for true per-message forward secrecy and break-in recovery.
+- [ ] **Keystore Fallback Removal**: Enforce strict hardware StrongBox/TEE key generation and reject devices lacking secure hardware key storage.
+- [ ] **Epidemic Routing Optimization**: Implement Bloom-filter history summaries during peer discovery to replace flood broadcasting with scoped delta synchronization.
+
+---
+
+## 8. License
+
+MeshWhisper is licensed under the [Apache License, Version 2.0](LICENSE).

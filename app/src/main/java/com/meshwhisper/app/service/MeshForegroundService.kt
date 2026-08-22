@@ -1,6 +1,5 @@
 package com.meshwhisper.app.service
 
-import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.PendingIntent
 import android.app.Service
@@ -94,10 +93,18 @@ class MeshForegroundService : Service() {
 
         heartbeatJob?.cancel()
         heartbeatJob = null
-        try {
-            MeshApplication.instance.bleEngine.stop()
-        } catch (e: Exception) {
-            Log.e(tag, "Error stopping BLE engine on pause: ${e.message}")
+
+        // Only stop the shared BLE engine singleton when the Activity is not in foreground.
+        // If the user toggles the switch mid-chat, the live connection must stay up —
+        // the toggle's own subtitle promises it only affects backgrounded behavior.
+        if (!isActivityInForeground) {
+            try {
+                MeshApplication.instance.bleEngine.stop()
+            } catch (e: Exception) {
+                Log.e(tag, "Error stopping BLE engine on pause: ${e.message}")
+            }
+        } else {
+            Log.d(tag, "pauseRelay: Activity in foreground — skipping bleEngine.stop() to preserve live connection.")
         }
         updateNotification()
     }
@@ -272,5 +279,13 @@ class MeshForegroundService : Service() {
         const val ACTION_PAUSE_RELAY = "com.meshwhisper.app.action.PAUSE_RELAY"
         const val ACTION_RESUME_RELAY = "com.meshwhisper.app.action.RESUME_RELAY"
         const val ACTION_STOP_SERVICE = "com.meshwhisper.app.action.STOP_SERVICE"
+
+        /**
+         * Set to true by MainActivity.onStart() and false by onStop().
+         * pauseRelay() checks this to avoid stopping the shared BLE engine singleton
+         * while the Activity is still visible and actively using it.
+         */
+        @Volatile
+        var isActivityInForeground: Boolean = false
     }
 }

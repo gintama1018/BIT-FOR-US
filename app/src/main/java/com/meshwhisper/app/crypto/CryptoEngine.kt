@@ -80,7 +80,7 @@ class CryptoEngine private constructor(private val context: Context) {
         privateKeyBytes = priv
         publicKeyBytes = pub
         nodeId = deriveNodeId(pub)
-        nodeIdHex = String.format("%016X", nodeId)
+        nodeIdHex = java.lang.Long.toUnsignedString(nodeId, 16).padStart(16, '0').uppercase()
         publicFingerprint = generateFingerprint(pub)
         _identityVersion.value += 1
     }

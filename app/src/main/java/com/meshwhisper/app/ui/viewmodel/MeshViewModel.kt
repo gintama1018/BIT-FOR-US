@@ -117,6 +117,19 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
             val existing = database.peerDao().getPeerById(nodeId)
             val pubBytes = com.meshwhisper.app.crypto.CryptoEngine.hexToBytes(publicKeyHex)
             val fp = com.meshwhisper.app.crypto.CryptoEngine.generateFingerprint(pubBytes)
+
+            // Mirror MeshRouter.handlePeerAnnounce: detect key rotation before writing to DB.
+            // A crafted deep link or NFC tag must not silently overwrite a previously trusted key.
+            val hasKeyChanged = (existing != null && existing.publicKeyHex != publicKeyHex)
+            val prevFp = if (hasKeyChanged) existing?.fingerprint else existing?.previousFingerprint
+
+            if (hasKeyChanged) {
+                android.util.Log.w("MeshViewModel",
+                    "TOFU ALERT via QR: Key changed for peer $nodeId! (Old: ${existing?.fingerprint}, New: $fp)")
+                // Invalidate any cached session keys derived from the old peer public key.
+                cryptoEngine.invalidateSessionKey(nodeId)
+            }
+
             val entity = com.meshwhisper.app.data.model.PeerEntity(
                 nodeId = nodeId,
                 alias = alias,
@@ -127,8 +140,10 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
                 rssi = existing?.rssi ?: 0,
                 hopCount = existing?.hopCount ?: 1,
                 isBlocked = existing?.isBlocked ?: false,
-                hasKeyChanged = existing?.hasKeyChanged ?: false,
-                previousFingerprint = existing?.previousFingerprint
+                // Carry forward any previously set hasKeyChanged flag OR set it now if the QR
+                // presents a new key. This surfaces the safety-number banner on next open.
+                hasKeyChanged = hasKeyChanged || (existing?.hasKeyChanged ?: false),
+                previousFingerprint = prevFp
             )
             database.peerDao().insertOrUpdate(entity)
         }

@@ -91,6 +91,7 @@ class MainActivity : FragmentActivity() {
 
     override fun onStart() {
         super.onStart()
+        com.meshwhisper.app.service.MeshForegroundService.isActivityInForeground = true
         val app = application as com.meshwhisper.app.MeshApplication
         if (checkHasPermissions()) {
             app.bleEngine.setLowLatencyMode(true) // Upshift to high-speed scan in foreground
@@ -103,6 +104,7 @@ class MainActivity : FragmentActivity() {
 
     override fun onStop() {
         super.onStop()
+        com.meshwhisper.app.service.MeshForegroundService.isActivityInForeground = false
         val app = application as com.meshwhisper.app.MeshApplication
         if (viewModel.isBackgroundRelayEnabled.value) {
             // Downshift to balanced duty-cycle mode in background service
@@ -155,11 +157,17 @@ class MainActivity : FragmentActivity() {
             val alias = uri.getQueryParameter("alias") ?: "Unknown Node"
             val pubHex = uri.getQueryParameter("pub")
             if (!idHex.isNullOrBlank() && !pubHex.isNullOrBlank()) {
-                val nodeId = idHex.toLongOrNull(16)
-                if (nodeId != null) {
-                    viewModel.registerScannedPeer(nodeId, alias, pubHex)
-                    android.widget.Toast.makeText(this, "Discovered Peer: $alias", android.widget.Toast.LENGTH_SHORT).show()
+                // Use parseUnsignedLong so nodeIds with the top bit set (> Long.MAX_VALUE) round-trip correctly.
+                val nodeId = try {
+                    java.lang.Long.parseUnsignedLong(idHex, 16)
+                } catch (e: NumberFormatException) {
+                    android.util.Log.w("MainActivity", "handleDeepLink: unparseable nodeId hex '$idHex'")
+                    android.widget.Toast.makeText(this, "Invalid QR code", android.widget.Toast.LENGTH_SHORT).show()
+                    return
                 }
+                // registerScannedPeer performs the TOFU key-change check before writing to DB.
+                viewModel.registerScannedPeer(nodeId, alias, pubHex)
+                android.widget.Toast.makeText(this, "Discovered Peer: $alias", android.widget.Toast.LENGTH_SHORT).show()
             }
         }
     }

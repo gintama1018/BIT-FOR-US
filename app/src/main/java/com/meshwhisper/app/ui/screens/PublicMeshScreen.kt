@@ -357,7 +357,7 @@ fun ChatInputBar(
     var recordOutputFile by remember { mutableStateOf<java.io.File?>(null) }
 
     val imagePickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-        contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
+        contract = androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null && onSendMedia != null) {
             val compressedBytes = com.meshwhisper.app.media.MediaCompressor.compressImage(context, uri)
@@ -477,7 +477,17 @@ fun ChatInputBar(
                 ) {
                     if (onSendMedia != null) {
                         IconButton(
-                            onClick = { imagePickerLauncher.launch("image/*") }
+                            onClick = {
+                                try {
+                                    imagePickerLauncher.launch(
+                                        androidx.activity.result.PickVisualMediaRequest(
+                                            androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly
+                                        )
+                                    )
+                                } catch (e: android.content.ActivityNotFoundException) {
+                                    android.widget.Toast.makeText(context, "No photo picker app found on this device", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                            }
                         ) {
                             Icon(
                                 imageVector = Icons.Default.AddPhotoAlternate,

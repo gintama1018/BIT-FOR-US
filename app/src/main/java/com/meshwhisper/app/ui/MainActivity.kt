@@ -1,5 +1,8 @@
 package com.meshwhisper.app.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
@@ -34,6 +37,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import com.meshwhisper.app.security.BiometricAuthManager
 import com.meshwhisper.app.ui.components.PermissionHandler
@@ -41,7 +46,6 @@ import com.meshwhisper.app.ui.theme.BurntSienna
 import com.meshwhisper.app.ui.theme.EBGaramondFamily
 import com.meshwhisper.app.ui.theme.ManropeFamily
 import com.meshwhisper.app.ui.theme.MeshWhisperTheme
-import com.meshwhisper.app.ui.theme.TextMuted
 import com.meshwhisper.app.ui.theme.TextPrimary
 import com.meshwhisper.app.ui.theme.TextSecondary
 import com.meshwhisper.app.ui.theme.WarmLinen
@@ -50,14 +54,71 @@ import com.meshwhisper.app.ui.viewmodel.MeshViewModel
 class MainActivity : FragmentActivity() {
 
     private val viewModel: MeshViewModel by viewModels()
+    private val isPermissionsGrantedState = mutableStateOf(false)
+
+    fun getRequiredPermissions(): Array<String> {
+        val list = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            list.add(Manifest.permission.BLUETOOTH_SCAN)
+            list.add(Manifest.permission.BLUETOOTH_ADVERTISE)
+            list.add(Manifest.permission.BLUETOOTH_CONNECT)
+        } else {
+            list.add(Manifest.permission.ACCESS_FINE_LOCATION)
+            list.add(Manifest.permission.ACCESS_COARSE_LOCATION)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            list.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        list.add(Manifest.permission.RECORD_AUDIO)
+        return list.toTypedArray()
+    }
+
+    fun checkHasPermissions(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val scan = ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED
+            val adv = ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_ADVERTISE) == PackageManager.PERMISSION_GRANTED
+            val conn = ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+            scan && adv && conn
+        } else {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    fun requestAppPermissions() {
+        ActivityCompat.requestPermissions(this, getRequiredPermissions(), PERMISSION_REQUEST_CODE)
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        val granted = checkHasPermissions()
+        isPermissionsGrantedState.value = granted
+        if (granted) {
+            viewModel.startService()
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        val granted = checkHasPermissions()
+        isPermissionsGrantedState.value = granted
+        if (granted) {
+            viewModel.startService()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        isPermissionsGrantedState.value = checkHasPermissions()
+        if (isPermissionsGrantedState.value) {
+            viewModel.startService()
+        }
 
         setContent {
             MeshWhisperTheme {
                 val isAppLockEnabled by viewModel.isAppLockEnabled.collectAsState()
                 var isUnlocked by remember { mutableStateOf(!isAppLockEnabled) }
+                val hasPermissions by remember { isPermissionsGrantedState }
 
                 LaunchedEffect(isAppLockEnabled) {
                     if (isAppLockEnabled && !isUnlocked) {
@@ -83,6 +144,8 @@ class MainActivity : FragmentActivity() {
                         )
                     } else {
                         PermissionHandler(
+                            hasCorePermissions = hasPermissions,
+                            onRequestPermissions = { requestAppPermissions() },
                             onPermissionsGranted = {
                                 viewModel.startService()
                             }
@@ -93,6 +156,10 @@ class MainActivity : FragmentActivity() {
                 }
             }
         }
+    }
+
+    companion object {
+        private const val PERMISSION_REQUEST_CODE = 1001
     }
 }
 

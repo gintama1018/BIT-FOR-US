@@ -1,24 +1,19 @@
 package com.meshwhisper.app.ui.components
 
-import android.Manifest
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.pm.PackageManager
 import android.net.Uri
-import android.os.Build
 import android.provider.Settings
 import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -28,9 +23,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.BluetoothDisabled
-import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -55,9 +50,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.meshwhisper.app.ui.theme.BurntSienna
 import com.meshwhisper.app.ui.theme.EBGaramondFamily
 import com.meshwhisper.app.ui.theme.ManropeFamily
@@ -71,11 +63,12 @@ import com.meshwhisper.app.ui.theme.WarmSurface
 
 @Composable
 fun PermissionHandler(
+    hasCorePermissions: Boolean,
+    onRequestPermissions: () -> Unit,
     onPermissionsGranted: () -> Unit,
     content: @Composable () -> Unit
 ) {
     val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
 
     val bluetoothManager = remember {
         try {
@@ -92,39 +85,6 @@ fun PermissionHandler(
         }
     }
 
-    val requiredPermissions = remember {
-        val list = mutableListOf<String>()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            list.add(Manifest.permission.BLUETOOTH_SCAN)
-            list.add(Manifest.permission.BLUETOOTH_ADVERTISE)
-            list.add(Manifest.permission.BLUETOOTH_CONNECT)
-        } else {
-            list.add(Manifest.permission.ACCESS_FINE_LOCATION)
-            list.add(Manifest.permission.ACCESS_COARSE_LOCATION)
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            list.add(Manifest.permission.POST_NOTIFICATIONS)
-        }
-        list.add(Manifest.permission.RECORD_AUDIO)
-        list.toTypedArray()
-    }
-
-    fun checkCorePermissions(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val scan = ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED
-            val adv = ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_ADVERTISE) == PackageManager.PERMISSION_GRANTED
-            val conn = ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
-            scan && adv && conn
-        } else {
-            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
-            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        }
-    }
-
-    var allPermissionsGranted by remember {
-        mutableStateOf(checkCorePermissions())
-    }
-
     var isBluetoothEnabled by remember {
         mutableStateOf(
             try {
@@ -136,24 +96,6 @@ fun PermissionHandler(
     }
 
     var isBypassed by remember { mutableStateOf(false) }
-
-    // Re-check permissions and Bluetooth state on every App Resume (e.g. returning from Settings)
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                allPermissionsGranted = checkCorePermissions()
-                isBluetoothEnabled = try {
-                    bluetoothAdapter?.isEnabled == true
-                } catch (e: Exception) {
-                    true
-                }
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-        }
-    }
 
     // Broadcast receiver for Bluetooth ON/OFF toggles
     DisposableEffect(context) {
@@ -186,18 +128,6 @@ fun PermissionHandler(
         }
     }
 
-    // Permission request launcher
-    val permissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestMultiplePermissions()
-    ) { _ ->
-        allPermissionsGranted = checkCorePermissions()
-        isBluetoothEnabled = try {
-            bluetoothAdapter?.isEnabled == true
-        } catch (e: Exception) {
-            true
-        }
-    }
-
     // Bluetooth enable dialog launcher
     val enableBtLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -209,8 +139,8 @@ fun PermissionHandler(
         }
     }
 
-    LaunchedEffect(allPermissionsGranted, isBluetoothEnabled, isBypassed) {
-        if ((allPermissionsGranted && isBluetoothEnabled) || isBypassed) {
+    LaunchedEffect(hasCorePermissions, isBluetoothEnabled) {
+        if (hasCorePermissions && isBluetoothEnabled) {
             try {
                 onPermissionsGranted()
             } catch (e: Exception) {
@@ -221,12 +151,12 @@ fun PermissionHandler(
 
     when {
         // 1. Both Permissions and Bluetooth radio are active, or user bypassed -> Show Main App
-        (allPermissionsGranted && isBluetoothEnabled) || isBypassed -> {
+        (hasCorePermissions && isBluetoothEnabled) || isBypassed -> {
             content()
         }
 
         // 2. Permissions granted, but Bluetooth radio is OFF -> Prompt to Enable Bluetooth
-        allPermissionsGranted && !isBluetoothEnabled -> {
+        hasCorePermissions && !isBluetoothEnabled -> {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -273,7 +203,6 @@ fun PermissionHandler(
                                     @Suppress("DEPRECATION")
                                     enableBtLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
                                 } catch (e: Exception) {
-                                    // Direct to system Bluetooth settings if request intent fails
                                     try {
                                         context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
                                     } catch (ex: Exception) {
@@ -317,7 +246,7 @@ fun PermissionHandler(
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Icon(
-                                imageVector = Icons.Default.OpenInNew,
+                                imageVector = Icons.AutoMirrored.Filled.OpenInNew,
                                 contentDescription = null,
                                 tint = BurntSienna,
                                 modifier = Modifier.size(16.dp)
@@ -375,7 +304,7 @@ fun PermissionHandler(
                         )
                         Spacer(modifier = Modifier.height(16.dp))
                         Text(
-                            text = "Bluetooth Mesh Permissions",
+                            text = "Nearby Devices & Bluetooth",
                             color = TextPrimary,
                             fontSize = 20.sp,
                             fontFamily = EBGaramondFamily,
@@ -383,7 +312,7 @@ fun PermissionHandler(
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = "MeshWhisper requires Bluetooth and Nearby Device permissions to discover and route peer-to-peer messages without internet or servers.",
+                            text = "MeshWhisper requires Nearby Devices and Bluetooth permissions to discover and route peer-to-peer messages directly without internet or cellular data.",
                             color = TextSecondary,
                             fontFamily = ManropeFamily,
                             fontSize = 13.sp,
@@ -392,19 +321,7 @@ fun PermissionHandler(
                         Spacer(modifier = Modifier.height(24.dp))
                         Button(
                             onClick = {
-                                try {
-                                    permissionLauncher.launch(requiredPermissions)
-                                } catch (e: Exception) {
-                                    Log.e("PermissionHandler", "Failed to launch permission request: ${e.message}")
-                                    try {
-                                        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                                            data = Uri.fromParts("package", context.packageName, null)
-                                        }
-                                        context.startActivity(intent)
-                                    } catch (ex: Exception) {
-                                        Log.e("PermissionHandler", "Failed to open app settings: ${ex.message}")
-                                    }
-                                }
+                                onRequestPermissions()
                             },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = BurntSienna,
@@ -445,7 +362,7 @@ fun PermissionHandler(
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "Open App Settings",
+                                text = "Open App Permissions in Settings",
                                 color = BurntSienna,
                                 fontFamily = ManropeFamily,
                                 fontWeight = FontWeight.SemiBold

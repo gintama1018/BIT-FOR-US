@@ -177,9 +177,26 @@ class MeshBleEngine(private val context: Context) {
         }
     }
 
+    fun hasPermissions(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            ContextCompat.checkSelfPermission(context, android.Manifest.permission.BLUETOOTH_SCAN) == android.content.pm.PackageManager.PERMISSION_GRANTED &&
+            ContextCompat.checkSelfPermission(context, android.Manifest.permission.BLUETOOTH_ADVERTISE) == android.content.pm.PackageManager.PERMISSION_GRANTED &&
+            ContextCompat.checkSelfPermission(context, android.Manifest.permission.BLUETOOTH_CONNECT) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        } else {
+            ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_COARSE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+    }
+
     @SuppressLint("MissingPermission")
     fun start(nodeId: Long) {
         this.myNodeId = nodeId
+
+        if (!hasPermissions()) {
+            Log.w(tag, "Cannot start Mesh BLE Engine: Nearby Devices / Bluetooth permissions not granted yet")
+            return
+        }
+
         val isEnabled = try {
             bluetoothAdapter?.isEnabled == true
         } catch (e: Exception) {

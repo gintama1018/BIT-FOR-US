@@ -98,7 +98,13 @@ class MeshForegroundService : Service() {
                 myAlias = MeshApplication.instance.cryptoEngine.alias
             )
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            val hasPerms = try {
+                MeshApplication.instance.bleEngine.hasPermissions()
+            } catch (e: Exception) {
+                false
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && hasPerms) {
                 startForeground(
                     NOTIFICATION_ID,
                     notification,

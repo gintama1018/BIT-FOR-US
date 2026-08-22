@@ -56,6 +56,9 @@ class MeshRouter(
         }
     )
 
+    // Cooldown map to prevent spamming store-and-forward drains on every 4s heartbeat
+    private val lastDrainTimes = java.util.concurrent.ConcurrentHashMap<Long, Long>()
+
     init {
         bleEngine.onPacketReceivedListener = { packetBytes, ingressAddress ->
             handleIncomingPacket(packetBytes, ingressAddress)
@@ -65,6 +68,15 @@ class MeshRouter(
             // Exchange identity upon established BLE link
             scope.launch {
                 announcePresence()
+            }
+        }
+
+        bleEngine.onPeerDiscoveredListener = { address, rssi ->
+            scope.launch {
+                val directNodeId = bleEngine.getDirectNodeId(address)
+                if (directNodeId != null && directNodeId != 0L) {
+                    database.peerDao().updateRssi(directNodeId, rssi)
+                }
             }
         }
     }
@@ -85,10 +97,13 @@ class MeshRouter(
             return
         }
 
-        // Anti-Replay: Timestamp freshness window check (5 minutes in past, 10 minutes in future)
+        // Anti-Replay: Timestamp freshness window check
+        // Direct messages can be stored-and-forwarded for up to 24 hours (86,400s).
+        // Live broadcast, announce, and media packets enforce a strict 10-minute window.
         val nowSec = System.currentTimeMillis() / 1000L
         val packetAge = nowSec - packet.timestamp
-        if (packetAge > 600 || packetAge < -300) {
+        val maxPastAgeSec = if (packet.type == PacketType.DIRECT_MESSAGE) 86400L else 600L
+        if (packetAge > maxPastAgeSec || packetAge < -300) {
             logPacket("DROP", packet, rawBytes.size, "Packet dropped: timestamp outside validity window (age: ${packetAge}s)")
             return
         }
@@ -727,6 +742,13 @@ class MeshRouter(
 
     private suspend fun drainStoreAndForwardQueueForPeer(recipientNodeId: Long) {
         val now = System.currentTimeMillis()
+        val lastDrain = lastDrainTimes[recipientNodeId] ?: 0L
+        if (now - lastDrain < 30_000L) {
+            // Throttle: don't flood re-broadcasts if peer announced recently
+            return
+        }
+        lastDrainTimes[recipientNodeId] = now
+
         val pending = database.storeForwardDao().getPendingForRecipient(recipientNodeId, now)
         for (item in pending) {
             bleEngine.broadcastPacket(item.packetData)

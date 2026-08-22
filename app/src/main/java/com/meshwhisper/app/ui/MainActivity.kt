@@ -142,8 +142,31 @@ class MainActivity : FragmentActivity() {
         }
     }
 
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleDeepLink(intent)
+    }
+
+    private fun handleDeepLink(intent: android.content.Intent?) {
+        val uri = intent?.data ?: return
+        if (uri.scheme == "meshwhisper" && uri.host == "node") {
+            val idHex = uri.getQueryParameter("id")
+            val alias = uri.getQueryParameter("alias") ?: "Unknown Node"
+            val pubHex = uri.getQueryParameter("pub")
+            if (!idHex.isNullOrBlank() && !pubHex.isNullOrBlank()) {
+                val nodeId = idHex.toLongOrNull(16)
+                if (nodeId != null) {
+                    viewModel.registerScannedPeer(nodeId, alias, pubHex)
+                    android.widget.Toast.makeText(this, "Discovered Peer: $alias", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        handleDeepLink(intent)
         isPermissionsGrantedState.value = checkHasPermissions()
         if (isPermissionsGrantedState.value) {
             val app = application as com.meshwhisper.app.MeshApplication
@@ -174,11 +197,15 @@ class MainActivity : FragmentActivity() {
                     color = WarmLinen
                 ) {
                     if (isAppLockEnabled && !isUnlocked) {
+                        var authError by remember { mutableStateOf<String?>(null) }
                         AppLockScreen(
+                            errorMessage = authError,
                             onUnlockClick = {
+                                authError = null
                                 BiometricAuthManager.promptAuthenticate(
                                     activity = this@MainActivity,
-                                    onSuccess = { isUnlocked = true }
+                                    onSuccess = { isUnlocked = true },
+                                    onError = { err -> authError = err }
                                 )
                             }
                         )
@@ -204,7 +231,10 @@ class MainActivity : FragmentActivity() {
 }
 
 @Composable
-fun AppLockScreen(onUnlockClick: () -> Unit) {
+fun AppLockScreen(
+    errorMessage: String? = null,
+    onUnlockClick: () -> Unit
+) {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -232,10 +262,11 @@ fun AppLockScreen(onUnlockClick: () -> Unit) {
             )
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                text = "Biometric or Device PIN authentication required",
-                color = TextSecondary,
+                text = errorMessage ?: "Biometric or Device PIN authentication required",
+                color = if (errorMessage != null) com.meshwhisper.app.ui.theme.WarmRed else TextSecondary,
                 fontFamily = ManropeFamily,
-                fontSize = 13.sp
+                fontSize = 13.sp,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center
             )
             Spacer(modifier = Modifier.height(28.dp))
             Button(
@@ -254,7 +285,7 @@ fun AppLockScreen(onUnlockClick: () -> Unit) {
                 )
                 Spacer(modifier = Modifier.size(8.dp))
                 Text(
-                    text = "Unlock App",
+                    text = if (errorMessage != null) "Try Again" else "Unlock App",
                     color = Color.White,
                     fontFamily = ManropeFamily,
                     fontWeight = FontWeight.SemiBold,

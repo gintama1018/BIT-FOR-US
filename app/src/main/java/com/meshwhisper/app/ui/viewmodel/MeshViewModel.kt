@@ -112,6 +112,28 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun registerScannedPeer(nodeId: Long, alias: String, publicKeyHex: String) {
+        viewModelScope.launch {
+            val existing = database.peerDao().getPeerById(nodeId)
+            val pubBytes = com.meshwhisper.app.crypto.CryptoEngine.hexToBytes(publicKeyHex)
+            val fp = com.meshwhisper.app.crypto.CryptoEngine.generateFingerprint(pubBytes)
+            val entity = com.meshwhisper.app.data.model.PeerEntity(
+                nodeId = nodeId,
+                alias = alias,
+                publicKeyHex = publicKeyHex,
+                fingerprint = fp,
+                lastSeen = System.currentTimeMillis(),
+                isDirect = false,
+                rssi = existing?.rssi ?: 0,
+                hopCount = existing?.hopCount ?: 1,
+                isBlocked = existing?.isBlocked ?: false,
+                hasKeyChanged = existing?.hasKeyChanged ?: false,
+                previousFingerprint = existing?.previousFingerprint
+            )
+            database.peerDao().insertOrUpdate(entity)
+        }
+    }
+
     private val secPrefs = application.getSharedPreferences("meshwhisper_security_settings", android.content.Context.MODE_PRIVATE)
     private val _isAppLockEnabled = MutableStateFlow(secPrefs.getBoolean("app_lock_enabled", false))
     val isAppLockEnabled: StateFlow<Boolean> = _isAppLockEnabled.asStateFlow()

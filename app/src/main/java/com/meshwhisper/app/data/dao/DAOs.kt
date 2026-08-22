@@ -30,6 +30,9 @@ interface PeerDao {
     @Query("UPDATE peers SET isBlocked = :blocked WHERE nodeId = :nodeId")
     suspend fun setPeerBlocked(nodeId: Long, blocked: Boolean)
 
+    @Query("UPDATE peers SET rssi = :rssi WHERE nodeId = :nodeId")
+    suspend fun updateRssi(nodeId: Long, rssi: Int)
+
     @Query("UPDATE peers SET hasKeyChanged = :hasChanged, previousFingerprint = :prevFp WHERE nodeId = :nodeId")
     suspend fun markKeyChanged(nodeId: Long, hasChanged: Boolean, prevFp: String?)
 

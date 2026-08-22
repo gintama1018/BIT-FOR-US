@@ -27,6 +27,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -233,7 +234,7 @@ fun VoiceNoteBubble(
                     )
                 } else {
                     Icon(
-                        imageVector = if (isCurrentPlaying) Icons.Default.Close else Icons.Default.PlayArrow,
+                        imageVector = if (isCurrentPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                         contentDescription = if (isCurrentPlaying) "Pause" else "Play",
                         tint = Color.White,
                         modifier = Modifier.size(22.dp)

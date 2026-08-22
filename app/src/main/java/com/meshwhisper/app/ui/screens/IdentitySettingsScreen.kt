@@ -426,7 +426,22 @@ fun IdentitySettingsScreen(
                             }
                             Switch(
                                 checked = isAppLockEnabled,
-                                onCheckedChange = { viewModel.setAppLockEnabled(it) },
+                                onCheckedChange = { enable ->
+                                    if (enable) {
+                                        val canAuth = com.meshwhisper.app.security.BiometricAuthManager.isBiometricOrDeviceCredentialAvailable(context)
+                                        if (canAuth) {
+                                            viewModel.setAppLockEnabled(true)
+                                        } else {
+                                            Toast.makeText(
+                                                context,
+                                                "Cannot enable App Lock: No Screen Lock (PIN, pattern, or fingerprint) is set up on this device. Please configure a screen lock in Android Settings first.",
+                                                Toast.LENGTH_LONG
+                                            ).show()
+                                        }
+                                    } else {
+                                        viewModel.setAppLockEnabled(false)
+                                    }
+                                },
                                 colors = SwitchDefaults.colors(
                                     checkedThumbColor = BurntSienna,
                                     checkedTrackColor = BurntSiennaContainer

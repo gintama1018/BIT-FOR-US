@@ -46,7 +46,8 @@ fun NodeAvatar(
     showOnlineBadge: Boolean = false
 ) {
     val bgColor = remember(nodeId) {
-        val index = abs((nodeId xor (nodeId ushr 32)).toInt()) % AVATAR_PALETTE.size
+        val hash = (nodeId xor (nodeId ushr 32)) and 0x7FFFFFFF
+        val index = (hash % AVATAR_PALETTE.size).toInt()
         AVATAR_PALETTE[index]
     }
 
@@ -62,7 +63,7 @@ fun NodeAvatar(
                 clean.take(2).uppercase()
             }
         } else {
-            String.format("%02X", abs(nodeId.toInt()) % 256)
+            String.format("%02X", (nodeId and 0xFFL))
         }
     }
 

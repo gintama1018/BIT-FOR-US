@@ -15,6 +15,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -64,6 +65,7 @@ class MediaTransferManager(
         val isBroadcast: Boolean,
         val timestamp: Long
     ) {
+        var lastActivityMs: Long = System.currentTimeMillis()
         val chunks = ConcurrentHashMap<Int, ByteArray>()
     }
 
@@ -74,6 +76,28 @@ class MediaTransferManager(
         val mediaDir = File(context.filesDir, "media")
         if (!mediaDir.exists()) {
             mediaDir.mkdirs()
+        }
+
+        // Periodic cleanup for stale/incomplete inbound media sessions (60s inactivity timeout)
+        scope.launch {
+            while (isActive) {
+                delay(15_000L)
+                val now = System.currentTimeMillis()
+                val iterator = inboundSessions.entries.iterator()
+                while (iterator.hasNext()) {
+                    val entry = iterator.next()
+                    val session = entry.value
+                    if (now - session.lastActivityMs > 60_000L) {
+                        iterator.remove()
+                        Log.w(tag, "Inbound media transfer ${session.mediaId} timed out after 60s without chunks")
+                        try {
+                            database.messageDao().updateStatus(session.mediaId.toString(), MessageStatus.FAILED)
+                        } catch (e: Exception) {
+                            Log.e(tag, "Failed to update timed out media status: ${e.message}")
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -149,6 +173,7 @@ class MediaTransferManager(
             val peerPubKey = if (peer != null) CryptoEngine.hexToBytes(peer.publicKeyHex) else null
             if (peerPubKey == null) {
                 Log.e(tag, "Cannot send media to unknown peer $recipientNodeId")
+                database.messageDao().updateStatus(mediaId.toString(), MessageStatus.FAILED)
                 return@withLock ""
             }
             val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey, timestampSec)
@@ -204,7 +229,10 @@ class MediaTransferManager(
             val encryptedChunk = if (isBroadcast) {
                 cryptoEngine.encrypt(plainChunk, chunkPacketId, cryptoEngine.publicChannelKey, aadChunk)
             } else {
-                if (sessionKey == null) return@withLock ""
+                if (sessionKey == null) {
+                    database.messageDao().updateStatus(mediaId.toString(), MessageStatus.FAILED)
+                    return@withLock ""
+                }
                 cryptoEngine.encrypt(plainChunk, chunkPacketId, sessionKey, aadChunk)
             }
 
@@ -363,6 +391,7 @@ class MediaTransferManager(
 
         val sessionKey = "${packet.senderId}_$mediaId"
         val session = inboundSessions[sessionKey] ?: return
+        session.lastActivityMs = System.currentTimeMillis()
 
         session.chunks[chunkIndex] = chunkData
         val receivedCount = session.chunks.size

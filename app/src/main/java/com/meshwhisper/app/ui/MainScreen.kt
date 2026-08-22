@@ -1,5 +1,6 @@
 package com.meshwhisper.app.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -48,6 +49,15 @@ fun MainScreen(
 ) {
     var selectedTab by remember { mutableStateOf(NavTab.PUBLIC) }
     var activeDirectChatPeerId by remember { mutableStateOf<Long?>(null) }
+
+    // System Back Button: Direct Chat thread -> Conversation List -> Public Mesh root -> System exit
+    BackHandler(enabled = activeDirectChatPeerId != null || selectedTab != NavTab.PUBLIC) {
+        if (activeDirectChatPeerId != null) {
+            activeDirectChatPeerId = null
+        } else if (selectedTab != NavTab.PUBLIC) {
+            selectedTab = NavTab.PUBLIC
+        }
+    }
 
     Scaffold(
         bottomBar = {

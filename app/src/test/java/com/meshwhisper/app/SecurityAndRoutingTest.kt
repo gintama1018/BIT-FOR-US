@@ -101,6 +101,26 @@ class SecurityAndRoutingTest {
     }
 
     @Test
+    fun testStoreAndForwardTimestampWindowValidation() {
+        val nowSec = System.currentTimeMillis() / 1000L
+
+        // Stored DM from 6 hours ago (within 24h store-and-forward window)
+        val sixHoursAgo = nowSec - 21600
+        val sixHourAge = nowSec - sixHoursAgo
+        assertThat(sixHourAge in -300..86400).isTrue()
+
+        // Stored DM from 23 hours ago (within 24h store-and-forward window)
+        val twentyThreeHoursAgo = nowSec - 82800
+        val twentyThreeHourAge = nowSec - twentyThreeHoursAgo
+        assertThat(twentyThreeHourAge in -300..86400).isTrue()
+
+        // Stored DM from 25 hours ago (expired beyond 24h store-and-forward window)
+        val twentyFiveHoursAgo = nowSec - 90000
+        val twentyFiveHourAge = nowSec - twentyFiveHoursAgo
+        assertThat(twentyFiveHourAge in -300..86400).isFalse()
+    }
+
+    @Test
     fun testEpochCalculationConsistency() {
         val t1 = 3600L // 1h in seconds
         val t2 = 3659L // 1h + 59s

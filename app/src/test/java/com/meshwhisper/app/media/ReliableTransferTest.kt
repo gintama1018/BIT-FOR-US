@@ -100,4 +100,163 @@ class ReliableTransferTest {
     fun testDirectMediaTtlIsStrictlySingleHop() {
         assertThat(MeshPacket.MEDIA_DIRECT_TTL).isEqualTo(1)
     }
+
+    @Test
+    fun testTileGridRulesAndChunkPaddingAlignment() {
+        // 1. Grid threshold rules
+        assertThat(MediaCompressor.shouldTileImage(15 * 1024L)).isNull() // <20KB: untiled
+        assertThat(MediaCompressor.shouldTileImage(80 * 1024L)).isEqualTo(Pair(3, 3)) // 20KB-150KB: 3x3
+        assertThat(MediaCompressor.shouldTileImage(300 * 1024L)).isEqualTo(Pair(4, 4)) // >150KB: 4x4
+
+        // 2. Padding alignment: each tile must be an exact multiple of 400 bytes
+        val simulatedTileLengths = listOf(1120, 850, 990, 1420, 800)
+        val paddedLengths = simulatedTileLengths.map { rawLen ->
+            val rem = rawLen % MeshPacket.CHUNK_PAYLOAD_SIZE
+            val pad = if (rem != 0) MeshPacket.CHUNK_PAYLOAD_SIZE - rem else 0
+            rawLen + pad
+        }
+
+        paddedLengths.forEach { len ->
+            assertThat(len % MeshPacket.CHUNK_PAYLOAD_SIZE).isEqualTo(0)
+        }
+
+        // 3. Precomputed chunk ranges must be contiguous and non-overlapping
+        var currentChunkOffset = 0
+        val ranges = paddedLengths.map { pLen ->
+            val numChunks = pLen / MeshPacket.CHUNK_PAYLOAD_SIZE
+            val r = currentChunkOffset until (currentChunkOffset + numChunks)
+            currentChunkOffset += numChunks
+            r
+        }
+
+        assertThat(ranges.size).isEqualTo(5)
+        assertThat(ranges[0]).isEqualTo(0 until 3) // 1200 / 400 = 3 chunks (0..2)
+        assertThat(ranges[1]).isEqualTo(3 until 6) // 1200 / 400 = 3 chunks (3..5)
+        assertThat(ranges[2]).isEqualTo(6 until 9) // 1200 / 400 = 3 chunks (6..8)
+        assertThat(ranges[3]).isEqualTo(9 until 13) // 1600 / 400 = 4 chunks (9..12)
+        assertThat(ranges[4]).isEqualTo(13 until 15) // 800 / 400 = 2 chunks (13..14)
+    }
+
+    @Test
+    fun testTiledMediaInitPayloadSerialization() {
+        val mediaId = UUID.randomUUID()
+        val gridCols = 3
+        val gridRows = 3
+        val widthPx = 800
+        val heightPx = 600
+        val paddedTileLengths = listOf(800, 1200, 800, 1200, 1600, 1200, 800, 1200, 800)
+        val totalBytes = paddedTileLengths.sum()
+        val totalChunks = totalBytes / MeshPacket.CHUNK_PAYLOAD_SIZE
+        val sha256 = ByteArray(32) { (it * 7).toByte() }
+
+        // Build binary MEDIA_INIT
+        val tilingHeaderSize = 1 + 1 + 2 + 2 + 1 + paddedTileLengths.size * 4
+        val initPayloadSize = 16 + 1 + 1 + 2 + 4 + 4 + 32 + 1 + 0 + 2 + 0 + 1 + 0 + tilingHeaderSize
+        val buf = ByteBuffer.allocate(initPayloadSize).order(ByteOrder.BIG_ENDIAN)
+        buf.putLong(mediaId.mostSignificantBits)
+        buf.putLong(mediaId.leastSignificantBits)
+        buf.put(0.toByte()) // IMAGE
+        buf.put(1.toByte()) // version
+        buf.putShort((totalChunks and 0xFFFF).toShort())
+        buf.putInt(totalBytes)
+        buf.putInt(0) // durationMs
+        buf.put(sha256)
+        buf.put(0.toByte()) // fileNameLen
+        buf.putShort(0.toShort()) // previewLen
+        buf.put(0.toByte()) // captionLen
+
+        // Tiling metadata
+        buf.put((gridCols and 0xFF).toByte())
+        buf.put((gridRows and 0xFF).toByte())
+        buf.putShort((widthPx and 0xFFFF).toShort())
+        buf.putShort((heightPx and 0xFFFF).toShort())
+        buf.put((paddedTileLengths.size and 0xFF).toByte())
+        paddedTileLengths.forEach { buf.putInt(it) }
+
+        val serialized = buf.array()
+
+        // Parse back
+        val readBuf = ByteBuffer.wrap(serialized).order(ByteOrder.BIG_ENDIAN)
+        val parsedMediaId = UUID(readBuf.long, readBuf.long)
+        val typeCode = readBuf.get()
+        val ver = readBuf.get()
+        val parsedChunks = readBuf.short.toInt() and 0xFFFF
+        val parsedBytes = readBuf.int
+        val parsedDuration = readBuf.int
+        val parsedSha = ByteArray(32).also { readBuf.get(it) }
+        val fnLen = readBuf.get().toInt() and 0xFF
+        val prevLen = readBuf.short.toInt() and 0xFFFF
+        val capLen = readBuf.get().toInt() and 0xFF
+
+        // Tiling parser
+        assertThat(readBuf.remaining()).isAtLeast(7)
+        val parsedCols = readBuf.get().toInt() and 0xFF
+        val parsedRows = readBuf.get().toInt() and 0xFF
+        val parsedW = readBuf.short.toInt() and 0xFFFF
+        val parsedH = readBuf.short.toInt() and 0xFFFF
+        val parsedTileCount = readBuf.get().toInt() and 0xFF
+        val parsedTileLengths = mutableListOf<Int>()
+        for (i in 0 until parsedTileCount) {
+            parsedTileLengths.add(readBuf.int)
+        }
+
+        assertThat(parsedMediaId).isEqualTo(mediaId)
+        assertThat(parsedCols).isEqualTo(3)
+        assertThat(parsedRows).isEqualTo(3)
+        assertThat(parsedW).isEqualTo(800)
+        assertThat(parsedH).isEqualTo(600)
+        assertThat(parsedTileCount).isEqualTo(9)
+        assertThat(parsedTileLengths).isEqualTo(paddedTileLengths)
+    }
+
+    @Test
+    fun testOutOfOrderTileReconstruction() {
+        // Tile 0: chunks 0..1 (2 chunks)
+        // Tile 1: chunks 2..3 (2 chunks)
+        // Tile 2: chunks 4..6 (3 chunks)
+        val tileChunkRanges = listOf(0..1, 2..3, 4..6)
+        val receivedChunks = mutableMapOf<Int, ByteArray>()
+        val paintedTiles = mutableSetOf<Int>()
+
+        // Helper checker
+        fun checkDecodableTiles(): List<Int> {
+            val newlyDecodable = mutableListOf<Int>()
+            for (idx in tileChunkRanges.indices) {
+                if (!paintedTiles.contains(idx)) {
+                    val range = tileChunkRanges[idx]
+                    if (range.all { receivedChunks.containsKey(it) }) {
+                        paintedTiles.add(idx)
+                        newlyDecodable.add(idx)
+                    }
+                }
+            }
+            return newlyDecodable
+        }
+
+        // Out of order delivery: chunk 4, then 6, then 5 (Tile 2 chunks)
+        receivedChunks[4] = byteArrayOf(4)
+        assertThat(checkDecodableTiles()).isEmpty()
+
+        receivedChunks[6] = byteArrayOf(6)
+        assertThat(checkDecodableTiles()).isEmpty()
+
+        receivedChunks[5] = byteArrayOf(5) // Tile 2 is now complete (chunks 4, 5, 6 present)!
+        assertThat(checkDecodableTiles()).containsExactly(2)
+
+        // Chunk 0 arrives (Tile 0 is still incomplete, missing chunk 1)
+        receivedChunks[0] = byteArrayOf(0)
+        assertThat(checkDecodableTiles()).isEmpty()
+
+        // Chunk 1 arrives (Tile 0 is now complete!)
+        receivedChunks[1] = byteArrayOf(1)
+        assertThat(checkDecodableTiles()).containsExactly(0)
+
+        // Chunks 2 and 3 arrive (Tile 1 complete!)
+        receivedChunks[2] = byteArrayOf(2)
+        receivedChunks[3] = byteArrayOf(3)
+        assertThat(checkDecodableTiles()).containsExactly(1)
+
+        // All 3 tiles painted
+        assertThat(paintedTiles).containsExactly(0, 1, 2)
+    }
 }

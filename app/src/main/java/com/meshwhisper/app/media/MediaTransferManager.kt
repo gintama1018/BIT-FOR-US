@@ -65,6 +65,14 @@ data class MediaTransferProgress(
     val progress: Float
 )
 
+data class TileUpdate(
+    val mediaId: UUID,
+    val tileIndex: Int,
+    val gridCols: Int,
+    val gridRows: Int,
+    val bitmap: android.graphics.Bitmap
+)
+
 class MediaTransferManager(
     private val context: Context,
     private val database: MeshDatabase,
@@ -82,6 +90,9 @@ class MediaTransferManager(
 
     private val _transferProgress = MutableSharedFlow<MediaTransferProgress>(extraBufferCapacity = 64)
     val transferProgress: SharedFlow<MediaTransferProgress> = _transferProgress.asSharedFlow()
+
+    private val _tileUpdates = MutableSharedFlow<TileUpdate>(extraBufferCapacity = 64)
+    val tileUpdates: SharedFlow<TileUpdate> = _tileUpdates.asSharedFlow()
 
     private val _transferStates = MutableStateFlow<Map<UUID, TransferStateInfo>>(emptyMap())
     val transferStates: StateFlow<Map<UUID, TransferStateInfo>> = _transferStates.asStateFlow()
@@ -118,12 +129,19 @@ class MediaTransferManager(
         val senderId: Long,
         val recipientId: Long,
         val isBroadcast: Boolean,
-        val timestamp: Long
+        val timestamp: Long,
+        val gridCols: Int = 1,
+        val gridRows: Int = 1,
+        val imageWidthPx: Int = 0,
+        val imageHeightPx: Int = 0,
+        val paddedTileByteLengths: List<Int> = emptyList(),
+        val tileChunkRanges: List<IntRange> = emptyList()
     ) {
         var lastActivityMs: Long = System.currentTimeMillis()
         var nackRoundCount: Int = 0
         val chunks = ConcurrentHashMap<Int, ByteArray>()
         val throughputTracker = mutableListOf<Pair<Long, Long>>() // timestampMs -> cumulativeBytes
+        val paintedTiles: MutableSet<Int> = ConcurrentHashMap.newKeySet()
     }
 
     private val inboundSessions = ConcurrentHashMap<String, InboundMediaSession>()
@@ -272,7 +290,12 @@ class MediaTransferManager(
         caption: String = "",
         durationMs: Long = 0L,
         originalFileName: String = "",
-        previewBytes: ByteArray = ByteArray(0)
+        previewBytes: ByteArray = ByteArray(0),
+        gridCols: Int = 1,
+        gridRows: Int = 1,
+        imageWidthPx: Int = 0,
+        imageHeightPx: Int = 0,
+        paddedTileByteLengths: List<Int> = emptyList()
     ): String = outboundMutex.withLock {
         val mediaId = UUID.randomUUID()
         val isBroadcast = (recipientNodeId == MeshPacket.BROADCAST_RECIPIENT_ID)
@@ -391,7 +414,11 @@ class MediaTransferManager(
         }
         val mediaVersionByte = 1.toByte()
 
-        val initPayloadSize = 16 + 1 + 1 + 2 + 4 + 4 + 32 + 1 + fileNameBytes.size + 2 + cappedPreviewBytes.size + 1 + captionBytes.size
+        val isTiled = (gridCols > 1 && gridRows > 1 && paddedTileByteLengths.isNotEmpty())
+        val tileCount = if (isTiled) paddedTileByteLengths.size else 0
+        val tilingHeaderSize = if (isTiled) (1 + 1 + 2 + 2 + 1 + tileCount * 4) else 0
+
+        val initPayloadSize = 16 + 1 + 1 + 2 + 4 + 4 + 32 + 1 + fileNameBytes.size + 2 + cappedPreviewBytes.size + 1 + captionBytes.size + tilingHeaderSize
         val initBuffer = ByteBuffer.allocate(initPayloadSize).order(ByteOrder.BIG_ENDIAN)
         initBuffer.putLong(mediaId.mostSignificantBits)
         initBuffer.putLong(mediaId.leastSignificantBits)
@@ -407,6 +434,17 @@ class MediaTransferManager(
         initBuffer.put(cappedPreviewBytes)
         initBuffer.put((captionBytes.size and 0xFF).toByte())
         initBuffer.put(captionBytes)
+
+        if (isTiled) {
+            initBuffer.put((gridCols and 0xFF).toByte())
+            initBuffer.put((gridRows and 0xFF).toByte())
+            initBuffer.putShort((imageWidthPx and 0xFFFF).toShort())
+            initBuffer.putShort((imageHeightPx and 0xFFFF).toShort())
+            initBuffer.put((tileCount and 0xFF).toByte())
+            for (len in paddedTileByteLengths) {
+                initBuffer.putInt(len)
+            }
+        }
 
         val plainInit = initBuffer.array()
         val initPacketId = UUID.randomUUID()
@@ -655,6 +693,35 @@ class MediaTransferManager(
             }
         }
 
+        var gridCols = 1
+        var gridRows = 1
+        var imageWidthPx = 0
+        var imageHeightPx = 0
+        val paddedTileByteLengths = mutableListOf<Int>()
+        val tileChunkRanges = mutableListOf<IntRange>()
+
+        if (buffer.remaining() >= 7) {
+            val gCols = buffer.get().toInt() and 0xFF
+            val gRows = buffer.get().toInt() and 0xFF
+            val wPx = buffer.getShort().toInt() and 0xFFFF
+            val hPx = buffer.getShort().toInt() and 0xFFFF
+            val tCount = buffer.get().toInt() and 0xFF
+            if (gCols > 1 && gRows > 1 && tCount > 0 && buffer.remaining() >= tCount * 4) {
+                gridCols = gCols
+                gridRows = gRows
+                imageWidthPx = wPx
+                imageHeightPx = hPx
+                var currentChunkOffset = 0
+                for (i in 0 until tCount) {
+                    val pLen = buffer.getInt()
+                    paddedTileByteLengths.add(pLen)
+                    val numChunks = maxOf(1, pLen / MeshPacket.CHUNK_PAYLOAD_SIZE)
+                    tileChunkRanges.add(currentChunkOffset until (currentChunkOffset + numChunks))
+                    currentChunkOffset += numChunks
+                }
+            }
+        }
+
         val sessionKey = "${packet.senderId}_$mediaId"
         val session = InboundMediaSession(
             mediaId = mediaId,
@@ -669,7 +736,13 @@ class MediaTransferManager(
             senderId = packet.senderId,
             recipientId = packet.recipientId,
             isBroadcast = isBroadcast,
-            timestamp = packet.timestamp * 1000L
+            timestamp = packet.timestamp * 1000L,
+            gridCols = gridCols,
+            gridRows = gridRows,
+            imageWidthPx = imageWidthPx,
+            imageHeightPx = imageHeightPx,
+            paddedTileByteLengths = paddedTileByteLengths,
+            tileChunkRanges = tileChunkRanges
         )
         inboundSessions[sessionKey] = session
 
@@ -750,6 +823,35 @@ class MediaTransferManager(
         val currentBytes = minOf((receivedCount * MeshPacket.CHUNK_PAYLOAD_SIZE).toLong(), session.totalSizeBytes.toLong())
         val progress = receivedCount.toFloat() / session.totalChunks
         val eta = calculateEta(session.throughputTracker, currentBytes, session.totalSizeBytes.toLong())
+
+        // Progressive Tile Revealer: check if any unpainted tile's chunk range is fulfilled
+        if (session.gridCols > 1 && session.tileChunkRanges.isNotEmpty()) {
+            for (tileIdx in session.tileChunkRanges.indices) {
+                if (!session.paintedTiles.contains(tileIdx)) {
+                    val range = session.tileChunkRanges[tileIdx]
+                    if (range.all { session.chunks.containsKey(it) }) {
+                        try {
+                            val tileStream = java.io.ByteArrayOutputStream()
+                            for (cIdx in range) {
+                                val cData = session.chunks[cIdx]
+                                if (cData != null) {
+                                    tileStream.write(cData)
+                                }
+                            }
+                            val rawTileBytes = tileStream.toByteArray()
+                            val tileBmp = android.graphics.BitmapFactory.decodeByteArray(rawTileBytes, 0, rawTileBytes.size)
+                            if (tileBmp != null) {
+                                session.paintedTiles.add(tileIdx)
+                                _tileUpdates.emit(TileUpdate(mediaId, tileIdx, session.gridCols, session.gridRows, tileBmp))
+                                Log.d(tag, "Progressively revealed tile $tileIdx/${session.tileChunkRanges.size} for media $mediaId")
+                            }
+                        } catch (e: Exception) {
+                            Log.w(tag, "Failed to decode progressive tile $tileIdx: ${e.message}")
+                        }
+                    }
+                }
+            }
+        }
 
         updateTransferState(
             mediaId = mediaId,

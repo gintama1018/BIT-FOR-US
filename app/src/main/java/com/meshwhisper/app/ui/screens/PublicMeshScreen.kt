@@ -172,8 +172,20 @@ fun PublicMeshScreen(
                     textInput = ""
                 }
             },
-            onSendMedia = { mediaType, bytes, caption, durationMs, fileName, previewBytes ->
-                viewModel.sendMediaBroadcast(mediaType, bytes, caption, durationMs, fileName, previewBytes)
+            onSendMedia = { mediaType, bytes, caption, durationMs, fileName, previewBytes, gridCols, gridRows, imageWidthPx, imageHeightPx, paddedTileByteLengths ->
+                viewModel.sendMediaBroadcast(
+                    mediaType,
+                    bytes,
+                    caption,
+                    durationMs,
+                    fileName,
+                    previewBytes,
+                    gridCols,
+                    gridRows,
+                    imageWidthPx,
+                    imageHeightPx,
+                    paddedTileByteLengths
+                )
             },
             audioRecorder = viewModel.audioRecorder,
             placeholder = "Broadcast to mesh..."
@@ -328,7 +340,8 @@ fun BroadcastMessageBubble(
                         MediaType.IMAGE -> {
                             ImageMessageBubble(
                                 message = msg,
-                                isOutgoing = isMe
+                                isOutgoing = isMe,
+                                tileUpdates = viewModel?.tileUpdates
                             )
                         }
                         MediaType.VOICE -> {
@@ -376,7 +389,19 @@ fun ChatInputBar(
     text: String,
     onTextChanged: (String) -> Unit,
     onSend: () -> Unit,
-    onSendMedia: ((mediaType: MediaType, bytes: ByteArray, caption: String, durationMs: Long, originalFileName: String, previewBytes: ByteArray) -> Unit)? = null,
+    onSendMedia: ((
+        mediaType: MediaType,
+        bytes: ByteArray,
+        caption: String,
+        durationMs: Long,
+        originalFileName: String,
+        previewBytes: ByteArray,
+        gridCols: Int,
+        gridRows: Int,
+        imageWidthPx: Int,
+        imageHeightPx: Int,
+        paddedTileByteLengths: List<Int>
+    ) -> Unit)? = null,
     audioRecorder: com.meshwhisper.app.media.AudioRecorder? = null,
     placeholder: String = "Message..."
 ) {
@@ -422,7 +447,7 @@ fun ChatInputBar(
                 }
                 val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                 if (bytes != null && bytes.isNotEmpty()) {
-                    onSendMedia(MediaType.FILE, bytes, "", 0L, fileName, ByteArray(0))
+                    onSendMedia(MediaType.FILE, bytes, "", 0L, fileName, ByteArray(0), 1, 1, 0, 0, emptyList())
                 }
             } catch (e: Exception) {
                 android.widget.Toast.makeText(context, "Failed to read file", android.widget.Toast.LENGTH_SHORT).show()
@@ -448,7 +473,12 @@ fun ChatInputBar(
                             "",
                             durationMs,
                             "",
-                            waveform
+                            waveform,
+                            1,
+                            1,
+                            0,
+                            0,
+                            emptyList()
                         )
                     }
                 }
@@ -518,7 +548,12 @@ fun ChatInputBar(
                                         "",
                                         durationMs,
                                         "",
-                                        waveform
+                                        waveform,
+                                        1,
+                                        1,
+                                        0,
+                                        0,
+                                        emptyList()
                                     )
                                 }
                             },
@@ -797,17 +832,53 @@ fun ChatInputBar(
                         showQualityDialog = false
                         pendingImageUri = null
                         if (uri != null && onSendMedia != null) {
-                            val compressed = com.meshwhisper.app.media.MediaCompressor.compressImageWithQuality(context, uri, selectedQuality)
+                            val rawSize = try {
+                                context.contentResolver.openFileDescriptor(uri, "r")?.statSize ?: 50000L
+                            } catch (_: Exception) { 50000L }
+
+                            val grid = com.meshwhisper.app.media.MediaCompressor.shouldTileImage(rawSize)
                             val microPreview = com.meshwhisper.app.media.MediaCompressor.generateMicroPreview(context, uri)
-                            if (compressed != null) {
-                                onSendMedia(
-                                    MediaType.IMAGE,
-                                    compressed,
-                                    "",
-                                    0L,
-                                    "",
-                                    microPreview ?: ByteArray(0)
+
+                            if (grid != null) {
+                                val tiledResult = com.meshwhisper.app.media.MediaCompressor.compressImageAsTiles(
+                                    context,
+                                    uri,
+                                    selectedQuality,
+                                    grid.first,
+                                    grid.second
                                 )
+                                if (tiledResult != null) {
+                                    onSendMedia(
+                                        MediaType.IMAGE,
+                                        tiledResult.concatenatedBytes,
+                                        "",
+                                        0L,
+                                        "",
+                                        microPreview ?: ByteArray(0),
+                                        tiledResult.gridCols,
+                                        tiledResult.gridRows,
+                                        tiledResult.imageWidthPx,
+                                        tiledResult.imageHeightPx,
+                                        tiledResult.paddedTileByteLengths
+                                    )
+                                }
+                            } else {
+                                val compressed = com.meshwhisper.app.media.MediaCompressor.compressImageWithQuality(context, uri, selectedQuality)
+                                if (compressed != null) {
+                                    onSendMedia(
+                                        MediaType.IMAGE,
+                                        compressed,
+                                        "",
+                                        0L,
+                                        "",
+                                        microPreview ?: ByteArray(0),
+                                        1,
+                                        1,
+                                        0,
+                                        0,
+                                        emptyList()
+                                    )
+                                }
                             }
                         }
                     },

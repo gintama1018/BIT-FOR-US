@@ -11,6 +11,7 @@ import com.meshwhisper.app.data.model.MessageStatus
 import com.meshwhisper.app.data.model.PacketLogEntity
 import com.meshwhisper.app.data.model.PeerEntity
 import com.meshwhisper.app.data.model.StoreForwardEntity
+import com.meshwhisper.app.data.model.MediaType
 import com.meshwhisper.app.protocol.MeshPacket
 import com.meshwhisper.app.protocol.PacketType
 import kotlinx.coroutines.CoroutineScope
@@ -920,6 +921,65 @@ class MeshRouter(
             val isTyping = packet.payload.isNotEmpty() && packet.payload[0] == 1.toByte()
             onTypingIndicatorListener?.invoke(packet.senderId, isTyping)
         }
+    }
+
+    suspend fun sendMediaDirect(
+        recipientNodeId: Long,
+        mediaType: MediaType,
+        mediaBytes: ByteArray,
+        caption: String = "",
+        durationMs: Long = 0L,
+        originalFileName: String = "",
+        previewBytes: ByteArray = ByteArray(0),
+        gridCols: Int = 1,
+        gridRows: Int = 1,
+        imageWidthPx: Int = 0,
+        imageHeightPx: Int = 0,
+        paddedTileByteLengths: List<Int> = emptyList()
+    ): String {
+        return mediaTransferManager.sendMedia(
+            recipientNodeId = recipientNodeId,
+            mediaType = mediaType,
+            mediaBytes = mediaBytes,
+            caption = caption,
+            durationMs = durationMs,
+            originalFileName = originalFileName,
+            previewBytes = previewBytes,
+            gridCols = gridCols,
+            gridRows = gridRows,
+            imageWidthPx = imageWidthPx,
+            imageHeightPx = imageHeightPx,
+            paddedTileByteLengths = paddedTileByteLengths
+        )
+    }
+
+    suspend fun sendMediaBroadcast(
+        mediaType: MediaType,
+        mediaBytes: ByteArray,
+        caption: String = "",
+        durationMs: Long = 0L,
+        originalFileName: String = "",
+        previewBytes: ByteArray = ByteArray(0),
+        gridCols: Int = 1,
+        gridRows: Int = 1,
+        imageWidthPx: Int = 0,
+        imageHeightPx: Int = 0,
+        paddedTileByteLengths: List<Int> = emptyList()
+    ): String {
+        return mediaTransferManager.sendMedia(
+            recipientNodeId = MeshPacket.BROADCAST_RECIPIENT_ID,
+            mediaType = mediaType,
+            mediaBytes = mediaBytes,
+            caption = caption,
+            durationMs = durationMs,
+            originalFileName = originalFileName,
+            previewBytes = previewBytes,
+            gridCols = gridCols,
+            gridRows = gridRows,
+            imageWidthPx = imageWidthPx,
+            imageHeightPx = imageHeightPx,
+            paddedTileByteLengths = paddedTileByteLengths
+        )
     }
 
     private fun logPacket(direction: String, packet: MeshPacket?, size: Int, details: String) {

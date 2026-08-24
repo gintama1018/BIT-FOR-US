@@ -47,6 +47,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -306,9 +307,85 @@ fun FileMessageBubble(
 }
 
 @Composable
+fun TiledImageCanvas(
+    mediaId: UUID?,
+    previewBitmap: android.graphics.Bitmap?,
+    finalBitmap: android.graphics.Bitmap?,
+    tileUpdates: kotlinx.coroutines.flow.SharedFlow<com.meshwhisper.app.media.TileUpdate>?,
+    modifier: Modifier = Modifier
+) {
+    val receivedTiles = remember(mediaId) { androidx.compose.runtime.mutableStateMapOf<Int, android.graphics.Bitmap>() }
+    var gridCols by remember(mediaId) { mutableStateOf(3) }
+    var gridRows by remember(mediaId) { mutableStateOf(3) }
+
+    LaunchedEffect(mediaId, tileUpdates) {
+        if (mediaId != null && tileUpdates != null) {
+            tileUpdates.collect { update ->
+                if (update.mediaId == mediaId) {
+                    gridCols = update.gridCols
+                    gridRows = update.gridRows
+                    receivedTiles[update.tileIndex] = update.bitmap
+                }
+            }
+        }
+    }
+
+    if (finalBitmap != null) {
+        Image(
+            bitmap = finalBitmap.asImageBitmap(),
+            contentDescription = "Image attachment",
+            contentScale = ContentScale.Crop,
+            modifier = modifier.fillMaxSize()
+        )
+    } else {
+        Box(modifier = modifier.fillMaxSize()) {
+            if (previewBitmap != null) {
+                Image(
+                    bitmap = previewBitmap.asImageBitmap(),
+                    contentDescription = "Preview backdrop",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .blur(8.dp)
+                )
+            }
+
+            androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
+                val canvasWidth = size.width
+                val canvasHeight = size.height
+                val cellW = canvasWidth / gridCols
+                val cellH = canvasHeight / gridRows
+
+                for ((tileIdx, tileBmp) in receivedTiles) {
+                    val r = tileIdx / gridCols
+                    val c = tileIdx % gridCols
+                    val left = c * cellW
+                    val top = r * cellH
+                    val right = if (c == gridCols - 1) canvasWidth else left + cellW
+                    val bottom = if (r == gridRows - 1) canvasHeight else top + cellH
+
+                    val dstRect = androidx.compose.ui.unit.IntRect(
+                        left = left.toInt(),
+                        top = top.toInt(),
+                        right = right.toInt(),
+                        bottom = bottom.toInt()
+                    )
+                    drawImage(
+                        image = tileBmp.asImageBitmap(),
+                        dstOffset = androidx.compose.ui.unit.IntOffset(dstRect.left, dstRect.top),
+                        dstSize = androidx.compose.ui.unit.IntSize(dstRect.width, dstRect.height)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun ImageMessageBubble(
     message: MessageEntity,
     isOutgoing: Boolean,
+    tileUpdates: kotlinx.coroutines.flow.SharedFlow<com.meshwhisper.app.media.TileUpdate>? = null,
     modifier: Modifier = Modifier
 ) {
     var isFullscreenOpen by remember { mutableStateOf(false) }
@@ -319,6 +396,10 @@ fun ImageMessageBubble(
         } else {
             null
         }
+    }
+
+    val mediaUuid = remember(message.messageId) {
+        try { UUID.fromString(message.messageId) } catch (_: Exception) { null }
     }
 
     val previewBitmap = remember(message.mediaPreviewBase64) {
@@ -345,29 +426,19 @@ fun ImageMessageBubble(
                 },
             contentAlignment = Alignment.Center
         ) {
-            if (bitmap != null) {
-                Image(
-                    bitmap = bitmap.asImageBitmap(),
-                    contentDescription = "Image attachment",
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
-            } else if (previewBitmap != null) {
-                Image(
-                    bitmap = previewBitmap.asImageBitmap(),
-                    contentDescription = "Preview thumbnail",
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .blur(8.dp)
-                )
-            }
+            TiledImageCanvas(
+                mediaId = mediaUuid,
+                previewBitmap = previewBitmap,
+                finalBitmap = bitmap,
+                tileUpdates = tileUpdates,
+                modifier = Modifier.fillMaxSize()
+            )
 
             if (message.status == MessageStatus.PENDING || bitmap == null) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(Color.Black.copy(alpha = 0.45f)),
+                        .background(Color.Black.copy(alpha = 0.35f)),
                     contentAlignment = Alignment.Center
                 ) {
                     Column(

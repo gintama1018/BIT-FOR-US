@@ -17,8 +17,144 @@ enum class ImageQuality {
     ORIGINAL
 }
 
+data class TiledImageResult(
+    val concatenatedBytes: ByteArray,
+    val tileByteLengths: List<Int>,
+    val paddedTileByteLengths: List<Int>,
+    val gridCols: Int,
+    val gridRows: Int,
+    val imageWidthPx: Int,
+    val imageHeightPx: Int
+)
+
 object MediaCompressor {
     private const val TAG = "MediaCompressor"
+
+    fun shouldTileImage(rawSizeBytes: Long): Pair<Int, Int>? {
+        return when {
+            rawSizeBytes < 20 * 1024L -> null // Untiled single stream
+            rawSizeBytes <= 150 * 1024L -> Pair(3, 3) // 3x3 grid (9 tiles)
+            else -> Pair(4, 4) // 4x4 grid (16 tiles)
+        }
+    }
+
+    fun compressImageAsTiles(
+        context: Context,
+        imageUri: Uri,
+        quality: ImageQuality,
+        gridCols: Int,
+        gridRows: Int
+    ): TiledImageResult? {
+        if (gridCols <= 1 || gridRows <= 1) return null
+
+        val maxDimension = when (quality) {
+            ImageQuality.HIGH -> 1600
+            ImageQuality.STANDARD -> 800
+            ImageQuality.ORIGINAL -> 1600
+        }
+        val jpegQuality = when (quality) {
+            ImageQuality.HIGH -> 80
+            ImageQuality.STANDARD -> 70
+            ImageQuality.ORIGINAL -> 95
+        }
+
+        return try {
+            val contentResolver = context.contentResolver
+            val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            contentResolver.openInputStream(imageUri)?.use { input ->
+                BitmapFactory.decodeStream(input, null, options)
+            }
+
+            val origWidth = options.outWidth
+            val origHeight = options.outHeight
+            if (origWidth <= 0 || origHeight <= 0) return null
+
+            var inSampleSize = 1
+            val maxOrigDim = max(origWidth, origHeight)
+            if (maxOrigDim > maxDimension) {
+                inSampleSize = maxOrigDim / maxDimension
+            }
+
+            val decodeOptions = BitmapFactory.Options().apply {
+                this.inSampleSize = inSampleSize
+                inPreferredConfig = Bitmap.Config.RGB_565
+            }
+
+            val sampledBitmap = contentResolver.openInputStream(imageUri)?.use { input ->
+                BitmapFactory.decodeStream(input, null, decodeOptions)
+            } ?: return null
+
+            val width = sampledBitmap.width
+            val height = sampledBitmap.height
+            val scaleFactor = minOf(
+                maxDimension.toFloat() / width,
+                maxDimension.toFloat() / height,
+                1.0f
+            )
+
+            val scaledBitmap = if (scaleFactor < 1.0f) {
+                val newW = (width * scaleFactor).toInt()
+                val newH = (height * scaleFactor).toInt()
+                Bitmap.createScaledBitmap(sampledBitmap, newW, newH, true)
+            } else {
+                sampledBitmap
+            }
+
+            val imgW = scaledBitmap.width
+            val imgH = scaledBitmap.height
+
+            val tileByteLengths = mutableListOf<Int>()
+            val paddedTileByteLengths = mutableListOf<Int>()
+            val outputStream = ByteArrayOutputStream()
+
+            val baseTileW = imgW / gridCols
+            val baseTileH = imgH / gridRows
+
+            for (r in 0 until gridRows) {
+                val y = r * baseTileH
+                val h = if (r == gridRows - 1) imgH - y else baseTileH
+                for (c in 0 until gridCols) {
+                    val x = c * baseTileW
+                    val w = if (c == gridCols - 1) imgW - x else baseTileW
+
+                    val cellBitmap = Bitmap.createBitmap(scaledBitmap, x, y, w, h)
+                    val tileStream = ByteArrayOutputStream()
+                    cellBitmap.compress(Bitmap.CompressFormat.JPEG, jpegQuality, tileStream)
+                    val tileBytes = tileStream.toByteArray()
+
+                    // Pad each tile to next multiple of CHUNK_PAYLOAD_SIZE (400 bytes)
+                    val chunkSize = 400
+                    val remainder = tileBytes.size % chunkSize
+                    val padLen = if (remainder != 0) chunkSize - remainder else 0
+                    val paddedLen = tileBytes.size + padLen
+
+                    outputStream.write(tileBytes)
+                    if (padLen > 0) {
+                        outputStream.write(ByteArray(padLen))
+                    }
+
+                    tileByteLengths.add(tileBytes.size)
+                    paddedTileByteLengths.add(paddedLen)
+                }
+            }
+
+            val concatenatedBytes = outputStream.toByteArray()
+            Log.d(TAG, "Compressed tiled image (${imgW}x${imgH}, ${gridCols}x${gridRows} grid) to ${concatenatedBytes.size} bytes across ${tileByteLengths.size} tiles")
+
+            TiledImageResult(
+                concatenatedBytes = concatenatedBytes,
+                tileByteLengths = tileByteLengths,
+                paddedTileByteLengths = paddedTileByteLengths,
+                gridCols = gridCols,
+                gridRows = gridRows,
+                imageWidthPx = imgW,
+                imageHeightPx = imgH
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to compress image as tiles: ${e.message}", e)
+            null
+        }
+    }
 
     fun compressImage(context: Context, imageUri: Uri): ByteArray? {
         return compressImageWithQuality(context, imageUri, ImageQuality.STANDARD)

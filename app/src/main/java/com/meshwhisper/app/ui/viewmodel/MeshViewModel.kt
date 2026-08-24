@@ -233,6 +233,7 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
     val audioPlayer = com.meshwhisper.app.media.AudioPlayer()
 
     val transferStates = router.mediaTransferManager.transferStates
+    val tileUpdates = router.mediaTransferManager.tileUpdates
 
     fun sendMediaDirect(
         recipientNodeId: Long,
@@ -241,10 +242,28 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         caption: String = "",
         durationMs: Long = 0L,
         originalFileName: String = "",
-        previewBytes: ByteArray = ByteArray(0)
+        previewBytes: ByteArray = ByteArray(0),
+        gridCols: Int = 1,
+        gridRows: Int = 1,
+        imageWidthPx: Int = 0,
+        imageHeightPx: Int = 0,
+        paddedTileByteLengths: List<Int> = emptyList()
     ) {
         viewModelScope.launch {
-            router.sendMediaDirect(recipientNodeId, mediaType, mediaBytes, caption, durationMs, originalFileName, previewBytes)
+            router.sendMediaDirect(
+                recipientNodeId,
+                mediaType,
+                mediaBytes,
+                caption,
+                durationMs,
+                originalFileName,
+                previewBytes,
+                gridCols,
+                gridRows,
+                imageWidthPx,
+                imageHeightPx,
+                paddedTileByteLengths
+            )
         }
     }
 
@@ -254,10 +273,27 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         caption: String = "",
         durationMs: Long = 0L,
         originalFileName: String = "",
-        previewBytes: ByteArray = ByteArray(0)
+        previewBytes: ByteArray = ByteArray(0),
+        gridCols: Int = 1,
+        gridRows: Int = 1,
+        imageWidthPx: Int = 0,
+        imageHeightPx: Int = 0,
+        paddedTileByteLengths: List<Int> = emptyList()
     ) {
         viewModelScope.launch {
-            router.sendMediaBroadcast(mediaType, mediaBytes, caption, durationMs, originalFileName, previewBytes)
+            router.sendMediaBroadcast(
+                mediaType,
+                mediaBytes,
+                caption,
+                durationMs,
+                originalFileName,
+                previewBytes,
+                gridCols,
+                gridRows,
+                imageWidthPx,
+                imageHeightPx,
+                paddedTileByteLengths
+            )
         }
     }
 

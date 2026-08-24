@@ -414,8 +414,21 @@ fun DirectChatDetailScreen(
                         viewModel.sendTyping(peerNodeId, false)
                     }
                 },
-                onSendMedia = { mediaType, bytes, caption, durationMs, fileName, previewBytes ->
-                    viewModel.sendMediaDirect(peerNodeId, mediaType, bytes, caption, durationMs, fileName, previewBytes)
+                onSendMedia = { mediaType, bytes, caption, durationMs, fileName, previewBytes, gridCols, gridRows, imageWidthPx, imageHeightPx, paddedTileByteLengths ->
+                    viewModel.sendMediaDirect(
+                        peerNodeId,
+                        mediaType,
+                        bytes,
+                        caption,
+                        durationMs,
+                        fileName,
+                        previewBytes,
+                        gridCols,
+                        gridRows,
+                        imageWidthPx,
+                        imageHeightPx,
+                        paddedTileByteLengths
+                    )
                 },
                 audioRecorder = viewModel.audioRecorder,
                 placeholder = "Message..."
@@ -518,7 +531,8 @@ fun DirectMessageBubble(
                         MediaType.IMAGE -> {
                             ImageMessageBubble(
                                 message = msg,
-                                isOutgoing = isMe
+                                isOutgoing = isMe,
+                                tileUpdates = viewModel?.tileUpdates
                             )
                         }
                         MediaType.VOICE -> {

@@ -259,4 +259,39 @@ class ReliableTransferTest {
         // All 3 tiles painted
         assertThat(paintedTiles).containsExactly(0, 1, 2)
     }
+
+    @Test
+    fun testDocxTextExtraction() {
+        // Create a synthetic in-memory DOCX zip file with word/document.xml
+        val tempDocx = java.io.File.createTempFile("test_mesh", ".docx")
+        try {
+            val docXmlContent = """
+                <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+                <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+                    <w:body>
+                        <w:p>
+                            <w:r><w:t>Hello MeshWhisper Team!</w:t></w:r>
+                        </w:p>
+                        <w:p>
+                            <w:r><w:t>Offline mesh file sharing is working &amp; ready.</w:t></w:r>
+                        </w:p>
+                    </w:body>
+                </w:document>
+            """.trimIndent()
+
+            java.util.zip.ZipOutputStream(java.io.FileOutputStream(tempDocx)).use { zos ->
+                val entry = java.util.zip.ZipEntry("word/document.xml")
+                zos.putNextEntry(entry)
+                zos.write(docXmlContent.toByteArray(Charsets.UTF_8))
+                zos.closeEntry()
+            }
+
+            val extracted = DocxTextExtractor.extractText(tempDocx)
+            assertThat(extracted).isNotNull()
+            assertThat(extracted).contains("Hello MeshWhisper Team!")
+            assertThat(extracted).contains("Offline mesh file sharing is working & ready.")
+        } finally {
+            tempDocx.delete()
+        }
+    }
 }

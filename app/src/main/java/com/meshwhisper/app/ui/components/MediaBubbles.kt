@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Image
@@ -47,6 +48,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -77,13 +79,17 @@ import com.meshwhisper.app.media.TransferStateInfo
 import com.meshwhisper.app.ui.theme.BurntSienna
 import com.meshwhisper.app.ui.theme.BurntSiennaContainer
 import com.meshwhisper.app.ui.theme.BurntSiennaDim
+import com.meshwhisper.app.ui.theme.DustyRose
 import com.meshwhisper.app.ui.theme.ManropeFamily
+import com.meshwhisper.app.ui.theme.TextMuted
 import com.meshwhisper.app.ui.theme.TextPrimary
 import com.meshwhisper.app.ui.theme.TextSecondary
 import com.meshwhisper.app.ui.theme.WarmCardBorder
 import com.meshwhisper.app.ui.theme.WarmGreen
+import com.meshwhisper.app.ui.theme.WarmLinen
 import com.meshwhisper.app.ui.theme.WarmRed
 import com.meshwhisper.app.ui.theme.WarmSurface
+import com.meshwhisper.app.ui.theme.WarmSurfaceContainer
 import java.io.File
 import java.util.UUID
 
@@ -253,6 +259,12 @@ fun FileMessageBubble(
 ) {
     val context = LocalContext.current
     val file = message.mediaUri?.let { File(it) }
+    var showPdfViewer by remember { mutableStateOf(false) }
+    var showDocxPreview by remember { mutableStateOf(false) }
+
+    val fileName = message.originalFileName ?: "Document"
+    val isPdf = fileName.endsWith(".pdf", ignoreCase = true)
+    val isDocx = fileName.endsWith(".docx", ignoreCase = true)
 
     Box(
         modifier = modifier
@@ -262,7 +274,19 @@ fun FileMessageBubble(
             .border(0.8.dp, WarmCardBorder, RoundedCornerShape(8.dp))
             .clickable(enabled = file != null && file.exists()) {
                 if (file != null && file.exists()) {
-                    openFileWithSystem(context, file)
+                    if (isPdf) {
+                        showPdfViewer = true
+                    } else if (isDocx) {
+                        val opened = openFileWithSystem(context, file)
+                        if (!opened) {
+                            showDocxPreview = true
+                        }
+                    } else {
+                        val opened = openFileWithSystem(context, file)
+                        if (!opened) {
+                            Toast.makeText(context, "No app available to open this file", Toast.LENGTH_SHORT).show()
+                        }
+                    }
                 }
             }
             .padding(10.dp)
@@ -287,7 +311,7 @@ fun FileMessageBubble(
 
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = message.originalFileName ?: "Document",
+                    text = fileName,
                     color = TextPrimary,
                     fontSize = 13.sp,
                     fontFamily = ManropeFamily,
@@ -303,6 +327,22 @@ fun FileMessageBubble(
                 )
             }
         }
+    }
+
+    if (showPdfViewer && file != null && file.exists()) {
+        PdfViewerDialog(
+            file = file,
+            fileName = fileName,
+            onDismiss = { showPdfViewer = false }
+        )
+    }
+
+    if (showDocxPreview && file != null && file.exists()) {
+        DocxPreviewDialog(
+            file = file,
+            fileName = fileName,
+            onDismiss = { showDocxPreview = false }
+        )
     }
 }
 
@@ -646,15 +686,287 @@ private fun formatFileSize(bytes: Long): String {
     }
 }
 
-private fun openFileWithSystem(context: Context, file: File) {
-    try {
+private fun openFileWithSystem(context: Context, file: File): Boolean {
+    return try {
         val uri: Uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        val ext = file.extension.lowercase()
+        val mime = android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "*/*"
+
         val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, context.contentResolver.getType(uri) ?: "*/*")
+            setDataAndType(uri, mime)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        context.startActivity(Intent.createChooser(intent, "Open file"))
+        val chooser = Intent.createChooser(intent, "Open with").apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(chooser)
+        true
     } catch (e: Exception) {
-        Toast.makeText(context, "No app available to open this file", Toast.LENGTH_SHORT).show()
+        android.util.Log.e("FileViewer", "Failed to open file with system: ${e.message}", e)
+        false
+    }
+}
+
+@Composable
+fun PdfViewerDialog(
+    file: File,
+    fileName: String,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val pdfRenderer = remember(file) { com.meshwhisper.app.media.PdfPageRenderer(file) }
+    DisposableEffect(pdfRenderer) {
+        onDispose { pdfRenderer.close() }
+    }
+
+    var currentPageIndex by remember { mutableStateOf(0) }
+    val totalPages = pdfRenderer.pageCount
+
+    val currentPageBitmap = remember(currentPageIndex, pdfRenderer) {
+        pdfRenderer.renderPage(currentPageIndex, 1080)
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = Color.Black
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                // Top Bar
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFF1E1E1E))
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                        IconButton(onClick = onDismiss) {
+                            Icon(imageVector = Icons.Default.Close, contentDescription = "Close", tint = Color.White)
+                        }
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Column {
+                            Text(
+                                text = fileName,
+                                color = Color.White,
+                                fontSize = 15.sp,
+                                fontFamily = ManropeFamily,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = if (totalPages > 0) "Page ${currentPageIndex + 1} of $totalPages" else "Document",
+                                color = Color.LightGray,
+                                fontSize = 12.sp,
+                                fontFamily = ManropeFamily
+                            )
+                        }
+                    }
+
+                    IconButton(
+                        onClick = { openFileWithSystem(context, file) }
+                    ) {
+                        Icon(imageVector = Icons.AutoMirrored.Filled.OpenInNew, contentDescription = "Open with external app", tint = Color.White)
+                    }
+                }
+
+                // Page Content
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .background(Color(0xFF121212))
+                        .padding(8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (currentPageBitmap != null) {
+                        Image(
+                            bitmap = currentPageBitmap.asImageBitmap(),
+                            contentDescription = "PDF Page ${currentPageIndex + 1}",
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clip(RoundedCornerShape(4.dp))
+                        )
+                    } else {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                text = "Unable to render PDF page",
+                                color = Color.Gray,
+                                fontFamily = ManropeFamily,
+                                fontSize = 14.sp
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Button(
+                                onClick = { openFileWithSystem(context, file) },
+                                colors = ButtonDefaults.buttonColors(containerColor = BurntSienna)
+                            ) {
+                                Text("Open with External Viewer", color = Color.White, fontFamily = ManropeFamily)
+                            }
+                        }
+                    }
+                }
+
+                // Bottom Pagination Bar
+                if (totalPages > 1) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xFF1E1E1E))
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Button(
+                            onClick = { if (currentPageIndex > 0) currentPageIndex -= 1 },
+                            enabled = currentPageIndex > 0,
+                            colors = ButtonDefaults.buttonColors(containerColor = BurntSiennaContainer)
+                        ) {
+                            Text("Previous", color = if (currentPageIndex > 0) BurntSienna else TextMuted, fontFamily = ManropeFamily)
+                        }
+
+                        Text(
+                            text = "${currentPageIndex + 1} / $totalPages",
+                            color = Color.White,
+                            fontFamily = ManropeFamily,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+
+                        Button(
+                            onClick = { if (currentPageIndex < totalPages - 1) currentPageIndex += 1 },
+                            enabled = currentPageIndex < totalPages - 1,
+                            colors = ButtonDefaults.buttonColors(containerColor = BurntSiennaContainer)
+                        ) {
+                            Text("Next", color = if (currentPageIndex < totalPages - 1) BurntSienna else TextMuted, fontFamily = ManropeFamily)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun DocxPreviewDialog(
+    file: File,
+    fileName: String,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val extractedText = remember(file) {
+        com.meshwhisper.app.media.DocxTextExtractor.extractText(file)
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = WarmLinen
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                // Top Bar
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(WarmSurface)
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                        IconButton(onClick = onDismiss) {
+                            Icon(imageVector = Icons.Default.Close, contentDescription = "Close", tint = TextPrimary)
+                        }
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = fileName,
+                            color = TextPrimary,
+                            fontSize = 15.sp,
+                            fontFamily = ManropeFamily,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    IconButton(
+                        onClick = { openFileWithSystem(context, file) }
+                    ) {
+                        Icon(imageVector = Icons.AutoMirrored.Filled.OpenInNew, contentDescription = "Open with external app", tint = BurntSienna)
+                    }
+                }
+
+                // Banner
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(WarmSurfaceContainer)
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                ) {
+                    Text(
+                        text = "📄 Formatting not shown. Displaying extracted text from document.",
+                        color = TextSecondary,
+                        fontSize = 12.sp,
+                        fontFamily = ManropeFamily
+                    )
+                }
+
+                // Text Content
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(16.dp)
+                ) {
+                    if (!extractedText.isNullOrBlank()) {
+                        androidx.compose.foundation.lazy.LazyColumn(modifier = Modifier.fillMaxSize()) {
+                            item {
+                                Text(
+                                    text = extractedText,
+                                    color = TextPrimary,
+                                    fontFamily = ManropeFamily,
+                                    fontSize = 14.sp,
+                                    lineHeight = 22.sp
+                                )
+                            }
+                        }
+                    } else {
+                        Column(
+                            modifier = Modifier.fillMaxSize(),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                text = "Unable to preview document text",
+                                color = TextMuted,
+                                fontFamily = ManropeFamily,
+                                fontSize = 14.sp
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Button(
+                                onClick = {
+                                    val opened = openFileWithSystem(context, file)
+                                    if (!opened) {
+                                        Toast.makeText(context, "No Word viewer installed. Install Google Docs or WPS Office to view this file.", Toast.LENGTH_LONG).show()
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = BurntSienna)
+                            ) {
+                                Text("Open with External Viewer", color = Color.White, fontFamily = ManropeFamily)
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

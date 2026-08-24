@@ -68,8 +68,7 @@ data class StoreForwardEntity(
     val recipientId: Long,
     val packetData: ByteArray,
     val createdAt: Long,
-    val expiresAt: Long,
-    val retryCount: Int = 0
+    val expiresAt: Long
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true

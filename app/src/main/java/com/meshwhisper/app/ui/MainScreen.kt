@@ -86,13 +86,13 @@ fun MainScreen(
                 .padding(innerPadding)
                 .background(WarmLinen)
         ) {
-            if (activeDirectChatPeerId != null) {
+            activeDirectChatPeerId?.let { peerId ->
                 DirectChatDetailScreen(
-                    peerNodeId = activeDirectChatPeerId!!,
+                    peerNodeId = peerId,
                     viewModel = viewModel,
                     onBack = { activeDirectChatPeerId = null }
                 )
-            } else {
+            } ?: run {
                 when (selectedTab) {
                     NavTab.PUBLIC -> PublicMeshScreen(viewModel = viewModel)
                     NavTab.DIRECT -> DirectChatsScreen(

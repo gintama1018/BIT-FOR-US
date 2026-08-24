@@ -38,7 +38,7 @@ import javax.crypto.spec.SecretKeySpec
         ProcessedPacketEntity::class,
         TopologyEdgeEntity::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = false
 )
 abstract class MeshDatabase : RoomDatabase() {
@@ -73,6 +73,28 @@ abstract class MeshDatabase : RoomDatabase() {
             }
         }
 
+        // Migration 7→8: Remove the dead `retryCount` column from store_forward_queue.
+        // SQLite doesn't support DROP COLUMN on older APIs, so we recreate the table.
+        val MIGRATION_7_8 = object : androidx.room.migration.Migration(7, 8) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS store_forward_queue_new (
+                        messageId TEXT NOT NULL PRIMARY KEY,
+                        recipientId INTEGER NOT NULL,
+                        packetData BLOB NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        expiresAt INTEGER NOT NULL
+                    )
+                """.trimIndent())
+                db.execSQL("""
+                    INSERT INTO store_forward_queue_new (messageId, recipientId, packetData, createdAt, expiresAt)
+                    SELECT messageId, recipientId, packetData, createdAt, expiresAt FROM store_forward_queue
+                """.trimIndent())
+                db.execSQL("DROP TABLE store_forward_queue")
+                db.execSQL("ALTER TABLE store_forward_queue_new RENAME TO store_forward_queue")
+            }
+        }
+
         @Volatile
         private var INSTANCE: MeshDatabase? = null
 
@@ -97,7 +119,7 @@ abstract class MeshDatabase : RoomDatabase() {
                 "meshwhisper_encrypted_db"
             )
                 .openHelperFactory(supportFactory)
-                .addMigrations(MIGRATION_5_6, MIGRATION_6_7)
+                .addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
                 .fallbackToDestructiveMigration()
                 .build()
         }
@@ -199,35 +221,77 @@ abstract class MeshDatabase : RoomDatabase() {
         }
 
         /**
-         * Securely wipes database rows using PRAGMA secure_delete to overwrite SQLite pages with zeroes,
-         * and clears stored encrypted DB passphrases.
+         * Performs a hard panic wipe in the correct sequence:
+         *   1. Closes the Room DB connection (flush WAL, release file handles)
+         *   2. Deletes the SQLCipher encrypted DB file from disk
+         *   3. Deletes the Keystore master key so the DB passphrase is permanently unrecoverable
+         *   4. Clears the encrypted DB passphrase from SharedPreferences
+         *
+         * After calling this, call [resetDbSingleton] and then kill the process
+         * (e.g. Process.killProcess(Process.myPid())) so Room's static singleton
+         * is not used against a now-deleted database file.
+         *
+         * IMPORTANT: Do NOT continue using the [db] object after this call.
          */
-        suspend fun executeSecureWipe(context: Context, db: MeshDatabase) {
-            try {
-                db.openHelper.writableDatabase.execSQL("PRAGMA secure_delete = ON;")
+        suspend fun performHardWipe(context: Context, db: MeshDatabase): Boolean {
+            return try {
+                // Step 1: Close the Room database (flushes WAL, releases file locks)
+                try {
+                    db.close()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to close DB before wipe (continuing anyway)", e)
+                }
+
+                // Step 2: Delete the SQLCipher database file and its WAL/SHM siblings
+                val dbDir = context.getDatabasePath("meshwhisper_encrypted_db")
+                val dbFiles = listOf(
+                    dbDir,
+                    java.io.File(dbDir.path + "-wal"),
+                    java.io.File(dbDir.path + "-shm"),
+                    java.io.File(dbDir.path + "-journal")
+                )
+                for (f in dbFiles) {
+                    if (f.exists()) {
+                        val deleted = f.delete()
+                        Log.i(TAG, "Hard wipe: deleted ${f.name} = $deleted")
+                    }
+                }
+
+                // Step 3: Delete DB master key from AndroidKeyStore so old ciphertext is permanently unreadable
+                try {
+                    val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE)
+                    keyStore.load(null)
+                    if (keyStore.containsAlias(DB_KEYSTORE_ALIAS)) {
+                        keyStore.deleteEntry(DB_KEYSTORE_ALIAS)
+                        Log.i(TAG, "Hard wipe: deleted Keystore alias $DB_KEYSTORE_ALIAS")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to delete DB Keystore key (continuing)", e)
+                }
+
+                // Step 4: Clear the encrypted DB passphrase prefs
+                try {
+                    val prefs = context.getSharedPreferences(PREFS_DB_SECURITY, Context.MODE_PRIVATE)
+                    prefs.edit().clear().commit() // commit() not apply() — we need synchronous flush
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to clear DB security prefs", e)
+                }
+
+                Log.i(TAG, "Hard wipe complete — DB file deleted, Keystore key destroyed, prefs cleared")
+                true
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to enable PRAGMA secure_delete", e)
+                Log.e(TAG, "Hard wipe failed", e)
+                false
             }
+        }
 
-            db.messageDao().deleteAll()
-            db.peerDao().deleteAll()
-            db.packetLogDao().deleteAll()
-            db.processedPacketDao().deleteAll()
-            db.topologyEdgeDao().deleteAll()
-            db.storeForwardDao().purgeExpired(Long.MAX_VALUE)
-
-            try {
-                db.openHelper.writableDatabase.execSQL("VACUUM;")
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to vacuum wiped database", e)
-            }
-
-            // Clear stored DB passphrase preferences to force fresh key derivation
-            try {
-                val prefs = context.getSharedPreferences(PREFS_DB_SECURITY, Context.MODE_PRIVATE)
-                prefs.edit().clear().apply()
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to clear DB security prefs", e)
+        /**
+         * Clears the in-process Room singleton so that [getInstance] will rebuild
+         * a fresh database on next call. Must be called after [performHardWipe].
+         */
+        fun resetDbSingleton() {
+            synchronized(this) {
+                INSTANCE = null
             }
         }
     }

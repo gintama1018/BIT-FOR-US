@@ -33,7 +33,7 @@ app/src/main/java/com/meshwhisper/app/
 ├── crypto/
 │   └── CryptoEngine.kt         # X25519 keypairs, HKDF-SHA256 epoch derivation, AES-256-GCM AEAD
 ├── media/
-│   └── MediaTransferManager.kt # Chunked image (≤60KB) and voice (AAC, ≤30s) transfer with flow control
+│   └── MediaTransferManager.kt # Paced chunk transmission with receiver-driven selective NACK recovery
 ├── data/
 │   └── MeshDatabase.kt         # SQLCipher-encrypted Room database sealed with Android Keystore
 └── ui/
@@ -82,13 +82,13 @@ sequenceDiagram
 | **Authenticated Encryption** | AES-256-GCM | Standard JCA `AES/GCM/NoPadding` with 128-bit authentication tag |
 | **Nonce Generation** | Unique 12-byte IV | Deterministic derivation from per-packet `UUID.randomUUID()` |
 | **Database Encryption** | SQLCipher v4 | 256-bit AES database encryption (`net.zetetic:sqlcipher-android:4.6.0`) |
-| **Master Key Storage** | Android Keystore | 256-bit AES-GCM master wrapping key in hardware TEE / StrongBox |
+| **Master Key Storage** | Android Keystore | 256-bit AES-GCM master wrapping key in AndroidKeyStore (hardware TEE backed where supported) |
 
 ### Header Authentication via AAD
 
-The 40-byte routing header (`type`, `messageId`, `senderId`, `recipientId`, `ttl`, `timestamp`, `payloadLength`) is supplied directly as Additional Authenticated Data (AAD) into the AES-256-GCM cipher during encryption. 
+Immutable routing header fields (`type`, `messageId`, `senderId`, `recipientId`, `timestamp` — 37 bytes) are supplied directly as Additional Authenticated Data (AAD) into the AES-256-GCM cipher during encryption.
 
-Intermediate relay nodes must inspect the header to decrement the TTL and route the frame. However, if a malicious relay alters any routing field (e.g., modifying `senderId`, `recipientId`, or `timestamp`), the recipient's AEAD tag verification fails, and the packet is discarded immediately.
+Intermediate relay nodes inspect the header and decrement the `ttl` field as mutable routing metadata. Any tampering with immutable routing fields (e.g., modifying `senderId`, `recipientId`, `timestamp`, or `messageId`) causes the recipient's AEAD tag verification to fail immediately, discarding forged or altered packets.
 
 ### Epoch-Based Session Key Rotation
 
@@ -110,13 +110,13 @@ When a `PEER_ANNOUNCE` packet arrives:
 
 ### At-Rest Database Protection & Panic Wipe
 
-All persistent entities (`peers`, `messages`, `store_forward`, `packet_logs`, `processed_packets`, `topology_edges`) are stored inside a SQLCipher database. The database passphrase is encrypted with an AES-256-GCM master key stored in the hardware-backed `AndroidKeyStore`.
+All persistent entities (`peers`, `messages`, `store_forward`, `packet_logs`, `processed_packets`, `topology_edges`) are stored inside a SQLCipher database. The database passphrase is encrypted with an AES-256-GCM master key stored in `AndroidKeyStore`.
 
 **Emergency Panic Wipe Routine**:
-1. Purges master keys from the `AndroidKeyStore`.
-2. Executes `PRAGMA secure_delete = ON;` and `VACUUM;` over the SQLCipher database.
-3. Deletes all local voice notes and compressed images from the internal app storage.
-4. Generates a completely new X25519 identity keypair and Node ID.
+1. Destroys identity wrapping keys and database master keys from `AndroidKeyStore`.
+2. Flushes WAL, safely closes Room database connection, and deletes the encrypted database file and its journal from disk.
+3. Deletes all local voice notes, avatars, and media files from internal app storage.
+4. Clears all security and identity preferences and terminates the process for a clean state reset on next launch.
 
 ---
 
@@ -127,7 +127,9 @@ All persistent entities (`peers`, `messages`, `store_forward`, `packet_logs`, `p
 1. **Deterministic Rotation vs. True Forward Secrecy**: Hourly session key derivation is deterministic from static X25519 identity keys. If an attacker extracts a device's long-term private key from memory, all historical epoch keys can be derived retroactively. True forward secrecy via ephemeral Double Ratchet state is an open roadmap item.
 2. **Unauthenticated Peer Announcements**: `PEER_ANNOUNCE` and neighbor gossip packets are unauthenticated broadcast frames. Adversaries can inject arbitrary Node IDs into the radar topology visualization. End-to-end message integrity, however, remains enforced by AEAD session keys.
 3. **Flood Relay Scalability**: The network utilizes uncontrolled flood routing. Channel consumption scales as $\mathcal{O}(N)$ transmissions per message. Networks with dozens of concurrent active nodes in dense RF proximity will encounter packet collisions and elevated latency.
-4. **Live-Only Media Transfers**: Image and voice transmissions are **excluded from the store-and-forward queue** to protect relay storage. Media packets are forwarded live (`MEDIA_TTL = 4`); if the recipient is not currently online, the media payload is dropped.
+4. **Media Hop Behaviors**:
+   - **Direct 1-to-1 Media**: Enforces direct single-hop BLE GATT connection between peers to avoid saturating relay queues.
+   - **Public / Broadcast Media**: Traverses the multi-hop mesh (`MEDIA_TTL = 4`) with receiver-driven selective NACK recovery and 45-second sender session retention.
 5. **Volatile In-Memory Chunk Reassembly**: Inbound media chunks are assembled in volatile memory before atomic commitment to disk. Terminating the application process mid-transfer discards in-flight chunks.
 6. **Physical Layer Attenuation**: 2.4 GHz Bluetooth signals cannot reliably penetrate reinforced concrete slabs. Multi-floor venue deployments require dedicated stairwell bridge nodes to maintain connectivity across vertical floors.
 

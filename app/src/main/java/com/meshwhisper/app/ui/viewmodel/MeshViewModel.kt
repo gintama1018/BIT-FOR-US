@@ -114,8 +114,19 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
 
     fun registerScannedPeer(nodeId: Long, alias: String, publicKeyHex: String) {
         viewModelScope.launch {
-            val existing = database.peerDao().getPeerById(nodeId)
             val pubBytes = com.meshwhisper.app.crypto.CryptoEngine.hexToBytes(publicKeyHex)
+
+            // SECURITY: Verify that the supplied nodeId is actually derived from the supplied public key.
+            // This mirrors the check in MeshRouter.handlePeerAnnounce() and prevents a crafted QR code
+            // from poisoning the peer DB with a false nodeId<->pubKey binding.
+            val derivedNodeId = com.meshwhisper.app.crypto.CryptoEngine.deriveNodeId(pubBytes)
+            if (derivedNodeId != nodeId) {
+                android.util.Log.e("MeshViewModel",
+                    "QR peer registration REJECTED: nodeId mismatch (claimed=$nodeId, derived=$derivedNodeId). Ignoring crafted QR.")
+                return@launch
+            }
+
+            val existing = database.peerDao().getPeerById(nodeId)
             val fp = com.meshwhisper.app.crypto.CryptoEngine.generateFingerprint(pubBytes)
 
             // Mirror MeshRouter.handlePeerAnnounce: detect key rotation before writing to DB.
@@ -143,7 +154,12 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
                 // Carry forward any previously set hasKeyChanged flag OR set it now if the QR
                 // presents a new key. This surfaces the safety-number banner on next open.
                 hasKeyChanged = hasKeyChanged || (existing?.hasKeyChanged ?: false),
-                previousFingerprint = prevFp
+                previousFingerprint = prevFp,
+                // Preserve existing avatar, mute state — QR re-registration must not silently
+                // reset user customizations that were already established for this peer.
+                avatarUri = existing?.avatarUri,
+                avatarHash = existing?.avatarHash ?: 0,
+                isMuted = existing?.isMuted ?: false
             )
             database.peerDao().insertOrUpdate(entity)
         }
@@ -311,18 +327,41 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
 
     fun emergencyPanicWipe() {
         viewModelScope.launch {
+            android.util.Log.w("MeshViewModel", "EMERGENCY PANIC WIPE INITIATED — destroying all local data")
             audioPlayer.stop()
-            com.meshwhisper.app.data.MeshDatabase.executeSecureWipe(app, database)
-            // Clean local media and avatar directories
+
+            // 1. Wipe local media and avatar directories first (no DB dependency)
             val mediaDir = java.io.File(app.filesDir, "media")
             mediaDir.deleteRecursively()
             val avatarDir = java.io.File(app.filesDir, "avatars")
             avatarDir.deleteRecursively()
             _myAvatarUri.value = null
-            cryptoEngine.regenerateIdentity()
-            setAppLockEnabled(false)
-            _myAlias.value = "Node-${cryptoEngine.nodeIdHex.takeLast(4)}"
-            router.announcePresence()
+
+            // 2. Wipe identity keys from SharedPreferences
+            cryptoEngine.resetIdentityKeys()
+
+            // 3. Delete identity master key from AndroidKeyStore (X25519 wrapping key)
+            try {
+                val keyStore = java.security.KeyStore.getInstance("AndroidKeyStore")
+                keyStore.load(null)
+                val identityAlias = "MeshWhisperIdentityMasterKey"
+                if (keyStore.containsAlias(identityAlias)) {
+                    keyStore.deleteEntry(identityAlias)
+                    android.util.Log.i("MeshViewModel", "Panic wipe: deleted identity Keystore key")
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("MeshViewModel", "Panic wipe: failed to delete identity Keystore key", e)
+            }
+
+            // 4. Hard-wipe the SQLCipher database: close it, delete the file, destroy its Keystore key
+            com.meshwhisper.app.data.MeshDatabase.performHardWipe(app, database)
+            com.meshwhisper.app.data.MeshDatabase.resetDbSingleton()
+
+            android.util.Log.w("MeshViewModel", "Panic wipe complete — killing process for clean restart")
+
+            // 5. Kill the process. The OS will restart the foreground service cleanly,
+            //    and Room will open a brand-new DB on next launch.
+            android.os.Process.killProcess(android.os.Process.myPid())
         }
     }
 

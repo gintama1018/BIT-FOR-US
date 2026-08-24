@@ -128,22 +128,19 @@ class MeshRouter(
         }
 
         scope.launch {
-            // Layer 2 Deduplication Check: Persistent Room Replay Table
-            if (database.processedPacketDao().hasSeen(dedupKey) > 0) {
-                synchronized(dedupCache) {
-                    dedupCache.put(dedupKey, System.currentTimeMillis())
-                }
+            // Atomic dedup: INSERT OR IGNORE returns -1 if the row already existed.
+            // This eliminates the hasSeen()/markSeen() race where two concurrent arrivals
+            // both see hasSeen==false before either writes the row.
+            val inserted = database.processedPacketDao().markSeen(
+                com.meshwhisper.app.data.model.ProcessedPacketEntity(dedupKey, packet.timestamp)
+            )
+            if (inserted == -1L) {
                 logPacket("DROP", packet, rawBytes.size, "Duplicate packet dropped (persistent replay DB)")
                 return@launch
             }
-
-            // Register in both fast RAM cache and persistent replay table
             synchronized(dedupCache) {
                 dedupCache.put(dedupKey, System.currentTimeMillis())
             }
-            database.processedPacketDao().markSeen(
-                com.meshwhisper.app.data.model.ProcessedPacketEntity(dedupKey, packet.timestamp)
-            )
 
             when (packet.type) {
                 PacketType.PEER_ANNOUNCE, PacketType.KEY_EXCHANGE -> {
@@ -432,7 +429,6 @@ class MeshRouter(
     private suspend fun handleAck(packet: MeshPacket, rawBytes: ByteArray, ingressAddress: String?) {
         if (packet.recipientId == cryptoEngine.nodeId) {
             // ACK reached the original sender!
-            val originalMsgId = packet.messageId.toString()
             val senderPeer = database.peerDao().getPeerById(packet.senderId)
 
             if (senderPeer == null) {
@@ -440,23 +436,34 @@ class MeshRouter(
                 return
             }
 
-            // Cryptographically verify the ACK proof-of-origin via AEAD auth tag
+            // Cryptographically verify the ACK proof-of-origin via AEAD auth tag.
+            // NOTE: packet.messageId is the unique ackPacketId (not the original message ID).
+            // The original messageId is decoded from the decrypted 16-byte payload.
             try {
                 val peerPubKey = CryptoEngine.hexToBytes(senderPeer.publicKeyHex)
                 val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey, packet.timestamp)
-                cryptoEngine.decrypt(
+                val decryptedPayload = cryptoEngine.decrypt(
                     ciphertext = packet.payload,
                     authTag = packet.authTag,
-                    messageId = packet.messageId,
+                    messageId = packet.messageId,  // ackPacketId used as nonce
                     aesKey = sessionKey,
                     aad = packet.getAuthenticatedHeaderBytes()
                 )
 
-                logPacket("ACK_RX", packet, rawBytes.size, "Authenticated delivery ACK received for msg $originalMsgId")
+                // Recover the original message ID from the 16-byte decrypted payload
+                val originalMsgId: String = if (decryptedPayload.size >= 16) {
+                    val buf = java.nio.ByteBuffer.wrap(decryptedPayload)
+                    UUID(buf.long, buf.long).toString()
+                } else {
+                    // Fallback for ACKs from older protocol versions (empty payload)
+                    packet.messageId.toString()
+                }
+
+                logPacket("ACK_RX", packet, rawBytes.size, "Authenticated delivery ACK received for msg $originalMsgId (ackId=${packet.messageId})")
                 database.messageDao().updateStatus(originalMsgId, MessageStatus.DELIVERED)
                 database.storeForwardDao().delete(originalMsgId)
             } catch (e: Exception) {
-                logPacket("DROP", packet, rawBytes.size, "Rejected unauthenticated/forged ACK for msg $originalMsgId")
+                logPacket("DROP", packet, rawBytes.size, "Rejected unauthenticated/forged ACK (ackId=${packet.messageId})")
                 Log.w(tag, "Rejected forged ACK: auth tag mismatch from ${packet.senderId}")
             }
         } else if (packet.ttl > 1) {
@@ -465,7 +472,7 @@ class MeshRouter(
             val relayedBytes = MeshPacket.serialize(relayedPacket)
             bleEngine.broadcastPacket(relayedBytes, ingressAddress)
             _relayedPacketsCount.value += 1
-            logPacket("RELAY", relayedPacket, relayedBytes.size, "Relaying ACK for msg ${packet.messageId}")
+            logPacket("RELAY", relayedPacket, relayedBytes.size, "Relaying ACK (ackId=${packet.messageId})")
         }
     }
 
@@ -801,45 +808,50 @@ class MeshRouter(
     }
 
     private suspend fun sendAck(recipientNodeId: Long, originalMsgId: UUID) {
-        val peer = database.peerDao().getPeerById(recipientNodeId)
+        val peer = database.peerDao().getPeerById(recipientNodeId) ?: return
         val timestamp = System.currentTimeMillis() / 1000L
+
+        // SECURITY: Use a fresh unique ID as the packet nonce — NEVER reuse the originalMsgId as GCM IV.
+        // The original messageId is embedded as plaintext inside the encrypted payload so the receiver
+        // can recover which message is being ACKed without any nonce reuse.
+        val ackPacketId = UUID.randomUUID()
+
+        // Encode originalMsgId (16 bytes) as the ACK payload so the receiver knows what was delivered
+        val plainPayload = java.nio.ByteBuffer.allocate(16).apply {
+            putLong(originalMsgId.mostSignificantBits)
+            putLong(originalMsgId.leastSignificantBits)
+        }.array()
 
         val aad = MeshPacket.computeAad(
             type = PacketType.ACK,
-            messageId = originalMsgId,
+            messageId = ackPacketId,  // AAD bound to unique ACK packet identity
             senderId = cryptoEngine.nodeId,
             recipientId = recipientNodeId,
             timestamp = timestamp
         )
 
-        val authTag: ByteArray
-        if (peer != null) {
-            val peerPubKey = CryptoEngine.hexToBytes(peer.publicKeyHex)
-            val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey, timestamp)
-            val encResult = cryptoEngine.encrypt(
-                plaintext = ByteArray(0),
-                messageId = originalMsgId,
-                aesKey = sessionKey,
-                aad = aad
-            )
-            authTag = encResult.authTag
-        } else {
-            authTag = ByteArray(16)
-        }
+        val peerPubKey = CryptoEngine.hexToBytes(peer.publicKeyHex)
+        val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey, timestamp)
+        val encResult = cryptoEngine.encrypt(
+            plaintext = plainPayload,
+            messageId = ackPacketId,  // Fresh nonce — unique per ACK, no reuse
+            aesKey = sessionKey,
+            aad = aad
+        )
 
         val ackPacket = MeshPacket(
             type = PacketType.ACK,
-            messageId = originalMsgId,
+            messageId = ackPacketId,
             senderId = cryptoEngine.nodeId,
             recipientId = recipientNodeId,
             ttl = MeshPacket.DEFAULT_TTL,
             timestamp = timestamp,
-            payload = ByteArray(0),
-            authTag = authTag
+            payload = encResult.ciphertext,
+            authTag = encResult.authTag
         )
 
         val raw = MeshPacket.serialize(ackPacket)
-        val dedupKey = "$originalMsgId:${PacketType.ACK.code}"
+        val dedupKey = "${ackPacketId}:${PacketType.ACK.code}"
         synchronized(dedupCache) {
             dedupCache.put(dedupKey, System.currentTimeMillis())
         }
@@ -847,7 +859,7 @@ class MeshRouter(
             com.meshwhisper.app.data.model.ProcessedPacketEntity(dedupKey, timestamp)
         )
         bleEngine.broadcastPacket(raw)
-        logPacket("ACK_TX", ackPacket, raw.size, "Sent authenticated ACK for msg $originalMsgId to $recipientNodeId")
+        logPacket("ACK_TX", ackPacket, raw.size, "Sent authenticated ACK for msg $originalMsgId to $recipientNodeId (ackId=$ackPacketId)")
     }
 
     private suspend fun drainStoreAndForwardQueueForPeer(recipientNodeId: Long) {

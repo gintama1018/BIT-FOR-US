@@ -301,6 +301,12 @@ class MediaTransferManager(
         val isBroadcast = (recipientNodeId == MeshPacket.BROADCAST_RECIPIENT_ID)
         val timestampSec = System.currentTimeMillis() / 1000L
 
+        // Guard: reject zero-byte or empty media (would cause totalChunks==0 and later division by zero)
+        if (mediaBytes.isEmpty()) {
+            Log.e(tag, "sendMedia() rejected: mediaBytes is empty (zero-byte transfer not supported)")
+            return@withLock ""
+        }
+
         // Ground-Truth Single-Hop Enforcement for direct 1-to-1 media
         if (!isBroadcast && !isDirectPeer(recipientNodeId)) {
             Log.e(tag, "Blocked direct media send: peer $recipientNodeId has no active direct BLE GATT connection")
@@ -657,6 +663,13 @@ class MediaTransferManager(
         val mediaVersion = buffer.get()
         val totalChunks = buffer.getShort().toInt() and 0xFFFF
         val totalSizeBytes = buffer.getInt()
+
+        // Bounds-check: reject absurd metadata that would cause excessive memory allocation.
+        // Max 4096 chunks (~1.6 MB at 400 B/chunk) and 20 MB total size are generous upper bounds.
+        if (totalChunks == 0 || totalChunks > 4096 || totalSizeBytes <= 0 || totalSizeBytes > 20 * 1024 * 1024) {
+            Log.w(tag, "MEDIA_INIT rejected from ${packet.senderId}: unreasonable metadata (chunks=$totalChunks, size=$totalSizeBytes). Possible malicious peer.")
+            return
+        }
         val durationMs = buffer.getInt().toLong()
         val sha256 = ByteArray(32)
         buffer.get(sha256)
@@ -821,6 +834,12 @@ class MediaTransferManager(
         val sessionKey = "${packet.senderId}_$mediaId"
         val session = inboundSessions[sessionKey] ?: return
         session.lastActivityMs = System.currentTimeMillis()
+
+        // Bounds-check: reject out-of-range chunk indexes to prevent session map inflation
+        if (chunkIndex < 0 || chunkIndex >= session.totalChunks) {
+            Log.w(tag, "MEDIA_CHUNK rejected from ${packet.senderId}: chunkIndex=$chunkIndex out of bounds (totalChunks=${session.totalChunks})")
+            return
+        }
 
         session.chunks[chunkIndex] = chunkData
         val receivedCount = session.chunks.size

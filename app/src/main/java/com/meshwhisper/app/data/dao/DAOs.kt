@@ -131,8 +131,9 @@ interface ProcessedPacketDao {
     @Query("SELECT COUNT(*) FROM processed_packets WHERE messageId = :messageId LIMIT 1")
     suspend fun hasSeen(messageId: String): Int
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun markSeen(packet: ProcessedPacketEntity)
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun markSeen(packet: ProcessedPacketEntity): Long
+    // Returns the new row ID on first insertion, or -1 if the packet was already seen (atomic dedup)
 
     @Query("DELETE FROM processed_packets WHERE timestamp < :cutoffTime")
     suspend fun purgeOld(cutoffTime: Long): Int

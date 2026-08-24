@@ -399,6 +399,15 @@ fun ChatInputBar(
         }
     }
 
+    val legacyImagePickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null && onSendMedia != null) {
+            pendingImageUri = uri
+            showQualityDialog = true
+        }
+    }
+
     val documentPickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         contract = androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -566,7 +575,13 @@ fun ChatInputBar(
                                                 )
                                             )
                                         } catch (e: Exception) {
-                                            android.widget.Toast.makeText(context, "No photo picker available", android.widget.Toast.LENGTH_SHORT).show()
+                                            android.util.Log.e("PhotoPicker", "PickVisualMedia launch failed, trying GetContent fallback", e)
+                                            try {
+                                                legacyImagePickerLauncher.launch("image/*")
+                                            } catch (e2: Exception) {
+                                                android.util.Log.e("PhotoPicker", "GetContent fallback also failed", e2)
+                                                android.widget.Toast.makeText(context, "Picker error: ${e2.message}", android.widget.Toast.LENGTH_LONG).show()
+                                            }
                                         }
                                     }
                                 )

@@ -105,6 +105,15 @@ fun IdentitySettingsScreen(
         }
     }
 
+    val legacyAvatarPickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.updateMyAvatar(context, uri)
+            Toast.makeText(context, "Profile photo updated", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     val qrContent = remember(myAlias, viewModel.myNodeIdHex, viewModel.myPublicKeyHex, identityVersion) {
         "meshwhisper://node?id=${viewModel.myNodeIdHex}&alias=$myAlias&pub=${viewModel.myPublicKeyHex}"
     }
@@ -226,7 +235,13 @@ fun IdentitySettingsScreen(
                                                     )
                                                 )
                                             } catch (e: Exception) {
-                                                Toast.makeText(context, "No photo picker available", Toast.LENGTH_SHORT).show()
+                                                android.util.Log.e("PhotoPicker", "PickVisualMedia failed, trying GetContent fallback", e)
+                                                try {
+                                                    legacyAvatarPickerLauncher.launch("image/*")
+                                                } catch (e2: Exception) {
+                                                    android.util.Log.e("PhotoPicker", "GetContent fallback also failed", e2)
+                                                    Toast.makeText(context, "Picker error: ${e2.message}", Toast.LENGTH_LONG).show()
+                                                }
                                             }
                                         },
                                         colors = ButtonDefaults.buttonColors(containerColor = BurntSiennaContainer),

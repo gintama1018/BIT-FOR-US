@@ -232,15 +232,19 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
     val audioRecorder = com.meshwhisper.app.media.AudioRecorder(application)
     val audioPlayer = com.meshwhisper.app.media.AudioPlayer()
 
+    val transferStates = router.mediaTransferManager.transferStates
+
     fun sendMediaDirect(
         recipientNodeId: Long,
         mediaType: com.meshwhisper.app.data.model.MediaType,
         mediaBytes: ByteArray,
         caption: String = "",
-        durationMs: Long = 0L
+        durationMs: Long = 0L,
+        originalFileName: String = "",
+        previewBytes: ByteArray = ByteArray(0)
     ) {
         viewModelScope.launch {
-            router.sendMediaDirect(recipientNodeId, mediaType, mediaBytes, caption, durationMs)
+            router.sendMediaDirect(recipientNodeId, mediaType, mediaBytes, caption, durationMs, originalFileName, previewBytes)
         }
     }
 
@@ -248,10 +252,24 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         mediaType: com.meshwhisper.app.data.model.MediaType,
         mediaBytes: ByteArray,
         caption: String = "",
-        durationMs: Long = 0L
+        durationMs: Long = 0L,
+        originalFileName: String = "",
+        previewBytes: ByteArray = ByteArray(0)
     ) {
         viewModelScope.launch {
-            router.sendMediaBroadcast(mediaType, mediaBytes, caption, durationMs)
+            router.sendMediaBroadcast(mediaType, mediaBytes, caption, durationMs, originalFileName, previewBytes)
+        }
+    }
+
+    fun cancelTransfer(mediaId: java.util.UUID) {
+        viewModelScope.launch {
+            router.mediaTransferManager.cancelTransfer(mediaId)
+        }
+    }
+
+    fun retryTransfer(mediaId: java.util.UUID) {
+        viewModelScope.launch {
+            router.mediaTransferManager.retryTransfer(mediaId)
         }
     }
 
@@ -301,16 +319,26 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
     init {
         appPrefs.registerOnSharedPreferenceChangeListener(prefListener)
 
-        // Incoming typing indicators
+        // Incoming typing indicators with automatic 4-second expiry
         router.onTypingIndicatorListener = { senderId, isTyping ->
             val now = System.currentTimeMillis()
             val map = _typingPeers.value.toMutableMap()
             if (isTyping) {
                 map[senderId] = now
+                _typingPeers.value = map
+                viewModelScope.launch {
+                    kotlinx.coroutines.delay(4000L)
+                    val current = _typingPeers.value
+                    if (current[senderId] == now) {
+                        val updated = current.toMutableMap()
+                        updated.remove(senderId)
+                        _typingPeers.value = updated
+                    }
+                }
             } else {
                 map.remove(senderId)
+                _typingPeers.value = map
             }
-            _typingPeers.value = map
         }
 
         // WhatsApp-Style Smart Notifications (On-Chat vs Off-Chat)

@@ -172,8 +172,8 @@ fun PublicMeshScreen(
                     textInput = ""
                 }
             },
-            onSendMedia = { mediaType, bytes, caption, durationMs ->
-                viewModel.sendMediaBroadcast(mediaType, bytes, caption, durationMs)
+            onSendMedia = { mediaType, bytes, caption, durationMs, fileName, previewBytes ->
+                viewModel.sendMediaBroadcast(mediaType, bytes, caption, durationMs, fileName, previewBytes)
             },
             audioRecorder = viewModel.audioRecorder,
             placeholder = "Broadcast to mesh..."
@@ -306,37 +306,56 @@ fun BroadcastMessageBubble(
                 .padding(horizontal = 14.dp, vertical = 10.dp)
         ) {
             Column {
-                when (msg.mediaType) {
-                    MediaType.IMAGE -> {
-                        ImageMessageBubble(
-                            message = msg,
-                            isOutgoing = isMe
-                        )
-                    }
-                    MediaType.VOICE -> {
-                        if (viewModel != null) {
-                            VoiceNoteBubble(
+                val transferStates = viewModel?.transferStates?.collectAsState()?.value
+                val mediaUuid = try { java.util.UUID.fromString(msg.messageId) } catch (_: Exception) { null }
+                val transferInfo = if (mediaUuid != null) transferStates?.get(mediaUuid) else null
+
+                if (transferInfo != null && (transferInfo.state == com.meshwhisper.app.media.TransferState.SENDING || transferInfo.state == com.meshwhisper.app.media.TransferState.RECEIVING || transferInfo.state == com.meshwhisper.app.media.TransferState.RECOVERING || transferInfo.state == com.meshwhisper.app.media.TransferState.VERIFYING || transferInfo.state == com.meshwhisper.app.media.TransferState.FAILED || transferInfo.state == com.meshwhisper.app.media.TransferState.CANCELLED)) {
+                    com.meshwhisper.app.ui.components.TransferCard(
+                        message = msg,
+                        transferInfo = transferInfo,
+                        onCancel = { id -> viewModel?.cancelTransfer(id) },
+                        onRetry = { id -> viewModel?.retryTransfer(id) }
+                    )
+                } else {
+                    when (msg.mediaType) {
+                        MediaType.FILE -> {
+                            com.meshwhisper.app.ui.components.FileMessageBubble(
                                 message = msg,
-                                isOutgoing = isMe,
-                                audioPlayer = viewModel.audioPlayer
-                            )
-                        } else {
-                            Text(
-                                text = "🎤 Voice note",
-                                color = TextPrimary,
-                                fontFamily = ManropeFamily,
-                                fontSize = 14.sp
+                                isOutgoing = isMe
                             )
                         }
-                    }
-                    else -> {
-                        Text(
-                            text = msg.text,
-                            color = TextPrimary,
-                            fontFamily = ManropeFamily,
-                            fontSize = 14.sp,
-                            lineHeight = 19.sp
-                        )
+                        MediaType.IMAGE -> {
+                            ImageMessageBubble(
+                                message = msg,
+                                isOutgoing = isMe
+                            )
+                        }
+                        MediaType.VOICE -> {
+                            if (viewModel != null) {
+                                VoiceNoteBubble(
+                                    message = msg,
+                                    isOutgoing = isMe,
+                                    audioPlayer = viewModel.audioPlayer
+                                )
+                            } else {
+                                Text(
+                                    text = "🎤 Voice note",
+                                    color = TextPrimary,
+                                    fontFamily = ManropeFamily,
+                                    fontSize = 14.sp
+                                )
+                            }
+                        }
+                        else -> {
+                            Text(
+                                text = msg.text,
+                                color = TextPrimary,
+                                fontFamily = ManropeFamily,
+                                fontSize = 14.sp,
+                                lineHeight = 19.sp
+                            )
+                        }
                     }
                 }
                 Spacer(modifier = Modifier.height(4.dp))
@@ -357,13 +376,16 @@ fun ChatInputBar(
     text: String,
     onTextChanged: (String) -> Unit,
     onSend: () -> Unit,
-    onSendMedia: ((mediaType: MediaType, bytes: ByteArray, caption: String, durationMs: Long) -> Unit)? = null,
+    onSendMedia: ((mediaType: MediaType, bytes: ByteArray, caption: String, durationMs: Long, originalFileName: String, previewBytes: ByteArray) -> Unit)? = null,
     audioRecorder: com.meshwhisper.app.media.AudioRecorder? = null,
     placeholder: String = "Message..."
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var isRecording by remember { mutableStateOf(false) }
     var showEmojiPicker by remember { mutableStateOf(false) }
+    var showAttachMenu by remember { mutableStateOf(false) }
+    var showQualityDialog by remember { mutableStateOf(false) }
+    var pendingImageUri by remember { mutableStateOf<android.net.Uri?>(null) }
     var selectedCategoryIndex by remember { mutableStateOf(0) }
     var recordTimeSec by remember { mutableStateOf(0) }
     var recordOutputFile by remember { mutableStateOf<java.io.File?>(null) }
@@ -372,9 +394,29 @@ fun ChatInputBar(
         contract = androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null && onSendMedia != null) {
-            val compressedBytes = com.meshwhisper.app.media.MediaCompressor.compressImage(context, uri)
-            if (compressedBytes != null) {
-                onSendMedia(MediaType.IMAGE, compressedBytes, "", 0L)
+            pendingImageUri = uri
+            showQualityDialog = true
+        }
+    }
+
+    val documentPickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null && onSendMedia != null) {
+            try {
+                var fileName = "Document"
+                context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                    val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    if (nameIndex != -1 && cursor.moveToFirst()) {
+                        fileName = cursor.getString(nameIndex)
+                    }
+                }
+                val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                if (bytes != null && bytes.isNotEmpty()) {
+                    onSendMedia(MediaType.FILE, bytes, "", 0L, fileName, ByteArray(0))
+                }
+            } catch (e: Exception) {
+                android.widget.Toast.makeText(context, "Failed to read file", android.widget.Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -390,11 +432,14 @@ fun ChatInputBar(
                     val durationMs = audioRecorder?.stopRecording() ?: 0L
                     val file = recordOutputFile
                     if (file != null && file.exists() && file.length() > 0) {
+                        val waveform = com.meshwhisper.app.media.MediaCompressor.extractAudioWaveform(file)
                         onSendMedia?.invoke(
                             MediaType.VOICE,
                             file.readBytes(),
                             "",
-                            durationMs
+                            durationMs,
+                            "",
+                            waveform
                         )
                     }
                 }
@@ -457,11 +502,14 @@ fun ChatInputBar(
                                 val durationMs = audioRecorder?.stopRecording() ?: 0L
                                 val file = recordOutputFile
                                 if (file != null && file.exists() && file.length() > 0) {
+                                    val waveform = com.meshwhisper.app.media.MediaCompressor.extractAudioWaveform(file)
                                     onSendMedia?.invoke(
                                         MediaType.VOICE,
                                         file.readBytes(),
                                         "",
-                                        durationMs
+                                        durationMs,
+                                        "",
+                                        waveform
                                     )
                                 }
                             },
@@ -488,25 +536,52 @@ fun ChatInputBar(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     if (onSendMedia != null) {
-                        IconButton(
-                            onClick = {
-                                try {
-                                    imagePickerLauncher.launch(
-                                        androidx.activity.result.PickVisualMediaRequest(
-                                            androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly
-                                        )
-                                    )
-                                } catch (e: android.content.ActivityNotFoundException) {
-                                    android.widget.Toast.makeText(context, "No photo picker app found on this device", android.widget.Toast.LENGTH_SHORT).show()
-                                }
+                        Box {
+                            IconButton(
+                                onClick = { showAttachMenu = true }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.AddPhotoAlternate,
+                                    contentDescription = "Attach",
+                                    tint = BurntSienna,
+                                    modifier = Modifier.size(24.dp)
+                                )
                             }
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.AddPhotoAlternate,
-                                contentDescription = "Attach image",
-                                tint = BurntSienna,
-                                modifier = Modifier.size(24.dp)
-                            )
+
+                            androidx.compose.material3.DropdownMenu(
+                                expanded = showAttachMenu,
+                                onDismissRequest = { showAttachMenu = false },
+                                modifier = Modifier
+                                    .background(WarmSurface)
+                                    .border(0.8.dp, WarmCardBorder, RoundedCornerShape(8.dp))
+                            ) {
+                                androidx.compose.material3.DropdownMenuItem(
+                                    text = { Text("📷 Photo / Image", fontFamily = ManropeFamily, fontSize = 14.sp) },
+                                    onClick = {
+                                        showAttachMenu = false
+                                        try {
+                                            imagePickerLauncher.launch(
+                                                androidx.activity.result.PickVisualMediaRequest(
+                                                    androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly
+                                                )
+                                            )
+                                        } catch (e: Exception) {
+                                            android.widget.Toast.makeText(context, "No photo picker available", android.widget.Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                )
+                                androidx.compose.material3.DropdownMenuItem(
+                                    text = { Text("📄 Document / File (PDF, DOC)", fontFamily = ManropeFamily, fontSize = 14.sp) },
+                                    onClick = {
+                                        showAttachMenu = false
+                                        try {
+                                            documentPickerLauncher.launch(arrayOf("*/*"))
+                                        } catch (e: Exception) {
+                                            android.widget.Toast.makeText(context, "No file picker available", android.widget.Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                )
+                            }
                         }
                     }
 
@@ -655,5 +730,88 @@ fun ChatInputBar(
                 }
             }
         }
+    }
+
+    if (showQualityDialog && pendingImageUri != null) {
+        var selectedQuality by remember { mutableStateOf(com.meshwhisper.app.media.ImageQuality.STANDARD) }
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = {
+                showQualityDialog = false
+                pendingImageUri = null
+            },
+            title = {
+                Text("Send Photo", fontFamily = ManropeFamily, fontWeight = FontWeight.Bold, color = TextPrimary)
+            },
+            text = {
+                Column {
+                    Text("Select compression quality tier for mesh transmission:", fontSize = 13.sp, color = TextSecondary, fontFamily = ManropeFamily)
+                    Spacer(modifier = Modifier.height(12.dp))
+                    listOf(
+                        com.meshwhisper.app.media.ImageQuality.STANDARD to ("Standard (~150-300 KB)" to "Fast BLE transfer, optimized for mobile"),
+                        com.meshwhisper.app.media.ImageQuality.HIGH to ("High Quality (~600KB - 1.2 MB)" to "Crisp details, slightly slower transfer"),
+                        com.meshwhisper.app.media.ImageQuality.ORIGINAL to ("Original (Full Size)" to "Raw byte payload, requires strong link")
+                    ).forEach { (quality, desc) ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (selectedQuality == quality) BurntSiennaContainer else WarmSurface)
+                                .clickable { selectedQuality = quality }
+                                .padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            androidx.compose.material3.RadioButton(
+                                selected = (selectedQuality == quality),
+                                onClick = { selectedQuality = quality },
+                                colors = androidx.compose.material3.RadioButtonDefaults.colors(selectedColor = BurntSienna)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text(text = desc.first, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = TextPrimary, fontFamily = ManropeFamily)
+                                Text(text = desc.second, fontSize = 11.sp, color = TextSecondary, fontFamily = ManropeFamily)
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                    }
+                }
+            },
+            confirmButton = {
+                androidx.compose.material3.Button(
+                    onClick = {
+                        val uri = pendingImageUri
+                        showQualityDialog = false
+                        pendingImageUri = null
+                        if (uri != null && onSendMedia != null) {
+                            val compressed = com.meshwhisper.app.media.MediaCompressor.compressImageWithQuality(context, uri, selectedQuality)
+                            val microPreview = com.meshwhisper.app.media.MediaCompressor.generateMicroPreview(context, uri)
+                            if (compressed != null) {
+                                onSendMedia(
+                                    MediaType.IMAGE,
+                                    compressed,
+                                    "",
+                                    0L,
+                                    "",
+                                    microPreview ?: ByteArray(0)
+                                )
+                            }
+                        }
+                    },
+                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = BurntSienna)
+                ) {
+                    Text("Send", color = Color.White, fontFamily = ManropeFamily, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(
+                    onClick = {
+                        showQualityDialog = false
+                        pendingImageUri = null
+                    }
+                ) {
+                    Text("Cancel", color = TextSecondary, fontFamily = ManropeFamily)
+                }
+            },
+            containerColor = WarmSurface
+        )
     }
 }

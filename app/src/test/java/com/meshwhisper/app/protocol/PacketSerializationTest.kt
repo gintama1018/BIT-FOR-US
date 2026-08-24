@@ -100,4 +100,48 @@ class PacketSerializationTest {
         assertThat(deserializedTyping?.type).isEqualTo(PacketType.TYPING_INDICATOR)
         assertThat(deserializedTyping?.payload).isEqualTo(byteArrayOf(1))
     }
+
+    @Test
+    fun testMediaReliabilityPacketsSerialization() {
+        val msgId = UUID.randomUUID()
+        val nackPacket = MeshPacket(
+            type = PacketType.MEDIA_NACK,
+            messageId = msgId,
+            senderId = 100L,
+            recipientId = 200L,
+            ttl = MeshPacket.MEDIA_DIRECT_TTL,
+            timestamp = 1000L,
+            payload = byteArrayOf(0, 1, 0, 5)
+        )
+        val serNack = MeshPacket.serialize(nackPacket)
+        val deserNack = MeshPacket.deserialize(serNack)
+        assertThat(deserNack?.type).isEqualTo(PacketType.MEDIA_NACK)
+        assertThat(deserNack?.ttl).isEqualTo(1)
+
+        val ackPacket = MeshPacket(
+            type = PacketType.MEDIA_ACK,
+            messageId = msgId,
+            senderId = 100L,
+            recipientId = 200L,
+            ttl = MeshPacket.MEDIA_DIRECT_TTL,
+            timestamp = 1000L,
+            payload = ByteArray(16)
+        )
+        val serAck = MeshPacket.serialize(ackPacket)
+        val deserAck = MeshPacket.deserialize(serAck)
+        assertThat(deserAck?.type).isEqualTo(PacketType.MEDIA_ACK)
+
+        val abortPacket = MeshPacket(
+            type = PacketType.MEDIA_ABORT,
+            messageId = msgId,
+            senderId = 100L,
+            recipientId = 200L,
+            ttl = MeshPacket.MEDIA_DIRECT_TTL,
+            timestamp = 1000L,
+            payload = ByteArray(16)
+        )
+        val serAbort = MeshPacket.serialize(abortPacket)
+        val deserAbort = MeshPacket.deserialize(serAbort)
+        assertThat(deserAbort?.type).isEqualTo(PacketType.MEDIA_ABORT)
+    }
 }

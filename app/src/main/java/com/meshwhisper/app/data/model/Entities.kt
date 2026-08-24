@@ -29,14 +29,16 @@ enum class MessageStatus {
     SENT,
     RELAYED,
     DELIVERED,
-    FAILED
+    FAILED,
+    CANCELLED
 }
 
 enum class MediaType {
     NONE,
     IMAGE,
     VOICE,
-    AVATAR
+    AVATAR,
+    FILE
 }
 
 @Entity(tableName = "messages")
@@ -55,7 +57,9 @@ data class MessageEntity(
     val mediaUri: String? = null,
     val mediaSizeBytes: Long = 0L,
     val mediaProgress: Float = 1.0f,
-    val mediaDurationMs: Long = 0L
+    val mediaDurationMs: Long = 0L,
+    val originalFileName: String? = null,
+    val mediaPreviewBase64: String? = null
 )
 
 @Entity(tableName = "store_forward_queue")

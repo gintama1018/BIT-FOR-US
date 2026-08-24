@@ -414,8 +414,8 @@ fun DirectChatDetailScreen(
                         viewModel.sendTyping(peerNodeId, false)
                     }
                 },
-                onSendMedia = { mediaType, bytes, caption, durationMs ->
-                    viewModel.sendMediaDirect(peerNodeId, mediaType, bytes, caption, durationMs)
+                onSendMedia = { mediaType, bytes, caption, durationMs, fileName, previewBytes ->
+                    viewModel.sendMediaDirect(peerNodeId, mediaType, bytes, caption, durationMs, fileName, previewBytes)
                 },
                 audioRecorder = viewModel.audioRecorder,
                 placeholder = "Message..."
@@ -496,37 +496,56 @@ fun DirectMessageBubble(
                 .padding(start = 12.dp, top = 8.dp, end = 12.dp, bottom = 6.dp)
         ) {
             Column {
-                when (msg.mediaType) {
-                    MediaType.IMAGE -> {
-                        ImageMessageBubble(
-                            message = msg,
-                            isOutgoing = isMe
-                        )
-                    }
-                    MediaType.VOICE -> {
-                        if (viewModel != null) {
-                            VoiceNoteBubble(
+                val transferStates = viewModel?.transferStates?.collectAsState()?.value
+                val mediaUuid = try { java.util.UUID.fromString(msg.messageId) } catch (_: Exception) { null }
+                val transferInfo = if (mediaUuid != null) transferStates?.get(mediaUuid) else null
+
+                if (transferInfo != null && (transferInfo.state == com.meshwhisper.app.media.TransferState.SENDING || transferInfo.state == com.meshwhisper.app.media.TransferState.RECEIVING || transferInfo.state == com.meshwhisper.app.media.TransferState.RECOVERING || transferInfo.state == com.meshwhisper.app.media.TransferState.VERIFYING || transferInfo.state == com.meshwhisper.app.media.TransferState.FAILED || transferInfo.state == com.meshwhisper.app.media.TransferState.CANCELLED)) {
+                    com.meshwhisper.app.ui.components.TransferCard(
+                        message = msg,
+                        transferInfo = transferInfo,
+                        onCancel = { id -> viewModel?.cancelTransfer(id) },
+                        onRetry = { id -> viewModel?.retryTransfer(id) }
+                    )
+                } else {
+                    when (msg.mediaType) {
+                        MediaType.FILE -> {
+                            com.meshwhisper.app.ui.components.FileMessageBubble(
                                 message = msg,
-                                isOutgoing = isMe,
-                                audioPlayer = viewModel.audioPlayer
-                            )
-                        } else {
-                            Text(
-                                text = "🎤 Voice note",
-                                color = TextPrimary,
-                                fontFamily = ManropeFamily,
-                                fontSize = 14.sp
+                                isOutgoing = isMe
                             )
                         }
-                    }
-                    else -> {
-                        Text(
-                            text = msg.text,
-                            color = TextPrimary,
-                            fontSize = 14.sp,
-                            fontFamily = ManropeFamily,
-                            lineHeight = 19.sp
-                        )
+                        MediaType.IMAGE -> {
+                            ImageMessageBubble(
+                                message = msg,
+                                isOutgoing = isMe
+                            )
+                        }
+                        MediaType.VOICE -> {
+                            if (viewModel != null) {
+                                VoiceNoteBubble(
+                                    message = msg,
+                                    isOutgoing = isMe,
+                                    audioPlayer = viewModel.audioPlayer
+                                )
+                            } else {
+                                Text(
+                                    text = "🎤 Voice note",
+                                    color = TextPrimary,
+                                    fontFamily = ManropeFamily,
+                                    fontSize = 14.sp
+                                )
+                            }
+                        }
+                        else -> {
+                            Text(
+                                text = msg.text,
+                                color = TextPrimary,
+                                fontSize = 14.sp,
+                                fontFamily = ManropeFamily,
+                                lineHeight = 19.sp
+                            )
+                        }
                     }
                 }
                 Spacer(modifier = Modifier.height(3.dp))

@@ -10,13 +10,18 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -51,12 +56,18 @@ fun NodeAvatar(
     isDirect: Boolean = false,
     showOnlineBadge: Boolean = false
 ) {
-    val bitmap = remember(avatarUri) {
-        if (!avatarUri.isNullOrBlank()) {
-            val file = File(avatarUri)
-            if (file.exists() && file.length() > 0) {
-                BitmapFactory.decodeFile(file.absolutePath)?.asImageBitmap()
-            } else null
+    val bitmap by produceState<ImageBitmap?>(initialValue = null, key1 = avatarUri) {
+        value = if (!avatarUri.isNullOrBlank()) {
+            withContext(Dispatchers.IO) {
+                val file = File(avatarUri)
+                if (file.exists() && file.length() > 0) {
+                    try {
+                        BitmapFactory.decodeFile(file.absolutePath)?.asImageBitmap()
+                    } catch (_: Exception) {
+                        null
+                    }
+                } else null
+            }
         } else null
     }
 
@@ -88,9 +99,10 @@ fun NodeAvatar(
         modifier = modifier.size(size),
         contentAlignment = Alignment.Center
     ) {
-        if (bitmap != null) {
+        val currentBitmap = bitmap
+        if (currentBitmap != null) {
             Image(
-                bitmap = bitmap,
+                bitmap = currentBitmap,
                 contentDescription = "$alias avatar",
                 contentScale = ContentScale.Crop,
                 modifier = Modifier

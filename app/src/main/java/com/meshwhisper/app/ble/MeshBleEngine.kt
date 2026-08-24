@@ -124,6 +124,8 @@ class MeshBleEngine(private val context: Context) {
 
     fun getDirectNodeId(address: String): Long? = directAddressToNodeId[address]
 
+    fun isDirectlyConnected(nodeId: Long): Boolean = _connectedNodeIds.value.contains(nodeId)
+
     private fun updateConnectedNodeIds() {
         val activeAddresses = HashSet<String>()
         activeAddresses.addAll(connectedCentrals.keys)

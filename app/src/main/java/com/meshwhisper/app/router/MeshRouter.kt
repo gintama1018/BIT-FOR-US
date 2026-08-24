@@ -53,7 +53,8 @@ class MeshRouter(
             scope.launch {
                 sendAck(recipientId, msgId)
             }
-        }
+        },
+        isDirectPeer = { bleEngine.isDirectlyConnected(it) }
     )
 
     // Cooldown map to prevent spamming store-and-forward drains on every 4s heartbeat
@@ -111,8 +112,8 @@ class MeshRouter(
             return
         }
 
-        // Register direct node link strictly if packet originated directly (TTL not decremented by relays)
-        if (ingressAddress != null && packet.ttl >= MeshPacket.DEFAULT_TTL - 1) {
+        // Register direct node link strictly if packet originated directly (0 relay hops)
+        if (ingressAddress != null && packet.ttl == MeshPacket.DEFAULT_TTL) {
             bleEngine.registerDirectNode(ingressAddress, packet.senderId)
         }
 
@@ -161,6 +162,15 @@ class MeshRouter(
                 }
                 PacketType.MEDIA_CHUNK -> {
                     handleMediaChunk(packet, rawBytes, ingressAddress)
+                }
+                PacketType.MEDIA_NACK -> {
+                    mediaTransferManager.handleMediaNack(packet)
+                }
+                PacketType.MEDIA_ACK -> {
+                    mediaTransferManager.handleMediaAck(packet)
+                }
+                PacketType.MEDIA_ABORT -> {
+                    mediaTransferManager.handleMediaAbort(packet)
                 }
                 PacketType.AVATAR_REQUEST -> {
                     handleAvatarRequest(packet, rawBytes, ingressAddress)
@@ -507,14 +517,18 @@ class MeshRouter(
         mediaType: com.meshwhisper.app.data.model.MediaType,
         mediaBytes: ByteArray,
         caption: String = "",
-        durationMs: Long = 0L
+        durationMs: Long = 0L,
+        originalFileName: String = "",
+        previewBytes: ByteArray = ByteArray(0)
     ): String {
         return mediaTransferManager.sendMedia(
             recipientNodeId = recipientNodeId,
             mediaType = mediaType,
             mediaBytes = mediaBytes,
             caption = caption,
-            durationMs = durationMs
+            durationMs = durationMs,
+            originalFileName = originalFileName,
+            previewBytes = previewBytes
         )
     }
 
@@ -522,14 +536,18 @@ class MeshRouter(
         mediaType: com.meshwhisper.app.data.model.MediaType,
         mediaBytes: ByteArray,
         caption: String = "",
-        durationMs: Long = 0L
+        durationMs: Long = 0L,
+        originalFileName: String = "",
+        previewBytes: ByteArray = ByteArray(0)
     ): String {
         return mediaTransferManager.sendMedia(
             recipientNodeId = MeshPacket.BROADCAST_RECIPIENT_ID,
             mediaType = mediaType,
             mediaBytes = mediaBytes,
             caption = caption,
-            durationMs = durationMs
+            durationMs = durationMs,
+            originalFileName = originalFileName,
+            previewBytes = previewBytes
         )
     }
 
@@ -837,15 +855,37 @@ class MeshRouter(
 
     private suspend fun handleAvatarRequest(packet: MeshPacket, rawBytes: ByteArray, ingressAddress: String?) {
         if (packet.recipientId == cryptoEngine.nodeId) {
-            logPacket("RX", packet, rawBytes.size, "Avatar request received from ${packet.senderId}")
-            val avatarFile = java.io.File(context.filesDir, "avatars/my_avatar.jpg")
-            if (avatarFile.exists()) {
-                val avatarBytes = avatarFile.readBytes()
-                mediaTransferManager.sendMedia(
-                    recipientNodeId = packet.senderId,
-                    mediaType = com.meshwhisper.app.data.model.MediaType.AVATAR,
-                    mediaBytes = avatarBytes
+            val senderPeer = database.peerDao().getPeerById(packet.senderId)
+            if (senderPeer == null) {
+                logPacket("DROP", packet, rawBytes.size, "Dropped avatar request from unknown peer ${packet.senderId}")
+                return
+            }
+
+            // Cryptographically verify origin proof using AEAD auth tag
+            try {
+                val peerPubKey = CryptoEngine.hexToBytes(senderPeer.publicKeyHex)
+                val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey, packet.timestamp)
+                cryptoEngine.decrypt(
+                    ciphertext = packet.payload,
+                    authTag = packet.authTag,
+                    messageId = packet.messageId,
+                    aesKey = sessionKey,
+                    aad = packet.getAuthenticatedHeaderBytes()
                 )
+
+                logPacket("RX", packet, rawBytes.size, "Authenticated avatar request from ${packet.senderId}")
+                val avatarFile = java.io.File(context.filesDir, "avatars/my_avatar.jpg")
+                if (avatarFile.exists()) {
+                    val avatarBytes = avatarFile.readBytes()
+                    mediaTransferManager.sendMedia(
+                        recipientNodeId = packet.senderId,
+                        mediaType = com.meshwhisper.app.data.model.MediaType.AVATAR,
+                        mediaBytes = avatarBytes
+                    )
+                }
+            } catch (e: Exception) {
+                logPacket("DROP", packet, rawBytes.size, "Rejected forged/unauthenticated avatar request from ${packet.senderId}")
+                Log.w(tag, "Rejected forged avatar request: auth tag mismatch from ${packet.senderId}")
             }
         } else if (packet.ttl > 1) {
             val relayedPacket = packet.decrementTtl()

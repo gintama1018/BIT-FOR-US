@@ -34,8 +34,9 @@ class BleFrameFramer {
         }
 
         // Chunking needed
-        val chunkSize = maxSafePayload - 4 // 1B type + 2B sessionId + 1B index + 1B total
+        val chunkSize = maxSafePayload - 5 // 1B type + 2B sessionId + 1B index + 1B total = 5 bytes overhead
         val totalChunks = (packetBytes.size + chunkSize - 1) / chunkSize
+        require(totalChunks <= 255) { "Frame fragmentation chunk count $totalChunks exceeds 1-byte protocol limit (255)" }
         val sessionId = (sessionCounter.incrementAndGet() and 0xFFFF).toShort()
         val frames = mutableListOf<ByteArray>()
 
@@ -102,30 +103,32 @@ class BleFrameFramer {
                 ChunkSession(totalChunks = totalChunks).also { sessions[sessionKey] = it }
             }
 
-            session.chunks[chunkIndex] = chunkData
+            synchronized(session) {
+                session.chunks[chunkIndex] = chunkData
 
-            // Prune expired sessions older than 30 seconds
-            val now = System.currentTimeMillis()
-            sessions.entries.removeIf { now - it.value.createdAt > 30000 }
+                // Prune expired sessions older than 30 seconds
+                val now = System.currentTimeMillis()
+                sessions.entries.removeIf { now - it.value.createdAt > 30000 }
 
-            if (session.chunks.size == session.totalChunks) {
-                // Reassemble complete packet
-                var totalSize = 0
-                for (i in 0 until session.totalChunks) {
-                    val c = session.chunks[i] ?: return null
-                    totalSize += c.size
+                if (session.chunks.size == session.totalChunks) {
+                    // Reassemble complete packet
+                    var totalSize = 0
+                    for (i in 0 until session.totalChunks) {
+                        val c = session.chunks[i] ?: return null
+                        totalSize += c.size
+                    }
+
+                    val fullPacket = ByteArray(totalSize)
+                    var offset = 0
+                    for (i in 0 until session.totalChunks) {
+                        val c = session.chunks[i] ?: return null
+                        System.arraycopy(c, 0, fullPacket, offset, c.size)
+                        offset += c.size
+                    }
+
+                    sessions.remove(sessionKey)
+                    return fullPacket
                 }
-
-                val fullPacket = ByteArray(totalSize)
-                var offset = 0
-                for (i in 0 until session.totalChunks) {
-                    val c = session.chunks[i]!!
-                    System.arraycopy(c, 0, fullPacket, offset, c.size)
-                    offset += c.size
-                }
-
-                sessions.remove(sessionKey)
-                return fullPacket
             }
         }
 

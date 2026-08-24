@@ -95,9 +95,6 @@ interface StoreForwardDao {
     @Query("SELECT * FROM store_forward_queue WHERE recipientId = :recipientId AND expiresAt > :currentTime ORDER BY createdAt ASC")
     suspend fun getPendingForRecipient(recipientId: Long, currentTime: Long): List<StoreForwardEntity>
 
-    @Query("SELECT * FROM store_forward_queue WHERE expiresAt > :currentTime ORDER BY createdAt ASC")
-    suspend fun getAllPending(currentTime: Long): List<StoreForwardEntity>
-
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(item: StoreForwardEntity)
 
@@ -106,9 +103,6 @@ interface StoreForwardDao {
 
     @Query("DELETE FROM store_forward_queue WHERE expiresAt <= :currentTime")
     suspend fun purgeExpired(currentTime: Long): Int
-
-    @Query("SELECT COUNT(*) FROM store_forward_queue WHERE expiresAt > :currentTime")
-    fun getPendingCount(currentTime: Long): Flow<Int>
 }
 
 @Dao

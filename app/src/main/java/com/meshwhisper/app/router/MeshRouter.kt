@@ -60,6 +60,7 @@ class MeshRouter(
 
     // Cooldown map to prevent spamming store-and-forward drains on every 4s heartbeat
     private val lastDrainTimes = java.util.concurrent.ConcurrentHashMap<Long, Long>()
+    private val logCounter = java.util.concurrent.atomic.AtomicInteger(0)
 
     var onTypingIndicatorListener: ((senderId: Long, isTyping: Boolean) -> Unit)? = null
     var onIncomingMessageListener: ((senderId: Long, senderAlias: String, text: String, isBroadcast: Boolean) -> Unit)? = null
@@ -232,7 +233,7 @@ class MeshRouter(
             )
         }
 
-        val isDirectLink = (packet.ttl >= MeshPacket.DEFAULT_TTL - 1)
+        val isDirectLink = (packet.ttl == MeshPacket.DEFAULT_TTL)
         if (isDirectLink) {
             database.topologyEdgeDao().insertOrUpdate(
                 com.meshwhisper.app.data.model.TopologyEdgeEntity(
@@ -324,7 +325,7 @@ class MeshRouter(
                 senderAlias = senderAlias,
                 text = text,
                 timestamp = packet.timestamp * 1000L,
-                isOutgoing = (packet.senderId == cryptoEngine.nodeId),
+                isOutgoing = false,
                 isBroadcast = true,
                 status = MessageStatus.DELIVERED,
                 hopCount = MeshPacket.DEFAULT_TTL - packet.ttl
@@ -565,49 +566,6 @@ class MeshRouter(
             _relayedPacketsCount.value += 1
             logPacket("RELAY", relayedPacket, relayedBytes.size, "Relaying MEDIA_ABORT for ${packet.recipientId}")
         }
-    }
-
-    // =========================================================================
-    // OUTBOUND MESSAGING APIS
-    // =========================================================================
-
-    suspend fun sendMediaDirect(
-        recipientNodeId: Long,
-        mediaType: com.meshwhisper.app.data.model.MediaType,
-        mediaBytes: ByteArray,
-        caption: String = "",
-        durationMs: Long = 0L,
-        originalFileName: String = "",
-        previewBytes: ByteArray = ByteArray(0)
-    ): String {
-        return mediaTransferManager.sendMedia(
-            recipientNodeId = recipientNodeId,
-            mediaType = mediaType,
-            mediaBytes = mediaBytes,
-            caption = caption,
-            durationMs = durationMs,
-            originalFileName = originalFileName,
-            previewBytes = previewBytes
-        )
-    }
-
-    suspend fun sendMediaBroadcast(
-        mediaType: com.meshwhisper.app.data.model.MediaType,
-        mediaBytes: ByteArray,
-        caption: String = "",
-        durationMs: Long = 0L,
-        originalFileName: String = "",
-        previewBytes: ByteArray = ByteArray(0)
-    ): String {
-        return mediaTransferManager.sendMedia(
-            recipientNodeId = MeshPacket.BROADCAST_RECIPIENT_ID,
-            mediaType = mediaType,
-            mediaBytes = mediaBytes,
-            caption = caption,
-            durationMs = durationMs,
-            originalFileName = originalFileName,
-            previewBytes = previewBytes
-        )
     }
 
     suspend fun announcePresence() {
@@ -1059,7 +1017,9 @@ class MeshRouter(
                 details = details
             )
             database.packetLogDao().insert(entity)
-            database.packetLogDao().trimOldLogs(500)
+            if (logCounter.incrementAndGet() % 50 == 0) {
+                database.packetLogDao().trimOldLogs(500)
+            }
         }
     }
 }

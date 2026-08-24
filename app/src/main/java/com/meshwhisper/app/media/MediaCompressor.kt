@@ -123,7 +123,7 @@ object MediaCompressor {
                     val tileBytes = tileStream.toByteArray()
 
                     // Pad each tile to next multiple of CHUNK_PAYLOAD_SIZE (400 bytes)
-                    val chunkSize = 400
+                    val chunkSize = com.meshwhisper.app.protocol.MeshPacket.CHUNK_PAYLOAD_SIZE
                     val remainder = tileBytes.size % chunkSize
                     val padLen = if (remainder != 0) chunkSize - remainder else 0
                     val paddedLen = tileBytes.size + padLen
@@ -152,6 +152,57 @@ object MediaCompressor {
             )
         } catch (e: Exception) {
             Log.e(TAG, "Failed to compress image as tiles: ${e.message}", e)
+            null
+        }
+    }
+
+    /**
+     * Stitches independently-encoded JPEG tiles from the concatenated transmission byte stream
+     * into a single, canonical, standard JPEG byte array suitable for disk persistence and BitmapFactory decoding.
+     */
+    fun stitchTiledImage(
+        concatenatedBytes: ByteArray,
+        paddedTileByteLengths: List<Int>,
+        gridCols: Int,
+        gridRows: Int,
+        imgWidth: Int,
+        imgHeight: Int
+    ): ByteArray? {
+        return try {
+            if (concatenatedBytes.isEmpty() || paddedTileByteLengths.isEmpty() || gridCols <= 0 || gridRows <= 0 || imgWidth <= 0 || imgHeight <= 0) {
+                return null
+            }
+            val compositeBitmap = Bitmap.createBitmap(imgWidth, imgHeight, Bitmap.Config.RGB_565)
+            val canvas = android.graphics.Canvas(compositeBitmap)
+            val baseTileW = imgWidth / gridCols
+            val baseTileH = imgHeight / gridRows
+
+            var offset = 0
+            var tileIdx = 0
+            for (r in 0 until gridRows) {
+                val y = (r * baseTileH).toFloat()
+                for (c in 0 until gridCols) {
+                    if (tileIdx >= paddedTileByteLengths.size) break
+                    val pLen = paddedTileByteLengths[tileIdx]
+                    if (offset + pLen <= concatenatedBytes.size) {
+                        val tileBmp = BitmapFactory.decodeByteArray(concatenatedBytes, offset, pLen)
+                        if (tileBmp != null) {
+                            val x = (c * baseTileW).toFloat()
+                            canvas.drawBitmap(tileBmp, x, y, null)
+                            tileBmp.recycle()
+                        }
+                    }
+                    offset += pLen
+                    tileIdx++
+                }
+            }
+
+            val outStream = ByteArrayOutputStream()
+            compositeBitmap.compress(Bitmap.CompressFormat.JPEG, 85, outStream)
+            compositeBitmap.recycle()
+            outStream.toByteArray()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to stitch tiled image into composite JPEG: ${e.message}", e)
             null
         }
     }

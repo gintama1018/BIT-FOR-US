@@ -156,12 +156,12 @@ Packets are serialized as big-endian byte sequences with an exact 56-byte fixed 
 
 | Field | Size | Type | Description |
 | :--- | :--- | :--- | :--- |
-| `type` | 1 byte | `enum` | Packet code (`0x00`: BROADCAST, `0x01`: DIRECT, `0x02`: KEY_EXCHANGE, `0x03`: ACK, `0x04`: ANNOUNCE, `0x05`: MEDIA_INIT, `0x06`: MEDIA_CHUNK) |
+| `type` | 1 byte | `enum` | Packet code: `0x00`: BROADCAST, `0x01`: DIRECT, `0x02`: KEY_EXCHANGE, `0x03`: ACK, `0x04`: PEER_ANNOUNCE, `0x05`: MEDIA_INIT, `0x06`: MEDIA_CHUNK, `0x07`: MEDIA_NACK, `0x08`: MEDIA_ACK, `0x09`: MEDIA_ABORT, `0x0A`: AVATAR_REQUEST, `0x0B`: TYPING_INDICATOR |
 | `messageId` | 16 bytes | `UUID` | 128-bit unique identifier used for deduplication and IV derivation |
 | `senderId` | 8 bytes | `Long` | 64-bit derived Node ID of the originating sender |
 | `recipientId` | 8 bytes | `Long` | 64-bit destination Node ID, or `-1` (`0xFFFFFFFFFFFFFFFF`) for public broadcast |
-| `ttl` | 1 byte | `UInt8` | Hop limit (`DEFAULT_TTL = 7`, `MEDIA_TTL = 4`); decremented at each relay hop |
-| `timestamp` | 4 bytes | `UInt32` | 32-bit UNIX epoch seconds; validated against a $\pm 10$ minute drift window |
+| `ttl` | 1 byte | `UInt8` | Hop limit (`DEFAULT_TTL = 7`, `MEDIA_TTL = 4`, `MEDIA_DIRECT_TTL = 1`); decremented at each relay hop |
+| `timestamp` | 4 bytes | `UInt32` | 32-bit UNIX epoch seconds (DIRECT accepted up to 24h past for store-and-forward, general packets up to 10m past, max 5m future clock drift) |
 | `payloadLength`| 2 bytes | `UInt16` | Length $N$ of the ciphertext/payload (max 2048 bytes) |
 | `payload` | $N$ bytes | `ByteArray` | Ciphertext or raw discovery payload |
 | `authTag` | 16 bytes | `ByteArray` | 128-bit AES-256-GCM authentication tag computed over header (AAD) + payload |
@@ -173,7 +173,7 @@ Packets are serialized as big-endian byte sequences with an exact 56-byte fixed 
    - *Layer 2*: Persistent `processed_packets` table purged after 24 hours.
    - Prevents broadcast amplification loops across dense mesh topologies.
 2. **Store-and-Forward Queue**:
-   - Intermediate relays store transit DMs in `store_forward` table for 24 hours.
+   - Intermediate relays store transit DMs in `store_forward_queue` table for 24 hours.
    - When the destination node announces presence via `PEER_ANNOUNCE`, stored frames are rebroadcast automatically.
    - Verified delivery ACKs purge queued messages across all intermediate nodes.
 

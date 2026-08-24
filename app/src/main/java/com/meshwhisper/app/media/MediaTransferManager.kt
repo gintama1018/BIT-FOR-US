@@ -356,7 +356,19 @@ class MediaTransferManager(
             File(context.filesDir, "media").also { if (!it.exists()) it.mkdirs() }
         }
         val localFile = File(localDir, "${mediaId}.$ext")
-        localFile.writeBytes(mediaBytes)
+        val localFileBytes = if (gridCols > 1 && gridRows > 1 && paddedTileByteLengths.isNotEmpty()) {
+            MediaCompressor.stitchTiledImage(
+                mediaBytes,
+                paddedTileByteLengths,
+                gridCols,
+                gridRows,
+                imageWidthPx,
+                imageHeightPx
+            ) ?: mediaBytes
+        } else {
+            mediaBytes
+        }
+        localFile.writeBytes(localFileBytes)
 
         val totalChunks = ceil(mediaBytes.size.toDouble() / MeshPacket.CHUNK_PAYLOAD_SIZE).toInt()
         val captionBytes = caption.toByteArray(Charsets.UTF_8).take(255).toByteArray()
@@ -956,8 +968,22 @@ class MediaTransferManager(
                 return
             }
 
-            // Target hash matches! Write verified file to disk
-            FileOutputStream(destFile).use { it.write(reassembledBytes) }
+            // Target hash matches! Write verified file to disk.
+            // If the received media is a multi-tile image, stitch the independently-compressed
+            // JPEG tiles into a single valid composite JPEG so standard image viewers and BitmapFactory decode it cleanly.
+            val finalFileBytes = if (session.gridCols > 1 && session.gridRows > 1 && session.paddedTileByteLengths.isNotEmpty()) {
+                MediaCompressor.stitchTiledImage(
+                    reassembledBytes,
+                    session.paddedTileByteLengths,
+                    session.gridCols,
+                    session.gridRows,
+                    session.imageWidthPx,
+                    session.imageHeightPx
+                ) ?: reassembledBytes
+            } else {
+                reassembledBytes
+            }
+            FileOutputStream(destFile).use { it.write(finalFileBytes) }
 
             if (isAvatar) {
                 val avatarHash = (reassembledBytes.fold(0) { acc, b -> (acc * 31 + b.toInt()) } and 0xFF).toByte()
@@ -1308,6 +1334,32 @@ class MediaTransferManager(
         val uri = message.mediaUri ?: return
         val file = File(uri)
         if (!file.exists()) return
+
+        if (message.mediaType == MediaType.IMAGE) {
+            val grid = MediaCompressor.shouldTileImage(file.length())
+            if (grid != null) {
+                val (cols, rows) = grid
+                val imageUri = android.net.Uri.fromFile(file)
+                val tiledResult = MediaCompressor.compressImageAsTiles(context, imageUri, ImageQuality.STANDARD, cols, rows)
+                if (tiledResult != null && tiledResult.gridCols > 1) {
+                    sendMedia(
+                        recipientNodeId = message.recipientId,
+                        mediaType = MediaType.IMAGE,
+                        mediaBytes = tiledResult.concatenatedBytes,
+                        caption = message.text,
+                        durationMs = 0L,
+                        originalFileName = message.originalFileName ?: "",
+                        previewBytes = ByteArray(0),
+                        gridCols = tiledResult.gridCols,
+                        gridRows = tiledResult.gridRows,
+                        imageWidthPx = tiledResult.imageWidthPx,
+                        imageHeightPx = tiledResult.imageHeightPx,
+                        paddedTileByteLengths = tiledResult.paddedTileByteLengths
+                    )
+                    return
+                }
+            }
+        }
 
         val bytes = file.readBytes()
         sendMedia(

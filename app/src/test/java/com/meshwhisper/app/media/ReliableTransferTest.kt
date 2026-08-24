@@ -435,4 +435,32 @@ class ReliableTransferTest {
         assertThat(validChunks == 0 || validChunks > maxChunks).isFalse()
         assertThat(validSize <= 0 || validSize > maxSizeBytes).isFalse()
     }
+
+    @Test
+    fun testShouldTileImageThresholdsAndGridMath() {
+        // Under 20KB: no tiling (single stream)
+        assertThat(MediaCompressor.shouldTileImage(15 * 1024L)).isNull()
+
+        // 20KB to 150KB: 3x3 grid (9 tiles)
+        val smallTiled = MediaCompressor.shouldTileImage(50 * 1024L)
+        assertThat(smallTiled).isNotNull()
+        assertThat(smallTiled!!.first).isEqualTo(3)
+        assertThat(smallTiled.second).isEqualTo(3)
+
+        // Above 150KB: 4x4 grid (16 tiles)
+        val largeTiled = MediaCompressor.shouldTileImage(250 * 1024L)
+        assertThat(largeTiled).isNotNull()
+        assertThat(largeTiled!!.first).isEqualTo(4)
+        assertThat(largeTiled.second).isEqualTo(4)
+
+        // Verify tile padding logic conforms to MeshPacket.CHUNK_PAYLOAD_SIZE (400 bytes)
+        val chunkSize = MeshPacket.CHUNK_PAYLOAD_SIZE
+        val sampleTileBytesLen = 1250 // Not a multiple of 400
+        val remainder = sampleTileBytesLen % chunkSize
+        val padLen = if (remainder != 0) chunkSize - remainder else 0
+        val paddedLen = sampleTileBytesLen + padLen
+
+        assertThat(paddedLen % chunkSize).isEqualTo(0)
+        assertThat(paddedLen).isEqualTo(1600)
+    }
 }

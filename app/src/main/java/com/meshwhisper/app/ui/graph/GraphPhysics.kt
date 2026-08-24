@@ -68,10 +68,11 @@ class GraphPhysicsSimulation(
             }
         }
 
-        // 2. Hooke's Spring Attraction along Graph Edges
+        // 2. Hooke's Spring Attraction along Graph Edges (O(1) node map lookup)
+        val nodeMap = nodes.associateBy { it.id }
         for (edge in edges) {
-            val a = nodes.find { it.id == edge.fromId } ?: continue
-            val b = nodes.find { it.id == edge.toId } ?: continue
+            val a = nodeMap[edge.fromId] ?: continue
+            val b = nodeMap[edge.toId] ?: continue
 
             val dx = b.x - a.x
             val dy = b.y - a.y

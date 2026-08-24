@@ -95,6 +95,13 @@
                     android:host="node" />
             </intent-filter>
         </activity>
+
+        <!-- Isolated Biometric Authentication Activity -->
+        <activity
+            android:name=".ui.BiometricUnlockActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
     </application>
 
 </manifest>

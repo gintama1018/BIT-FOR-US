@@ -37,10 +37,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.app.Activity
+import android.content.Intent
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import androidx.fragment.app.FragmentActivity
-import com.meshwhisper.app.security.BiometricAuthManager
 import com.meshwhisper.app.ui.components.PermissionHandler
 import com.meshwhisper.app.ui.theme.BurntSienna
 import com.meshwhisper.app.ui.theme.EBGaramondFamily
@@ -51,7 +54,7 @@ import com.meshwhisper.app.ui.theme.TextSecondary
 import com.meshwhisper.app.ui.theme.WarmLinen
 import com.meshwhisper.app.ui.viewmodel.MeshViewModel
 
-class MainActivity : FragmentActivity() {
+class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsResultCallback {
 
     private val viewModel: MeshViewModel by viewModels()
     private val isPermissionsGrantedState = mutableStateOf(false)
@@ -116,7 +119,7 @@ class MainActivity : FragmentActivity() {
         }
     }
 
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         val granted = checkHasPermissions()
         isPermissionsGrantedState.value = granted
@@ -191,12 +194,17 @@ class MainActivity : FragmentActivity() {
                 var isUnlocked by remember { mutableStateOf(!isAppLockEnabled) }
                 val hasPermissions by remember { isPermissionsGrantedState }
 
+                val biometricLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.StartActivityForResult()
+                ) { result ->
+                    if (result.resultCode == Activity.RESULT_OK) {
+                        isUnlocked = true
+                    }
+                }
+
                 LaunchedEffect(isAppLockEnabled) {
                     if (isAppLockEnabled && !isUnlocked) {
-                        BiometricAuthManager.promptAuthenticate(
-                            activity = this@MainActivity,
-                            onSuccess = { isUnlocked = true }
-                        )
+                        biometricLauncher.launch(Intent(this@MainActivity, BiometricUnlockActivity::class.java))
                     }
                 }
 
@@ -210,11 +218,7 @@ class MainActivity : FragmentActivity() {
                             errorMessage = authError,
                             onUnlockClick = {
                                 authError = null
-                                BiometricAuthManager.promptAuthenticate(
-                                    activity = this@MainActivity,
-                                    onSuccess = { isUnlocked = true },
-                                    onError = { err -> authError = err }
-                                )
+                                biometricLauncher.launch(Intent(this@MainActivity, BiometricUnlockActivity::class.java))
                             }
                         )
                     } else {

@@ -165,13 +165,13 @@ class MeshRouter(
                     handleMediaChunk(packet, rawBytes, ingressAddress)
                 }
                 PacketType.MEDIA_NACK -> {
-                    mediaTransferManager.handleMediaNack(packet)
+                    handleMediaNack(packet, rawBytes, ingressAddress)
                 }
                 PacketType.MEDIA_ACK -> {
-                    mediaTransferManager.handleMediaAck(packet)
+                    handleMediaAck(packet, rawBytes, ingressAddress)
                 }
                 PacketType.MEDIA_ABORT -> {
-                    mediaTransferManager.handleMediaAbort(packet)
+                    handleMediaAbort(packet, rawBytes, ingressAddress)
                 }
                 PacketType.AVATAR_REQUEST -> {
                     handleAvatarRequest(packet, rawBytes, ingressAddress)
@@ -506,6 +506,57 @@ class MeshRouter(
             bleEngine.broadcastPacket(relayedBytes, ingressAddress)
             _relayedPacketsCount.value += 1
             logPacket("RELAY", relayedPacket, relayedBytes.size, "Relaying MEDIA_CHUNK from ${packet.senderId}")
+        }
+    }
+
+    private suspend fun handleMediaNack(packet: MeshPacket, rawBytes: ByteArray, ingressAddress: String?) {
+        val isForMe = (packet.recipientId == cryptoEngine.nodeId || packet.recipientId == MeshPacket.BROADCAST_RECIPIENT_ID)
+        if (isForMe) {
+            mediaTransferManager.handleMediaNack(packet)
+            logPacket("NACK_RX", packet, rawBytes.size, "Received MEDIA_NACK from ${packet.senderId}")
+        }
+
+        // Relay NACK along mesh path towards sender
+        if (packet.ttl > 1 && !isForMe) {
+            val relayedPacket = packet.decrementTtl()
+            val relayedBytes = MeshPacket.serialize(relayedPacket)
+            bleEngine.broadcastPacket(relayedBytes, ingressAddress)
+            _relayedPacketsCount.value += 1
+            logPacket("RELAY", relayedPacket, relayedBytes.size, "Relaying MEDIA_NACK for ${packet.recipientId}")
+        }
+    }
+
+    private suspend fun handleMediaAck(packet: MeshPacket, rawBytes: ByteArray, ingressAddress: String?) {
+        val isForMe = (packet.recipientId == cryptoEngine.nodeId)
+        if (isForMe) {
+            mediaTransferManager.handleMediaAck(packet)
+            logPacket("MEDIA_ACK_RX", packet, rawBytes.size, "Received MEDIA_ACK from ${packet.senderId}")
+        }
+
+        // Relay ACK back towards sender
+        if (packet.ttl > 1 && !isForMe) {
+            val relayedPacket = packet.decrementTtl()
+            val relayedBytes = MeshPacket.serialize(relayedPacket)
+            bleEngine.broadcastPacket(relayedBytes, ingressAddress)
+            _relayedPacketsCount.value += 1
+            logPacket("RELAY", relayedPacket, relayedBytes.size, "Relaying MEDIA_ACK for ${packet.recipientId}")
+        }
+    }
+
+    private suspend fun handleMediaAbort(packet: MeshPacket, rawBytes: ByteArray, ingressAddress: String?) {
+        val isForMe = (packet.recipientId == cryptoEngine.nodeId || packet.recipientId == MeshPacket.BROADCAST_RECIPIENT_ID)
+        if (isForMe) {
+            mediaTransferManager.handleMediaAbort(packet)
+            logPacket("ABORT_RX", packet, rawBytes.size, "Received MEDIA_ABORT from ${packet.senderId}")
+        }
+
+        // Relay ABORT along mesh path
+        if (packet.ttl > 1 && !isForMe) {
+            val relayedPacket = packet.decrementTtl()
+            val relayedBytes = MeshPacket.serialize(relayedPacket)
+            bleEngine.broadcastPacket(relayedBytes, ingressAddress)
+            _relayedPacketsCount.value += 1
+            logPacket("RELAY", relayedPacket, relayedBytes.size, "Relaying MEDIA_ABORT for ${packet.recipientId}")
         }
     }
 

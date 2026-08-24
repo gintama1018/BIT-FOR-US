@@ -168,14 +168,14 @@ class MediaTransferManager(
                     val session = entry.value
                     val isInactive = (now - session.lastActivityMs > 3000L)
 
-                    // 1. Single-hop direct inbound NACK selective retransmission trigger
-                    if (!session.isBroadcast && isInactive && session.chunks.size < session.totalChunks) {
+                    // 1. Inbound NACK selective retransmission trigger (for direct AND broadcast transfers)
+                    if (isInactive && session.chunks.size < session.totalChunks) {
                         if (session.nackRoundCount < 5) {
                             session.nackRoundCount += 1
                             session.lastActivityMs = now
                             val missingIndices = (0 until session.totalChunks).filter { !session.chunks.containsKey(it) }
                             if (missingIndices.isNotEmpty()) {
-                                Log.w(tag, "Inbound transfer ${session.mediaId} missing ${missingIndices.size} chunks (round ${session.nackRoundCount}/5). Emitting MEDIA_NACK...")
+                                Log.w(tag, "Inbound transfer ${session.mediaId} (broadcast=${session.isBroadcast}) missing ${missingIndices.size} chunks (round ${session.nackRoundCount}/5). Emitting MEDIA_NACK to ${session.senderId}...")
                                 updateTransferState(
                                     session.mediaId,
                                     TransferState.RECOVERING,
@@ -186,7 +186,7 @@ class MediaTransferManager(
                                     session.totalSizeBytes.toLong(),
                                     0L
                                 )
-                                sendNackPacket(session.senderId, session.mediaId, missingIndices)
+                                sendNackPacket(session.senderId, session.mediaId, missingIndices, session.isBroadcast)
                             }
                         } else {
                             // Max retries exceeded
@@ -553,7 +553,11 @@ class MediaTransferManager(
         }
 
         if (isBroadcast) {
-            activeOutboundSessions.remove(mediaId)
+            // Keep broadcast session alive in activeOutboundSessions for 45 seconds to service incoming NACKs from mesh receivers
+            scope.launch {
+                delay(45_000L)
+                activeOutboundSessions.remove(mediaId)
+            }
         }
 
         mediaId.toString()
@@ -986,7 +990,12 @@ class MediaTransferManager(
     // 3. RELIABILITY PROTOCOL PACKET HANDLERS (NACK / ACK / ABORT)
     // =========================================================================
 
-    private suspend fun sendNackPacket(recipientNodeId: Long, mediaId: UUID, missingIndices: List<Int>) {
+    private suspend fun sendNackPacket(
+        recipientNodeId: Long,
+        mediaId: UUID,
+        missingIndices: List<Int>,
+        isBroadcast: Boolean = false
+    ) {
         val timestampSec = System.currentTimeMillis() / 1000L
         val nackBuffer = ByteBuffer.allocate(16 + 2 + (missingIndices.size * 2)).order(ByteOrder.BIG_ENDIAN)
         nackBuffer.putLong(mediaId.mostSignificantBits)
@@ -999,8 +1008,14 @@ class MediaTransferManager(
         val plainNack = nackBuffer.array()
         val packetId = UUID.randomUUID()
         val peer = database.peerDao().getPeerById(recipientNodeId)
-        val peerPubKey = if (peer != null) CryptoEngine.hexToBytes(peer.publicKeyHex) else return
-        val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey, timestampSec)
+        val peerPubKey = if (peer != null) CryptoEngine.hexToBytes(peer.publicKeyHex) else null
+        val sessionKey = if (peerPubKey != null) {
+            cryptoEngine.derivePeerSessionKey(peerPubKey, timestampSec)
+        } else if (isBroadcast) {
+            cryptoEngine.publicChannelKey
+        } else {
+            return
+        }
 
         val aad = MeshPacket.computeAad(
             type = PacketType.MEDIA_NACK,
@@ -1016,7 +1031,7 @@ class MediaTransferManager(
             messageId = packetId,
             senderId = cryptoEngine.nodeId,
             recipientId = recipientNodeId,
-            ttl = MeshPacket.MEDIA_DIRECT_TTL,
+            ttl = MeshPacket.MEDIA_TTL, // Multi-hop mesh relay capable (4 hops)
             timestamp = timestampSec,
             payload = encrypted.ciphertext,
             authTag = encrypted.authTag
@@ -1025,16 +1040,23 @@ class MediaTransferManager(
     }
 
     suspend fun handleMediaNack(packet: MeshPacket) {
-        val senderPeer = database.peerDao().getPeerById(packet.senderId) ?: return
-        val peerPubKey = CryptoEngine.hexToBytes(senderPeer.publicKeyHex)
-        val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey, packet.timestamp)
         val aad = packet.getAuthenticatedHeaderBytes()
-
         val plainBytes = try {
-            cryptoEngine.decrypt(packet.payload, packet.authTag, packet.messageId, sessionKey, aad)
+            val senderPeer = database.peerDao().getPeerById(packet.senderId)
+            if (senderPeer != null) {
+                val peerPubKey = CryptoEngine.hexToBytes(senderPeer.publicKeyHex)
+                val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey, packet.timestamp)
+                cryptoEngine.decrypt(packet.payload, packet.authTag, packet.messageId, sessionKey, aad)
+            } else {
+                cryptoEngine.decrypt(packet.payload, packet.authTag, packet.messageId, cryptoEngine.publicChannelKey, aad)
+            }
         } catch (e: Exception) {
-            Log.w(tag, "Failed to decrypt MEDIA_NACK from ${packet.senderId}")
-            return
+            try {
+                cryptoEngine.decrypt(packet.payload, packet.authTag, packet.messageId, cryptoEngine.publicChannelKey, aad)
+            } catch (_: Exception) {
+                Log.w(tag, "Failed to decrypt MEDIA_NACK from ${packet.senderId}")
+                return
+            }
         }
 
         if (plainBytes.size < 18) return
@@ -1069,7 +1091,8 @@ class MediaTransferManager(
         }
 
         session.nackRetryCount += 1
-        Log.i(tag, "Received MEDIA_NACK for $mediaId: resending ${missingIndices.size} missing chunks (round ${session.nackRetryCount}/5)")
+        val isBroadcast = (session.recipientNodeId == MeshPacket.BROADCAST_RECIPIENT_ID)
+        Log.i(tag, "Received MEDIA_NACK for $mediaId (isBroadcast=$isBroadcast): resending ${missingIndices.size} missing chunks (round ${session.nackRetryCount}/5)")
         updateTransferState(
             mediaId,
             TransferState.RECOVERING,
@@ -1083,9 +1106,15 @@ class MediaTransferManager(
 
         scope.launch {
             val timestampSec = System.currentTimeMillis() / 1000L
+            val peer = if (!isBroadcast) database.peerDao().getPeerById(session.recipientNodeId) else null
+            val sessionKey = if (peer != null) {
+                val peerPubKey = CryptoEngine.hexToBytes(peer.publicKeyHex)
+                cryptoEngine.derivePeerSessionKey(peerPubKey, timestampSec)
+            } else null
+
             for (idx in missingIndices) {
                 if (session.isCancelled.get()) return@launch
-                sendChunk(session, idx, session.recipientNodeId, timestampSec, false, sessionKey)
+                sendChunk(session, idx, session.recipientNodeId, timestampSec, isBroadcast, sessionKey)
                 delay(70L)
             }
         }
@@ -1117,7 +1146,7 @@ class MediaTransferManager(
             messageId = packetId,
             senderId = cryptoEngine.nodeId,
             recipientId = recipientNodeId,
-            ttl = MeshPacket.MEDIA_DIRECT_TTL,
+            ttl = MeshPacket.MEDIA_TTL, // Multi-hop mesh relay capable (4 hops)
             timestamp = timestampSec,
             payload = encrypted.ciphertext,
             authTag = encrypted.authTag
@@ -1186,7 +1215,7 @@ class MediaTransferManager(
             messageId = packetId,
             senderId = cryptoEngine.nodeId,
             recipientId = recipientNodeId,
-            ttl = MeshPacket.MEDIA_DIRECT_TTL,
+            ttl = MeshPacket.MEDIA_TTL,
             timestamp = timestampSec,
             payload = encrypted.ciphertext,
             authTag = encrypted.authTag

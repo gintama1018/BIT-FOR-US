@@ -294,4 +294,49 @@ class ReliableTransferTest {
             tempDocx.delete()
         }
     }
+
+    @Test
+    fun testBroadcastMediaSelfHealingNackProtocol() {
+        val mediaId = UUID.randomUUID()
+        val broadcasterNodeId = 123456789L
+        val receiverNodeId = 987654321L
+        val missingChunkIndices = listOf(2, 5, 8)
+
+        // 1. Inbound receiver detects missing chunks from broadcast transfer and builds NACK packet
+        val nackBuf = ByteBuffer.allocate(16 + 2 + (missingChunkIndices.size * 2)).order(ByteOrder.BIG_ENDIAN)
+        nackBuf.putLong(mediaId.mostSignificantBits)
+        nackBuf.putLong(mediaId.leastSignificantBits)
+        nackBuf.putShort(missingChunkIndices.size.toShort())
+        missingChunkIndices.forEach { nackBuf.putShort(it.toShort()) }
+
+        val nackPacket = MeshPacket(
+            type = PacketType.MEDIA_NACK,
+            messageId = UUID.randomUUID(),
+            senderId = receiverNodeId,
+            recipientId = broadcasterNodeId,
+            ttl = MeshPacket.MEDIA_TTL, // Must be 4 hops for multi-hop mesh recovery
+            timestamp = System.currentTimeMillis() / 1000L,
+            payload = nackBuf.array(),
+            authTag = ByteArray(16)
+        )
+
+        // 2. Verify packet routing parameters
+        assertThat(nackPacket.ttl).isEqualTo(MeshPacket.MEDIA_TTL)
+        assertThat(nackPacket.ttl).isGreaterThan(1)
+        assertThat(nackPacket.recipientId).isEqualTo(broadcasterNodeId)
+
+        // 3. Verify hop decrement during mesh relay
+        val relayedPacket = nackPacket.decrementTtl()
+        assertThat(relayedPacket.ttl).isEqualTo(MeshPacket.MEDIA_TTL - 1)
+
+        // 4. Parse NACK payload at broadcaster side
+        val readBuf = ByteBuffer.wrap(nackPacket.payload).order(ByteOrder.BIG_ENDIAN)
+        val parsedMediaId = UUID(readBuf.long, readBuf.long)
+        val parsedCount = readBuf.short.toInt() and 0xFFFF
+        val parsedIndices = (0 until parsedCount).map { readBuf.short.toInt() and 0xFFFF }
+
+        assertThat(parsedMediaId).isEqualTo(mediaId)
+        assertThat(parsedCount).isEqualTo(3)
+        assertThat(parsedIndices).isEqualTo(missingChunkIndices)
+    }
 }

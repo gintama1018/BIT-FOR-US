@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Security States</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:wght@500&amp;family=Manrope:wght@400;500;600&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+  tailwind.config = {
+    darkMode: "class",
+    theme: {
+      extend: {
+        "colors": {
+                "inverse-on-surface": "#f7efe9",
+                "surface-container-low": "#faf2ec",
+                "on-secondary-container": "#772d2d",
+                "secondary-container": "#fd9794",
+                "tertiary-fixed": "#bce9ff",
+                "inverse-surface": "#33302c",
+                "on-surface-variant": "#554339",
+                "primary-container": "#964407",
+                "on-background": "#1e1b17",
+                "on-primary-container": "#ffc9ad",
+                "outline-variant": "#dbc1b5",
+                "background": "#fff8f3",
+                "surface-bright": "#fff8f3",
+                "surface-container-lowest": "#ffffff",
+                "on-primary-fixed": "#331200",
+                "primary": "#733100",
+                "error-container": "#ffdad6",
+                "on-error-container": "#93000a",
+                "on-tertiary-container": "#97dfff",
+                "on-tertiary-fixed-variant": "#004d63",
+                "on-error": "#ffffff",
+                "surface-container-high": "#eee7e1",
+                "secondary-fixed": "#ffdad8",
+                "on-primary-fixed-variant": "#773300",
+                "secondary-fixed-dim": "#ffb3b0",
+                "on-secondary": "#ffffff",
+                "surface-container": "#f4ede6",
+                "warm-linen": "#FAF5EE",
+                "surface": "#FFF8EF",
+                "secondary": "#974544",
+                "outline": "#887368",
+                "on-tertiary-fixed": "#001f2a",
+                "inverse-primary": "#ffb68e",
+                "tertiary-fixed-dim": "#88d0f0",
+                "surface-dim": "#e0d9d3",
+                "primary-fixed-dim": "#ffb68e",
+                "surface-container-highest": "#e8e1db",
+                "on-primary": "#ffffff",
+                "on-tertiary": "#ffffff",
+                "on-surface": "#1e1b17",
+                "on-secondary-fixed-variant": "#792e2e",
+                "primary-fixed": "#ffdbca",
+                "tertiary-container": "#006480",
+                "surface-tint": "#99460a",
+                "error": "#ba1a1a",
+                "on-secondary-fixed": "#3f0308",
+                "tertiary": "#004b60",
+                "surface-variant": "#e8e1db"
+        },
+        "borderRadius": {
+                "DEFAULT": "1rem",
+                "lg": "2rem",
+                "xl": "3rem",
+                "full": "9999px"
+        },
+        "spacing": {
+                "stack-md": "24px",
+                "margin-mobile": "24px",
+                "gutter": "16px",
+                "stack-lg": "40px",
+                "stack-sm": "12px",
+                "margin-desktop": "40px",
+                "base": "8px"
+        },
+        "fontFamily": {
+                "label-lg": [
+                        "Manrope"
+                ],
+                "headline-md": [
+                        "EB Garamond"
+                ],
+                "body-md": [
+                        "Manrope"
+                ],
+                "headline-lg-mobile": [
+                        "EB Garamond"
+                ],
+                "headline-lg": [
+                        "EB Garamond"
+                ],
+                "label-md": [
+                        "Manrope"
+                ],
+                "display": [
+                        "EB Garamond"
+                ],
+                "title-lg": [
+                        "Manrope"
+                ],
+                "body-lg": [
+                        "Manrope"
+                ]
+        },
+        "fontSize": {
+                "label-lg": [
+                        "12px",
+                        {
+                                "lineHeight": "16px",
+                                "letterSpacing": "0.05em",
+                                "fontWeight": "600"
+                        }
+                ],
+                "headline-md": [
+                        "24px",
+                        {
+                                "lineHeight": "32px",
+                                "fontWeight": "500"
+                        }
+                ],
+                "body-md": [
+                        "14px",
+                        {
+                                "lineHeight": "20px",
+                                "fontWeight": "400"
+                        }
+                ],
+                "headline-lg-mobile": [
+                        "28px",
+                        {
+                                "lineHeight": "34px",
+                                "fontWeight": "500"
+                        }
+                ],
+                "headline-lg": [
+                        "32px",
+                        {
+                                "lineHeight": "40px",
+                                "fontWeight": "500"
+                        }
+                ],
+                "label-md": [
+                        "11px",
+                        {
+                                "lineHeight": "16px",
+                                "fontWeight": "500"
+                        }
+                ],
+                "display": [
+                        "48px",
+                        {
+                                "lineHeight": "56px",
+                                "letterSpacing": "-0.02em",
+                                "fontWeight": "500"
+                        }
+                ],
+                "title-lg": [
+                        "20px",
+                        {
+                                "lineHeight": "28px",
+                                "letterSpacing": "0.01em",
+                                "fontWeight": "600"
+                        }
+                ],
+                "body-lg": [
+                        "16px",
+                        {
+                                "lineHeight": "24px",
+                                "fontWeight": "400"
+                        }
+                ]
+        }
+},
+    },
+  }
+</script>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+</head>
+<body class="bg-background text-on-background min-h-screen flex flex-col font-body-lg antialiased">
+<!-- TopAppBar -->
+<header class="sticky top-0 w-full flex items-center justify-between px-margin-mobile md:px-margin-desktop py-stack-md bg-background z-40 transition-all duration-300">
+<button class="text-primary hover:bg-surface-container-lowest p-2 rounded-full transition-colors flex items-center justify-center">
+<span class="material-symbols-outlined">signal_cellular_alt</span>
+</button>
+<h1 class="font-headline-lg-mobile text-headline-lg-mobile md:font-headline-lg md:text-headline-lg text-primary">Network</h1>
+<button class="text-primary hover:bg-surface-container-lowest p-2 rounded-full transition-colors flex items-center justify-center">
+<span class="material-symbols-outlined text-error">emergency</span>
+</button>
+</header>
+<!-- Main Content Canvas -->
+<main class="flex-1 px-margin-mobile md:px-margin-desktop pb-[120px] flex flex-col gap-stack-lg max-w-2xl mx-auto w-full">
+<!-- Screen A: Blocked Contact Empty State -->
+<section class="flex flex-col gap-stack-sm">
+<h2 class="font-title-lg text-title-lg text-on-surface px-4">Security Constraints</h2>
+<div class="border border-outline-variant bg-surface-container-low rounded-xl p-8 flex flex-col items-center justify-center text-center gap-4">
+<div class="w-16 h-16 rounded-full bg-surface-container-highest flex items-center justify-center">
+<span class="material-symbols-outlined text-on-surface-variant text-3xl">block</span>
+</div>
+<div>
+<h3 class="font-title-lg text-title-lg text-on-surface mb-1">No Blocked Contacts</h3>
+<p class="font-body-md text-body-md text-on-surface-variant max-w-[250px]">Your communication channels are currently unrestricted. Blocked nodes will appear here.</p>
+</div>
+</div>
+</section>
+<!-- Screen B: Panic Wipe Destructive Action -->
+<section class="flex flex-col gap-stack-sm mt-stack-md">
+<div class="border border-error-container bg-error-container/20 rounded-xl p-8 relative overflow-hidden">
+<!-- Subtle warning pattern background -->
+<div class="absolute inset-0 opacity-[0.03]" style="background-image: repeating-linear-gradient(45deg, #ba1a1a 0, #ba1a1a 2px, transparent 2px, transparent 8px);"></div>
+<div class="relative z-10 flex flex-col gap-6">
+<div class="flex items-start gap-4">
+<span class="material-symbols-outlined text-error text-3xl mt-1" style="font-variation-settings: 'FILL' 1;">warning</span>
+<div class="flex flex-col gap-2">
+<h2 class="font-headline-md text-headline-md text-error">Emergency Panic Wipe</h2>
+<p class="font-body-md text-body-md text-on-surface-variant">
+                                This action cannot be undone. It will immediately and irreversibly destroy all local logs, direct messages, identity keys, and mesh routing tables stored on this device.
+                            </p>
+</div>
+</div>
+<button class="w-full bg-error text-on-error py-4 px-6 rounded-full font-label-lg text-label-lg flex items-center justify-center gap-2 hover:opacity-90 active:scale-[0.98] transition-all" onclick="alert('Long press required in active build.')">
+<span class="material-symbols-outlined text-xl">delete_forever</span>
+                        WIPE DEVICE DATA
+                    </button>
+<p class="font-label-md text-label-md text-error/70 text-center uppercase tracking-wider">
+                        Requires 3-second long press
+                    </p>
+</div>
+</div>
+</section>
+</main>
+<!-- BottomNavBar -->
+<nav class="fixed bottom-0 w-full z-50 flex justify-around items-center px-margin-mobile md:px-margin-desktop py-stack-sm pb-8 bg-surface/80 backdrop-blur-md border-t border-outline-variant flat no shadows">
+<button class="flex flex-col items-center justify-center text-on-surface-variant opacity-60 hover:bg-surface-container-low transition-colors active:scale-95 duration-200 p-2 rounded-lg">
+<span class="material-symbols-outlined mb-1">hub</span>
+<span class="font-label-lg text-label-lg">Mesh</span>
+</button>
+<button class="flex flex-col items-center justify-center text-on-surface-variant opacity-60 hover:bg-surface-container-low transition-colors active:scale-95 duration-200 p-2 rounded-lg">
+<span class="material-symbols-outlined mb-1">forum</span>
+<span class="font-label-lg text-label-lg">Direct</span>
+</button>
+<button class="flex flex-col items-center justify-center text-on-surface-variant opacity-60 hover:bg-surface-container-low transition-colors active:scale-95 duration-200 p-2 rounded-lg">
+<span class="material-symbols-outlined mb-1">explore</span>
+<span class="font-label-lg text-label-lg">Radar</span>
+</button>
+<button class="flex flex-col items-center justify-center text-on-surface-variant opacity-60 hover:bg-surface-container-low transition-colors active:scale-95 duration-200 p-2 rounded-lg">
+<span class="material-symbols-outlined mb-1">history</span>
+<span class="font-label-lg text-label-lg">Logs</span>
+</button>
+<!-- Active Tab: Identity -->
+<button class="flex flex-col items-center justify-center text-primary hover:bg-surface-container-low transition-colors active:scale-95 duration-200 p-2 rounded-lg">
+<span class="material-symbols-outlined mb-1" style="font-variation-settings: 'FILL' 1;">fingerprint</span>
+<span class="font-label-lg text-label-lg">Identity</span>
+</button>
+</nav>
+</body></html>

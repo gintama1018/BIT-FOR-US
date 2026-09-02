@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Direct Messages</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:wght@500&amp;family=Manrope:wght@400;500;600&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                    "on-primary": "#ffffff",
+                    "on-tertiary": "#ffffff",
+                    "on-tertiary-fixed": "#001f2a",
+                    "primary-fixed-dim": "#ffb68e",
+                    "outline": "#887368",
+                    "tertiary-fixed-dim": "#70d2fa",
+                    "on-secondary-container": "#782c2d",
+                    "secondary-fixed": "#ffdad8",
+                    "error-container": "#ffdad6",
+                    "background": "#fff8ef",
+                    "secondary": "#974544",
+                    "on-primary-fixed": "#331200",
+                    "on-tertiary-container": "#fbfdff",
+                    "primary-fixed": "#ffdbca",
+                    "error": "#ba1a1a",
+                    "on-surface-variant": "#554339",
+                    "on-primary-fixed-variant": "#773300",
+                    "surface": "#fff8ef",
+                    "primary-container": "#b65c21",
+                    "surface-container-high": "#ede7de",
+                    "secondary-container": "#fe9794",
+                    "surface-container-low": "#f9f3ea",
+                    "surface-container": "#f3ede4",
+                    "primary": "#964407",
+                    "on-error-container": "#93000a",
+                    "on-secondary-fixed": "#3f0308",
+                    "inverse-primary": "#ffb68e",
+                    "on-error": "#ffffff",
+                    "tertiary-fixed": "#bce9ff",
+                    "on-surface": "#1d1b16",
+                    "on-secondary": "#ffffff",
+                    "tertiary": "#006480",
+                    "inverse-on-surface": "#f6f0e7",
+                    "on-tertiary-fixed-variant": "#004d63",
+                    "secondary-fixed-dim": "#ffb3b0",
+                    "tertiary-container": "#007ea1",
+                    "on-background": "#1d1b16",
+                    "inverse-surface": "#33302a",
+                    "surface-container-lowest": "#ffffff",
+                    "outline-variant": "#dbc1b5",
+                    "surface-container-highest": "#e8e2d9",
+                    "on-secondary-fixed-variant": "#792e2f",
+                    "surface-tint": "#99460a",
+                    "surface-variant": "#e8e2d9",
+                    "on-primary-container": "#fffbff",
+                    "surface-dim": "#dfd9d0",
+                    "surface-bright": "#fff8ef"
+            },
+            "borderRadius": {
+                    "DEFAULT": "0.25rem",
+                    "lg": "0.5rem",
+                    "xl": "0.75rem",
+                    "full": "9999px"
+            },
+            "spacing": {
+                    "unit": "8px",
+                    "container-padding": "24px",
+                    "gutter": "16px",
+                    "stack-md": "24px",
+                    "stack-lg": "40px",
+                    "stack-sm": "12px"
+            },
+            "fontFamily": {
+                    "headline-md": ["EB Garamond"],
+                    "body-lg": ["Manrope"],
+                    "body-md": ["Manrope"],
+                    "headline-lg": ["EB Garamond"],
+                    "display": ["EB Garamond"],
+                    "label-md": ["Manrope"],
+                    "label-lg": ["Manrope"],
+                    "headline-lg-mobile": ["EB Garamond"],
+                    "title-lg": ["Manrope"]
+            },
+            "fontSize": {
+                    "headline-md": ["24px", {"lineHeight": "32px", "fontWeight": "500"}],
+                    "body-lg": ["16px", {"lineHeight": "24px", "fontWeight": "400"}],
+                    "body-md": ["14px", {"lineHeight": "20px", "fontWeight": "400"}],
+                    "headline-lg": ["32px", {"lineHeight": "40px", "fontWeight": "500"}],
+                    "display": ["48px", {"lineHeight": "56px", "letterSpacing": "-0.02em", "fontWeight": "500"}],
+                    "label-md": ["11px", {"lineHeight": "16px", "fontWeight": "500"}],
+                    "label-lg": ["12px", {"lineHeight": "16px", "letterSpacing": "0.05em", "fontWeight": "600"}],
+                    "headline-lg-mobile": ["28px", {"lineHeight": "34px", "fontWeight": "500"}],
+                    "title-lg": ["20px", {"lineHeight": "28px", "letterSpacing": "0.01em", "fontWeight": "600"}]
+            }
+          }
+        }
+      }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 300, 'GRAD' 0, 'opsz' 24;
+        }
+        .material-symbols-outlined.fill {
+            font-variation-settings: 'FILL' 1, 'wght' 400;
+        }
+    </style>
+</head>
+<body class="bg-background text-on-background antialiased min-h-screen flex flex-col">
+<!-- TopAppBar -->
+<header class="sticky top-0 w-full flex flex-col px-container-padding py-stack-md bg-background z-40">
+<div class="flex items-center justify-between w-full mb-2">
+<span class="material-symbols-outlined text-primary cursor-pointer hover:bg-surface-container-low transition-all duration-300 rounded-full p-2 -ml-2" data-icon="signal_cellular_alt">signal_cellular_alt</span>
+<span class="material-symbols-outlined text-on-surface-variant cursor-pointer hover:bg-surface-container-low transition-all duration-300 rounded-full p-2 -mr-2" data-icon="search">search</span>
+</div>
+<div>
+<h1 class="font-headline-lg-mobile text-headline-lg-mobile md:font-headline-lg md:text-headline-lg text-primary tracking-tight">Direct</h1>
+<p class="font-label-lg text-label-lg text-on-surface-variant opacity-80 mt-1 uppercase tracking-wider flex items-center gap-1">
+<span class="material-symbols-outlined text-[14px]">lock</span>
+                End-to-end encrypted
+            </p>
+</div>
+</header>
+<!-- Main Content Canvas -->
+<main class="flex-1 px-container-padding pb-32">
+<!-- Conversation List -->
+<div class="flex flex-col gap-unit">
+<!-- Conversation Item (Unread) -->
+<button class="w-full text-left flex items-start gap-gutter py-4 border-b border-surface-variant/50 hover:bg-surface-container-lowest transition-colors group relative rounded-lg px-2 -mx-2">
+<div class="relative flex-shrink-0">
+<img class="w-12 h-12 rounded-full object-cover border border-outline-variant" data-alt="A minimalist, warm-toned profile portrait of a young woman with dark hair, shot in soft natural lighting. The overall color palette features earthy terracotta and creamy whites, aligning with a sophisticated, light-mode modern interface aesthetic. 50-100 words." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCaOk5XXWOe_g3i9DAnfrXOEuGHmpmtZ8FFiAmC2qS_Nu2XROn9G_zUQ0WU7fQcQvZdhBP6xlsbmKrDI146z5Py_VolsWQHEcgHWIrXzjmLVrpBk-BdTuiN3kL7q-6hiUwMRlsJNMxEpAvStEfEJPDmX6hYMXtxrYFIoL6FxSsbq5s7h4KxoWfDuoDaS29IRRvG5P6sBwbMs_HOyndKdiYi2bxyzP22e4YSB1X_X701txeq9tJB9RUk"/>
+<div class="absolute bottom-0 right-0 w-3.5 h-3.5 bg-primary rounded-full border-2 border-background"></div>
+</div>
+<div class="flex-1 min-w-0 pt-0.5">
+<div class="flex justify-between items-baseline mb-1">
+<span class="font-title-lg text-title-lg text-on-background truncate pr-2">Elena Rostova</span>
+<span class="font-label-md text-label-md text-primary flex-shrink-0">12:42 PM</span>
+</div>
+<div class="flex items-center gap-2">
+<p class="font-body-md text-body-md text-on-surface-variant truncate font-medium">We established the link at base camp.</p>
+</div>
+<div class="flex items-center gap-1 mt-1.5 opacity-60">
+<span class="material-symbols-outlined text-[14px]" data-icon="route">route</span>
+<span class="font-label-md text-label-md">1 hop</span>
+</div>
+</div>
+</button>
+<!-- Conversation Item (Read) -->
+<button class="w-full text-left flex items-start gap-gutter py-4 border-b border-surface-variant/50 hover:bg-surface-container-lowest transition-colors group rounded-lg px-2 -mx-2 opacity-80 hover:opacity-100">
+<div class="relative flex-shrink-0">
+<img class="w-12 h-12 rounded-full object-cover border border-outline-variant grayscale-[20%]" data-alt="A sophisticated, high-key portrait of a mature man with a beard, illuminated by soft, diffused daylight. The style is minimalist editorial photography, emphasizing warm skin tones and calm presence against a clean, warm-white background. 50-100 words." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCW1pio_p0WK-FPC3aA7dRhpHoZMTZLetGvVxlZ3Ai72t6-w2fMTEbv6EcfPKqftMPalzMqYt5j2QgPnlmrD90QmunA6DuGCx9tas4gWlqcOi8k8lYXJ-MiWFjHccKodAxklom44UxtAA4jLc1G1fxQlJ-hdhEogEpk56RY9nIIiFlOXXbKtksjBPg2j-wk9toQZQc25Hj9aVDRsRFqtkUWdo9cW6lSxZFaB0vupPhksZEe-VJ--OaV"/>
+</div>
+<div class="flex-1 min-w-0 pt-0.5">
+<div class="flex justify-between items-baseline mb-1">
+<span class="font-title-lg text-title-lg text-on-background truncate pr-2">Marcus Vance</span>
+<span class="font-label-md text-label-md text-on-surface-variant flex-shrink-0">Yesterday</span>
+</div>
+<div class="flex items-center gap-2">
+<p class="font-body-md text-body-md text-on-surface-variant truncate">Coordinates received. Holding position.</p>
+</div>
+<div class="flex items-center gap-1 mt-1.5 opacity-60">
+<span class="material-symbols-outlined text-[14px]" data-icon="route">route</span>
+<span class="font-label-md text-label-md">2 hops</span>
+</div>
+</div>
+</button>
+<!-- Conversation Item (Security Warning) -->
+<button class="w-full text-left flex items-start gap-gutter py-4 border-b border-surface-variant/50 hover:bg-surface-container-lowest transition-colors group rounded-lg px-2 -mx-2 bg-error-container/20 border-error/20">
+<div class="relative flex-shrink-0">
+<div class="w-12 h-12 rounded-full bg-surface-container-high border border-outline-variant flex items-center justify-center">
+<span class="material-symbols-outlined text-on-surface-variant opacity-50" data-icon="person">person</span>
+</div>
+<div class="absolute -bottom-1 -right-1 w-5 h-5 bg-background rounded-full flex items-center justify-center">
+<span class="material-symbols-outlined text-error text-[14px] fill" data-icon="warning" data-weight="fill">warning</span>
+</div>
+</div>
+<div class="flex-1 min-w-0 pt-0.5">
+<div class="flex justify-between items-baseline mb-1">
+<span class="font-title-lg text-title-lg text-on-background truncate pr-2">Unknown Node_77A</span>
+<span class="font-label-md text-label-md text-on-surface-variant flex-shrink-0">Oct 12</span>
+</div>
+<div class="flex items-center gap-2">
+<p class="font-body-md text-body-md text-error truncate">Identity verification failed.</p>
+</div>
+<div class="flex items-center gap-1 mt-1.5 opacity-60">
+<span class="material-symbols-outlined text-[14px]" data-icon="route">route</span>
+<span class="font-label-md text-label-md">5 hops</span>
+</div>
+</div>
+</button>
+<!-- Conversation Item (Read) -->
+<button class="w-full text-left flex items-start gap-gutter py-4 border-b border-surface-variant/50 hover:bg-surface-container-lowest transition-colors group rounded-lg px-2 -mx-2 opacity-80 hover:opacity-100">
+<div class="relative flex-shrink-0">
+<img class="w-12 h-12 rounded-full object-cover border border-outline-variant grayscale-[20%]" data-alt="An editorial style flat lay image showing a modern communication device and a compass resting on a warm wooden surface. The aesthetic is warm minimal, bathed in soft, natural morning light. The mood is functional yet calm and premium. 50-100 words." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCc3vcTQ4Vt2lG-3kcaA8N18PMtobeZqJI1AgIRGLOWz9foHtRrJ9UCWkq1p8EEFa--oT0jzNeO6BDMDnkvKtH-LZkHGPTfnkrmI4vDjeORbD835yFCtebMUTWM7dtRE8AvH1MZjXhMvEaQFapXE_LJ0u4B7rwnQAwUtE6RBXvSC2GKPB79U0Hum3BSKthq4S38MxUwL2E3_eg5-2hINBc2BArfJIMkCCnyG2DwgMQnJ91sByW4UbOB"/>
+</div>
+<div class="flex-1 min-w-0 pt-0.5">
+<div class="flex justify-between items-baseline mb-1">
+<span class="font-title-lg text-title-lg text-on-background truncate pr-2">Logistics Channel</span>
+<span class="font-label-md text-label-md text-on-surface-variant flex-shrink-0">Oct 10</span>
+</div>
+<div class="flex items-center gap-2">
+<p class="font-body-md text-body-md text-on-surface-variant truncate">Supplies confirmed at point Bravo.</p>
+</div>
+<div class="flex items-center gap-1 mt-1.5 opacity-60">
+<span class="material-symbols-outlined text-[14px]" data-icon="cell_tower">cell_tower</span>
+<span class="font-label-md text-label-md">Direct Link</span>
+</div>
+</div>
+</button>
+</div>
+</main>
+<!-- BottomNavBar -->
+<nav class="fixed bottom-0 w-full z-50 flex justify-around items-center px-container-padding py-stack-sm pb-8 bg-surface/80 border-t border-outline-variant backdrop-blur-md md:hidden">
+<button class="flex flex-col items-center justify-center text-on-surface-variant opacity-60 hover:bg-surface-container-low transition-colors active:scale-95 duration-200 p-2 rounded-lg">
+<span class="material-symbols-outlined mb-1" data-icon="hub">hub</span>
+<span class="font-label-lg text-label-lg">Mesh</span>
+</button>
+<button class="flex flex-col items-center justify-center text-primary hover:bg-surface-container-low transition-colors active:scale-95 duration-200 p-2 rounded-lg">
+<span class="material-symbols-outlined mb-1 fill" data-icon="forum" data-weight="fill">forum</span>
+<span class="font-label-lg text-label-lg">Direct</span>
+</button>
+<button class="flex flex-col items-center justify-center text-on-surface-variant opacity-60 hover:bg-surface-container-low transition-colors active:scale-95 duration-200 p-2 rounded-lg">
+<span class="material-symbols-outlined mb-1" data-icon="explore">explore</span>
+<span class="font-label-lg text-label-lg">Radar</span>
+</button>
+<button class="flex flex-col items-center justify-center text-on-surface-variant opacity-60 hover:bg-surface-container-low transition-colors active:scale-95 duration-200 p-2 rounded-lg">
+<span class="material-symbols-outlined mb-1" data-icon="history">history</span>
+<span class="font-label-lg text-label-lg">Logs</span>
+</button>
+<button class="flex flex-col items-center justify-center text-on-surface-variant opacity-60 hover:bg-surface-container-low transition-colors active:scale-95 duration-200 p-2 rounded-lg">
+<span class="material-symbols-outlined mb-1" data-icon="fingerprint">fingerprint</span>
+<span class="font-label-lg text-label-lg">Identity</span>
+</button>
+</nav>
+</body></html>

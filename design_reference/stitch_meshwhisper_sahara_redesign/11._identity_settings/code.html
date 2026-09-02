@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Identity &amp; Settings</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:wght@500&amp;family=Manrope:wght@400;500;600&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "on-primary": "#ffffff",
+                        "on-tertiary": "#ffffff",
+                        "on-tertiary-fixed": "#001f2a",
+                        "primary-fixed-dim": "#ffb68e",
+                        "outline": "#887368",
+                        "tertiary-fixed-dim": "#70d2fa",
+                        "on-secondary-container": "#782c2d",
+                        "secondary-fixed": "#ffdad8",
+                        "error-container": "#ffdad6",
+                        "background": "#fff8ef",
+                        "secondary": "#974544",
+                        "on-primary-fixed": "#331200",
+                        "on-tertiary-container": "#fbfdff",
+                        "primary-fixed": "#ffdbca",
+                        "error": "#ba1a1a",
+                        "on-surface-variant": "#554339",
+                        "on-primary-fixed-variant": "#773300",
+                        "surface": "#fff8ef",
+                        "primary-container": "#b65c21",
+                        "surface-container-high": "#ede7de",
+                        "secondary-container": "#fe9794",
+                        "surface-container-low": "#f9f3ea",
+                        "surface-container": "#f3ede4",
+                        "primary": "#964407",
+                        "on-error-container": "#93000a",
+                        "on-secondary-fixed": "#3f0308",
+                        "inverse-primary": "#ffb68e",
+                        "on-error": "#ffffff",
+                        "tertiary-fixed": "#bce9ff",
+                        "on-surface": "#1d1b16",
+                        "on-secondary": "#ffffff",
+                        "tertiary": "#006480",
+                        "inverse-on-surface": "#f6f0e7",
+                        "on-tertiary-fixed-variant": "#004d63",
+                        "secondary-fixed-dim": "#ffb3b0",
+                        "tertiary-container": "#007ea1",
+                        "on-background": "#1d1b16",
+                        "inverse-surface": "#33302a",
+                        "surface-container-lowest": "#ffffff",
+                        "outline-variant": "#dbc1b5",
+                        "surface-container-highest": "#e8e2d9",
+                        "on-secondary-fixed-variant": "#792e2f",
+                        "surface-tint": "#99460a",
+                        "surface-variant": "#e8e2d9",
+                        "on-primary-container": "#fffbff",
+                        "surface-dim": "#dfd9d0",
+                        "surface-bright": "#fff8ef"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                    "spacing": {
+                        "unit": "8px",
+                        "container-padding": "24px",
+                        "gutter": "16px",
+                        "stack-md": "24px",
+                        "stack-lg": "40px",
+                        "stack-sm": "12px"
+                    },
+                    "fontFamily": {
+                        "headline-md": ["EB Garamond"],
+                        "body-lg": ["Manrope"],
+                        "body-md": ["Manrope"],
+                        "headline-lg": ["EB Garamond"],
+                        "display": ["EB Garamond"],
+                        "label-md": ["Manrope"],
+                        "label-lg": ["Manrope"],
+                        "headline-lg-mobile": ["EB Garamond"],
+                        "title-lg": ["Manrope"]
+                    },
+                    "fontSize": {
+                        "headline-md": ["24px", { "lineHeight": "32px", "fontWeight": "500" }],
+                        "body-lg": ["16px", { "lineHeight": "24px", "fontWeight": "400" }],
+                        "body-md": ["14px", { "lineHeight": "20px", "fontWeight": "400" }],
+                        "headline-lg": ["32px", { "lineHeight": "40px", "fontWeight": "500" }],
+                        "display": ["48px", { "lineHeight": "56px", "letterSpacing": "-0.02em", "fontWeight": "500" }],
+                        "label-md": ["11px", { "lineHeight": "16px", "fontWeight": "500" }],
+                        "label-lg": ["12px", { "lineHeight": "16px", "letterSpacing": "0.05em", "fontWeight": "600" }],
+                        "headline-lg-mobile": ["28px", { "lineHeight": "34px", "fontWeight": "500" }],
+                        "title-lg": ["20px", { "lineHeight": "28px", "letterSpacing": "0.01em", "fontWeight": "600" }]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 300, 'GRAD' 0, 'opsz' 24;
+        }
+        .material-symbols-outlined[data-weight="fill"] {
+            font-variation-settings: 'FILL' 1, 'wght' 300, 'GRAD' 0, 'opsz' 24;
+        }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-background text-on-background antialiased min-h-screen flex flex-col selection:bg-primary-container selection:text-on-primary-container">
+<!-- TopAppBar -->
+<header class="sticky top-0 w-full flex items-center justify-between px-container-padding py-stack-md bg-background dark:bg-background flat no shadows docked full-width top-0 z-40 transition-all duration-300">
+<button class="w-10 h-10 flex items-center justify-center rounded-full hover:bg-surface-container-lowest dark:hover:bg-surface-container-low text-primary dark:text-primary-fixed-dim">
+<span class="material-symbols-outlined" data-icon="signal_cellular_alt">signal_cellular_alt</span>
+</button>
+<h1 class="font-headline-lg-mobile text-headline-lg-mobile md:font-headline-lg md:text-headline-lg text-primary dark:text-primary-fixed-dim">Identity</h1>
+<button class="w-10 h-10 flex items-center justify-center rounded-full hover:bg-surface-container-lowest dark:hover:bg-surface-container-low text-primary dark:text-primary-fixed-dim">
+<span class="material-symbols-outlined" data-icon="emergency">emergency</span>
+</button>
+</header>
+<main class="flex-grow px-container-padding pb-32">
+<!-- Header / Subtitle -->
+<div class="mb-stack-lg text-center mt-stack-md">
+<p class="font-body-lg text-body-lg text-on-surface-variant">Your mesh identity</p>
+</div>
+<!-- Identity Card -->
+<div class="bg-surface-container-low border border-surface-container-highest rounded-xl p-6 mb-stack-lg flex flex-col items-center relative overflow-hidden group hover:bg-surface-container transition-colors duration-300 cursor-pointer">
+<div class="absolute inset-0 bg-gradient-to-br from-primary-fixed/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
+<div class="w-20 h-20 bg-surface-container-high rounded-full flex items-center justify-center mb-4 text-primary relative z-10 border border-outline-variant">
+<span class="material-symbols-outlined text-[40px]" data-icon="fingerprint" data-weight="fill">fingerprint</span>
+</div>
+<h2 class="font-title-lg text-title-lg text-on-surface mb-1 relative z-10">Node ID: 8F42-A1B9</h2>
+<p class="font-body-md text-body-md text-on-surface-variant mb-6 text-center max-w-[250px] relative z-10">Fingerprint: 3A:4B:9C:2D:EF:5G:1H:8J</p>
+<button class="bg-primary text-on-primary font-label-lg text-label-lg px-6 py-3 rounded-full flex items-center gap-2 hover:bg-primary/90 transition-colors relative z-10 shadow-[0_4px_20px_rgba(150,68,7,0.1)]">
+<span class="material-symbols-outlined text-[18px]" data-icon="qr_code">qr_code</span>
+                Show QR
+            </button>
+</div>
+<!-- Settings Groups (Bento-ish layout) -->
+<div class="grid grid-cols-1 md:grid-cols-2 gap-stack-md">
+<!-- Network Group -->
+<div class="bg-surface border border-outline-variant rounded-xl p-5 hover:bg-surface-container-low transition-colors duration-200">
+<div class="flex items-center gap-3 mb-4">
+<span class="material-symbols-outlined text-primary" data-icon="hub">hub</span>
+<h3 class="font-title-lg text-title-lg text-on-surface">Network</h3>
+</div>
+<div class="space-y-4">
+<div class="flex items-center justify-between group cursor-pointer">
+<div>
+<p class="font-body-lg text-body-lg text-on-surface group-hover:text-primary transition-colors">Act as Relay</p>
+<p class="font-body-md text-body-md text-on-surface-variant">Forward packets for others</p>
+</div>
+<div class="w-11 h-6 bg-primary-container rounded-full relative">
+<div class="absolute right-1 top-1 w-4 h-4 bg-on-primary-container rounded-full"></div>
+</div>
+</div>
+<div class="flex items-center justify-between group cursor-pointer">
+<div>
+<p class="font-body-lg text-body-lg text-on-surface group-hover:text-primary transition-colors">Network Status</p>
+<p class="font-body-md text-body-md text-on-surface-variant">Connected (3 Nodes)</p>
+</div>
+<span class="material-symbols-outlined text-on-surface-variant" data-icon="chevron_right">chevron_right</span>
+</div>
+</div>
+</div>
+<!-- Security Group -->
+<div class="bg-surface border border-outline-variant rounded-xl p-5 hover:bg-surface-container-low transition-colors duration-200">
+<div class="flex items-center gap-3 mb-4">
+<span class="material-symbols-outlined text-primary" data-icon="security">security</span>
+<h3 class="font-title-lg text-title-lg text-on-surface">Security</h3>
+</div>
+<div class="space-y-4">
+<div class="flex items-center justify-between group cursor-pointer">
+<div>
+<p class="font-body-lg text-body-lg text-on-surface group-hover:text-primary transition-colors">App Lock</p>
+<p class="font-body-md text-body-md text-on-surface-variant">Require PIN to open</p>
+</div>
+<div class="w-11 h-6 bg-surface-variant rounded-full relative">
+<div class="absolute left-1 top-1 w-4 h-4 bg-outline rounded-full"></div>
+</div>
+</div>
+<div class="flex items-center justify-between group cursor-pointer">
+<div>
+<p class="font-body-lg text-body-lg text-on-surface group-hover:text-primary transition-colors">Privacy Mode</p>
+<p class="font-body-md text-body-md text-on-surface-variant">Hide node name</p>
+</div>
+<div class="w-11 h-6 bg-primary-container rounded-full relative">
+<div class="absolute right-1 top-1 w-4 h-4 bg-on-primary-container rounded-full"></div>
+</div>
+</div>
+</div>
+</div>
+<!-- Identity Verification Group -->
+<div class="bg-surface border border-outline-variant rounded-xl p-5 hover:bg-surface-container-low transition-colors duration-200 md:col-span-2">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-primary" data-icon="verified_user">verified_user</span>
+<div>
+<h3 class="font-title-lg text-title-lg text-on-surface">Verification</h3>
+<p class="font-body-md text-body-md text-on-surface-variant mt-1">Scan QR to verify contacts</p>
+</div>
+</div>
+<button class="w-10 h-10 rounded-full border border-outline-variant flex items-center justify-center hover:bg-surface-variant transition-colors text-on-surface">
+<span class="material-symbols-outlined" data-icon="qr_code_scanner">qr_code_scanner</span>
+</button>
+</div>
+</div>
+<!-- Data Group (Destructive) -->
+<div class="bg-surface border border-error-container rounded-xl p-5 hover:bg-error-container/20 transition-colors duration-200 md:col-span-2">
+<div class="flex items-center justify-between cursor-pointer group">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-error" data-icon="delete_forever">delete_forever</span>
+<div>
+<h3 class="font-title-lg text-title-lg text-error">Wipe Data</h3>
+<p class="font-body-md text-body-md text-on-surface-variant mt-1">Permanently delete local logs</p>
+</div>
+</div>
+<span class="material-symbols-outlined text-error opacity-0 group-hover:opacity-100 transition-opacity" data-icon="warning">warning</span>
+</div>
+</div>
+</div>
+</main>
+<!-- BottomNavBar -->
+<nav class="fixed bottom-0 w-full z-50 flex justify-around items-center px-container-padding py-stack-sm pb-8 bg-surface/80 dark:bg-surface-dim/80 backdrop-blur-md border-t border-outline-variant dark:border-outline md:hidden">
+<button class="flex flex-col items-center justify-center text-on-surface-variant dark:text-surface-variant opacity-60 hover:bg-surface-container-low dark:hover:bg-surface-container-high transition-colors active:scale-95 transition-transform duration-200 w-16 h-16 rounded-xl">
+<span class="material-symbols-outlined text-[24px] mb-1" data-icon="hub">hub</span>
+<span class="font-label-lg text-label-lg">Mesh</span>
+</button>
+<button class="flex flex-col items-center justify-center text-on-surface-variant dark:text-surface-variant opacity-60 hover:bg-surface-container-low dark:hover:bg-surface-container-high transition-colors active:scale-95 transition-transform duration-200 w-16 h-16 rounded-xl">
+<span class="material-symbols-outlined text-[24px] mb-1" data-icon="forum">forum</span>
+<span class="font-label-lg text-label-lg">Direct</span>
+</button>
+<button class="flex flex-col items-center justify-center text-on-surface-variant dark:text-surface-variant opacity-60 hover:bg-surface-container-low dark:hover:bg-surface-container-high transition-colors active:scale-95 transition-transform duration-200 w-16 h-16 rounded-xl">
+<span class="material-symbols-outlined text-[24px] mb-1" data-icon="explore">explore</span>
+<span class="font-label-lg text-label-lg">Radar</span>
+</button>
+<button class="flex flex-col items-center justify-center text-on-surface-variant dark:text-surface-variant opacity-60 hover:bg-surface-container-low dark:hover:bg-surface-container-high transition-colors active:scale-95 transition-transform duration-200 w-16 h-16 rounded-xl">
+<span class="material-symbols-outlined text-[24px] mb-1" data-icon="history">history</span>
+<span class="font-label-lg text-label-lg">Logs</span>
+</button>
+<button class="flex flex-col items-center justify-center text-primary dark:text-primary-fixed-dim hover:bg-surface-container-low dark:hover:bg-surface-container-high transition-colors active:scale-95 transition-transform duration-200 w-16 h-16 rounded-xl bg-surface-container-low">
+<span class="material-symbols-outlined text-[24px] mb-1" data-icon="fingerprint" data-weight="fill">fingerprint</span>
+<span class="font-label-lg text-label-lg">Identity</span>
+</button>
+</nav>
+</body></html>

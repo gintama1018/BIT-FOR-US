@@ -3,7 +3,6 @@ package com.meshwhisper.app.ui.components
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -17,7 +16,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -34,12 +32,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.meshwhisper.app.ui.NavTab
-import com.meshwhisper.app.ui.theme.BurntSienna
-import com.meshwhisper.app.ui.theme.BurntSiennaContainer
-import com.meshwhisper.app.ui.theme.ManropeFamily
-import com.meshwhisper.app.ui.theme.TextMuted
-import com.meshwhisper.app.ui.theme.WarmCardBorder
-import com.meshwhisper.app.ui.theme.WarmSurface
+import com.meshwhisper.app.ui.theme.*
 
 /**
  * Reusable Floating Capsule / Pill Bottom Navigation Component.
@@ -61,8 +54,8 @@ fun FloatingBottomNavigationPill(
                 spotColor = Color(0x143A302A)
             ),
         shape = CircleShape,
-        color = WarmSurface,
-        border = androidx.compose.foundation.BorderStroke(0.8.dp, WarmCardBorder)
+        color = SaharaSurfaceContainerLowest,
+        border = androidx.compose.foundation.BorderStroke(0.8.dp, SaharaOutlineVariant.copy(alpha = 0.6f))
     ) {
         Row(
             modifier = Modifier
@@ -92,7 +85,7 @@ private fun FloatingNavItem(
     val interactionSource = remember { MutableInteractionSource() }
 
     val iconTint by animateColorAsState(
-        targetValue = if (isSelected) Color.White else TextMuted,
+        targetValue = if (isSelected) Color.White else SaharaOnSurfaceVariant.copy(alpha = 0.7f),
         animationSpec = tween(200),
         label = "navIconTint"
     )
@@ -102,7 +95,7 @@ private fun FloatingNavItem(
             .clip(CircleShape)
             .clickable(
                 interactionSource = interactionSource,
-                indication = ripple(bounded = true, radius = 24.dp, color = BurntSienna),
+                indication = ripple(bounded = true, radius = 24.dp, color = SaharaPrimary),
                 onClick = onClick
             )
             .padding(horizontal = 8.dp, vertical = 4.dp),
@@ -110,12 +103,12 @@ private fun FloatingNavItem(
         verticalArrangement = Arrangement.Center
     ) {
         if (isSelected) {
-            // Active State: Burnt Sienna circular badge with white icon and bold micro-label
+            // Active State: SaharaPrimary circular badge with white icon and bold micro-label
             Box(
                 modifier = Modifier
                     .size(32.dp)
                     .clip(CircleShape)
-                    .background(BurntSienna),
+                    .background(SaharaPrimary),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
@@ -128,7 +121,7 @@ private fun FloatingNavItem(
             Spacer(modifier = Modifier.height(2.dp))
             Text(
                 text = tab.label.uppercase(),
-                color = BurntSienna,
+                color = SaharaPrimary,
                 fontSize = 9.sp,
                 fontFamily = ManropeFamily,
                 fontWeight = FontWeight.Bold,

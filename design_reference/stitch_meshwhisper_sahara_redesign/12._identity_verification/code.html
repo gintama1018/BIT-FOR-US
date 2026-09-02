@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Node Identity &amp; Verification</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:wght@500&amp;family=Manrope:wght@400;500;600&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "on-primary": "#ffffff",
+                        "on-tertiary": "#ffffff",
+                        "on-tertiary-fixed": "#001f2a",
+                        "primary-fixed-dim": "#ffb68e",
+                        "outline": "#887368",
+                        "tertiary-fixed-dim": "#70d2fa",
+                        "on-secondary-container": "#782c2d",
+                        "secondary-fixed": "#ffdad8",
+                        "error-container": "#ffdad6",
+                        "background": "#fff8ef",
+                        "secondary": "#974544",
+                        "on-primary-fixed": "#331200",
+                        "on-tertiary-container": "#fbfdff",
+                        "primary-fixed": "#ffdbca",
+                        "error": "#ba1a1a",
+                        "on-surface-variant": "#554339",
+                        "on-primary-fixed-variant": "#773300",
+                        "surface": "#fff8ef",
+                        "primary-container": "#b65c21",
+                        "surface-container-high": "#ede7de",
+                        "secondary-container": "#fe9794",
+                        "surface-container-low": "#f9f3ea",
+                        "surface-container": "#f3ede4",
+                        "primary": "#964407",
+                        "on-error-container": "#93000a",
+                        "on-secondary-fixed": "#3f0308",
+                        "inverse-primary": "#ffb68e",
+                        "on-error": "#ffffff",
+                        "tertiary-fixed": "#bce9ff",
+                        "on-surface": "#1d1b16",
+                        "on-secondary": "#ffffff",
+                        "tertiary": "#006480",
+                        "inverse-on-surface": "#f6f0e7",
+                        "on-tertiary-fixed-variant": "#004d63",
+                        "secondary-fixed-dim": "#ffb3b0",
+                        "tertiary-container": "#007ea1",
+                        "on-background": "#1d1b16",
+                        "inverse-surface": "#33302a",
+                        "surface-container-lowest": "#ffffff",
+                        "outline-variant": "#dbc1b5",
+                        "surface-container-highest": "#e8e2d9",
+                        "on-secondary-fixed-variant": "#792e2f",
+                        "surface-tint": "#99460a",
+                        "surface-variant": "#e8e2d9",
+                        "on-primary-container": "#fffbff",
+                        "surface-dim": "#dfd9d0",
+                        "surface-bright": "#fff8ef"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.25rem",
+                        "lg": "0.5rem",
+                        "xl": "0.75rem",
+                        "full": "9999px"
+                    },
+                    "spacing": {
+                        "unit": "8px",
+                        "container-padding": "24px",
+                        "gutter": "16px",
+                        "stack-md": "24px",
+                        "stack-lg": "40px",
+                        "stack-sm": "12px"
+                    },
+                    "fontFamily": {
+                        "headline-md": ["EB Garamond"],
+                        "body-lg": ["Manrope"],
+                        "body-md": ["Manrope"],
+                        "headline-lg": ["EB Garamond"],
+                        "display": ["EB Garamond"],
+                        "label-md": ["Manrope"],
+                        "label-lg": ["Manrope"],
+                        "headline-lg-mobile": ["EB Garamond"],
+                        "title-lg": ["Manrope"]
+                    },
+                    "fontSize": {
+                        "headline-md": ["24px", { "lineHeight": "32px", "fontWeight": "500" }],
+                        "body-lg": ["16px", { "lineHeight": "24px", "fontWeight": "400" }],
+                        "body-md": ["14px", { "lineHeight": "20px", "fontWeight": "400" }],
+                        "headline-lg": ["32px", { "lineHeight": "40px", "fontWeight": "500" }],
+                        "display": ["48px", { "lineHeight": "56px", "letterSpacing": "-0.02em", "fontWeight": "500" }],
+                        "label-md": ["11px", { "lineHeight": "16px", "fontWeight": "500" }],
+                        "label-lg": ["12px", { "lineHeight": "16px", "letterSpacing": "0.05em", "fontWeight": "600" }],
+                        "headline-lg-mobile": ["28px", { "lineHeight": "34px", "fontWeight": "500" }],
+                        "title-lg": ["20px", { "lineHeight": "28px", "letterSpacing": "0.01em", "fontWeight": "600" }]
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        .glass-panel {
+            background: rgba(255, 248, 239, 0.7);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(219, 193, 181, 0.5);
+        }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-background text-on-background font-body-lg antialiased min-h-screen flex flex-col md:flex-row pb-24 md:pb-0">
+<!-- TopAppBar -->
+<header class="sticky top-0 w-full flex items-center justify-between px-container-padding py-stack-md bg-background dark:bg-background flat no shadows z-40 md:hidden">
+<button class="flex items-center justify-center p-2 rounded-full hover:bg-surface-container-lowest transition-all duration-300 text-on-surface-variant">
+<span class="material-symbols-outlined" data-icon="arrow_back">arrow_back</span>
+</button>
+<h1 class="font-headline-lg-mobile text-headline-lg-mobile text-primary font-bold tracking-tight">Identity</h1>
+<button class="flex items-center justify-center p-2 rounded-full hover:bg-surface-container-lowest transition-all duration-300 text-on-surface-variant">
+<span class="material-symbols-outlined" data-icon="qr_code_scanner">qr_code_scanner</span>
+</button>
+</header>
+<!-- Side Nav for Desktop -->
+<nav class="hidden md:flex flex-col w-64 h-screen sticky top-0 border-r border-outline-variant bg-surface px-6 py-8">
+<div class="mb-12">
+<h1 class="font-headline-lg text-headline-lg text-primary font-extrabold tracking-tight">Network</h1>
+</div>
+<div class="flex flex-col gap-4">
+<a class="flex items-center gap-4 p-3 rounded-lg hover:bg-surface-container-low transition-colors text-on-surface-variant opacity-60" href="#">
+<span class="material-symbols-outlined" data-icon="hub">hub</span>
+<span class="font-label-lg text-label-lg">Mesh</span>
+</a>
+<a class="flex items-center gap-4 p-3 rounded-lg hover:bg-surface-container-low transition-colors text-on-surface-variant opacity-60" href="#">
+<span class="material-symbols-outlined" data-icon="forum">forum</span>
+<span class="font-label-lg text-label-lg">Direct</span>
+</a>
+<a class="flex items-center gap-4 p-3 rounded-lg hover:bg-surface-container-low transition-colors text-on-surface-variant opacity-60" href="#">
+<span class="material-symbols-outlined" data-icon="explore">explore</span>
+<span class="font-label-lg text-label-lg">Radar</span>
+</a>
+<a class="flex items-center gap-4 p-3 rounded-lg hover:bg-surface-container-low transition-colors text-on-surface-variant opacity-60" href="#">
+<span class="material-symbols-outlined" data-icon="history">history</span>
+<span class="font-label-lg text-label-lg">Logs</span>
+</a>
+<a class="flex items-center gap-4 p-3 rounded-lg bg-surface-container-low text-primary" href="#">
+<span class="material-symbols-outlined" data-icon="fingerprint" data-weight="fill" style="font-variation-settings: 'FILL' 1;">fingerprint</span>
+<span class="font-label-lg text-label-lg">Identity</span>
+</a>
+</div>
+</nav>
+<!-- Main Content -->
+<main class="flex-1 px-container-padding py-stack-lg max-w-5xl mx-auto w-full">
+<div class="grid grid-cols-1 md:grid-cols-2 gap-stack-lg">
+<!-- Screen A: My Identity -->
+<section class="flex flex-col gap-stack-md">
+<div class="mb-4">
+<h2 class="font-title-lg text-title-lg text-on-background mb-2">My Node Identity</h2>
+<p class="font-body-md text-body-md text-on-surface-variant">Allow others to scan this code to establish a secure, trusted connection over the mesh network.</p>
+</div>
+<div class="glass-panel p-8 rounded-xl flex flex-col items-center justify-center text-center shadow-sm relative overflow-hidden group">
+<div class="absolute inset-0 bg-gradient-to-br from-surface-container-lowest to-surface opacity-50 z-0"></div>
+<div class="relative z-10 w-48 h-48 bg-surface-container-lowest rounded-lg border border-outline-variant p-4 flex items-center justify-center mb-6">
+<!-- Placeholder for actual QR code -->
+<div class="w-full h-full bg-surface-variant border-2 border-dashed border-outline-variant rounded flex items-center justify-center">
+<span class="material-symbols-outlined text-4xl text-on-surface-variant opacity-50" data-icon="qr_code_2">qr_code_2</span>
+</div>
+</div>
+<div class="relative z-10 flex flex-col items-center gap-2 mb-8">
+<span class="font-label-md text-label-md text-on-surface-variant uppercase tracking-wider">Node ID</span>
+<div class="bg-surface-container-low px-4 py-2 rounded-full font-body-md text-body-md text-on-background font-mono tracking-widest border border-outline-variant flex items-center gap-2">
+                            A7X-9B2-CQ4
+                            <button class="text-primary hover:text-primary-container transition-colors" title="Copy ID">
+<span class="material-symbols-outlined text-sm" data-icon="content_copy">content_copy</span>
+</button>
+</div>
+</div>
+<button class="relative z-10 w-full bg-primary text-on-primary py-3 rounded-lg font-label-lg text-label-lg hover:bg-primary-container transition-colors flex justify-center items-center gap-2 shadow-[0_4px_20px_rgba(194,101,42,0.15)] active:scale-95 duration-200">
+<span class="material-symbols-outlined text-sm" data-icon="share">share</span>
+                        Share Identity
+                    </button>
+</div>
+</section>
+<!-- Screen B: Verify Contact -->
+<section class="flex flex-col gap-stack-md">
+<div class="mb-4">
+<h2 class="font-title-lg text-title-lg text-on-background mb-2">Verify Peer</h2>
+<p class="font-body-md text-body-md text-on-surface-variant">Compare the fingerprint below with the peer's device to ensure an authentic connection.</p>
+</div>
+<div class="glass-panel p-6 rounded-xl border border-outline-variant flex flex-col gap-6 shadow-sm">
+<div class="flex items-center gap-4 p-4 bg-surface-container-low rounded-lg">
+<div class="w-12 h-12 bg-secondary-container text-on-secondary-container rounded-full flex items-center justify-center">
+<span class="material-symbols-outlined" data-icon="person">person</span>
+</div>
+<div>
+<h3 class="font-label-lg text-label-lg text-on-background">Unknown Node</h3>
+<p class="font-body-md text-body-md text-on-surface-variant font-mono text-xs mt-1">ID: X92-L4M-P11</p>
+</div>
+<div class="ml-auto">
+<span class="bg-surface-variant text-on-surface-variant font-label-md px-2 py-1 rounded-full text-xs">Pending</span>
+</div>
+</div>
+<div class="flex flex-col gap-3">
+<span class="font-label-md text-label-md text-on-surface-variant uppercase tracking-wider">Fingerprint Comparison</span>
+<div class="grid grid-cols-1 gap-3">
+<div class="p-4 bg-surface-container-lowest rounded-lg border border-outline-variant">
+<span class="font-label-md text-label-md text-on-surface-variant block mb-1">Peer Node Presents:</span>
+<p class="font-mono text-body-md text-on-background break-all">4F9A 2B1C 8D7E 5F6A 3B2C 1D0E 9F8A 7B6C</p>
+</div>
+</div>
+</div>
+<div class="mt-4 flex flex-col sm:flex-row gap-4">
+<button class="flex-1 py-3 px-4 rounded-lg font-label-lg text-label-lg border-2 border-outline text-on-surface-variant hover:bg-surface-container-low transition-colors flex items-center justify-center gap-2 active:scale-95 duration-200">
+<span class="material-symbols-outlined text-sm" data-icon="block">block</span>
+                            Block Contact
+                        </button>
+<button class="flex-1 py-3 px-4 rounded-lg font-label-lg text-label-lg bg-tertiary text-on-tertiary hover:bg-tertiary-container transition-colors flex items-center justify-center gap-2 shadow-[0_4px_20px_rgba(0,100,128,0.15)] active:scale-95 duration-200">
+<span class="material-symbols-outlined text-sm" data-icon="verified" data-weight="fill" style="font-variation-settings: 'FILL' 1;">verified</span>
+                            Mark as Trusted
+                        </button>
+</div>
+</div>
+</section>
+</div>
+</main>
+<!-- BottomNavBar -->
+<nav class="fixed bottom-0 w-full z-50 flex justify-around items-center px-container-padding py-stack-sm pb-8 bg-surface/80 dark:bg-surface-dim/80 backdrop-blur-md md:hidden">
+<a class="flex flex-col items-center justify-center text-on-surface-variant dark:text-surface-variant opacity-60 hover:bg-surface-container-low dark:hover:bg-surface-container-high transition-colors active:scale-95 duration-200 p-2 rounded-lg" href="#">
+<span class="material-symbols-outlined" data-icon="hub">hub</span>
+<span class="font-label-lg text-label-lg mt-1">Mesh</span>
+</a>
+<a class="flex flex-col items-center justify-center text-on-surface-variant dark:text-surface-variant opacity-60 hover:bg-surface-container-low dark:hover:bg-surface-container-high transition-colors active:scale-95 duration-200 p-2 rounded-lg" href="#">
+<span class="material-symbols-outlined" data-icon="forum">forum</span>
+<span class="font-label-lg text-label-lg mt-1">Direct</span>
+</a>
+<a class="flex flex-col items-center justify-center text-on-surface-variant dark:text-surface-variant opacity-60 hover:bg-surface-container-low dark:hover:bg-surface-container-high transition-colors active:scale-95 duration-200 p-2 rounded-lg" href="#">
+<span class="material-symbols-outlined" data-icon="explore">explore</span>
+<span class="font-label-lg text-label-lg mt-1">Radar</span>
+</a>
+<a class="flex flex-col items-center justify-center text-on-surface-variant dark:text-surface-variant opacity-60 hover:bg-surface-container-low dark:hover:bg-surface-container-high transition-colors active:scale-95 duration-200 p-2 rounded-lg" href="#">
+<span class="material-symbols-outlined" data-icon="history">history</span>
+<span class="font-label-lg text-label-lg mt-1">Logs</span>
+</a>
+<a class="flex flex-col items-center justify-center text-primary dark:text-primary-fixed-dim hover:bg-surface-container-low dark:hover:bg-surface-container-high transition-colors active:scale-95 duration-200 p-2 rounded-lg" href="#">
+<span class="material-symbols-outlined" data-icon="fingerprint" data-weight="fill" style="font-variation-settings: 'FILL' 1;">fingerprint</span>
+<span class="font-label-lg text-label-lg mt-1">Identity</span>
+</a>
+</nav>
+</body></html>

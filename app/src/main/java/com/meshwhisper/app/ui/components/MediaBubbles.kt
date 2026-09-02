@@ -76,8 +76,7 @@ import com.meshwhisper.app.data.model.MessageStatus
 import com.meshwhisper.app.media.AudioPlayer
 import com.meshwhisper.app.media.TransferState
 import com.meshwhisper.app.media.TransferStateInfo
-import com.meshwhisper.app.ui.theme.BurntSienna
-import com.meshwhisper.app.ui.theme.BurntSiennaContainer
+import com.meshwhisper.app.ui.theme.*
 import com.meshwhisper.app.ui.theme.BurntSiennaDim
 import com.meshwhisper.app.ui.theme.DustyRose
 import com.meshwhisper.app.ui.theme.ManropeFamily
@@ -474,11 +473,12 @@ fun ImageMessageBubble(
                 modifier = Modifier.fillMaxSize()
             )
 
-            if (message.status == MessageStatus.PENDING || bitmap == null) {
+            if (bitmap == null) {
+                // Incoming photo receiving chunks over mesh
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(Color.Black.copy(alpha = 0.35f)),
+                        .background(Color.Black.copy(alpha = 0.45f)),
                     contentAlignment = Alignment.Center
                 ) {
                     Column(
@@ -488,16 +488,45 @@ fun ImageMessageBubble(
                         CircularProgressIndicator(
                             progress = { message.mediaProgress.coerceIn(0.05f, 1.0f) },
                             modifier = Modifier.size(38.dp),
-                            color = BurntSienna,
+                            color = SaharaPrimary,
                             strokeWidth = 3.dp
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = if (isOutgoing) "Sending ${(message.mediaProgress * 100).toInt()}%" else "Receiving ${(message.mediaProgress * 100).toInt()}%",
+                            text = "Receiving ${(message.mediaProgress * 100).toInt()}%",
                             fontSize = 12.sp,
                             fontFamily = ManropeFamily,
                             color = Color.White,
                             fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+            } else if (isOutgoing && message.status == MessageStatus.PENDING && message.mediaProgress < 1.0f) {
+                // Outbound photo with active transmission: subtle bottom corner progress badge
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(8.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color.Black.copy(alpha = 0.65f))
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            progress = { message.mediaProgress.coerceIn(0.05f, 1.0f) },
+                            modifier = Modifier.size(12.dp),
+                            color = SaharaPrimary,
+                            strokeWidth = 2.dp
+                        )
+                        Text(
+                            text = "${(message.mediaProgress * 100).toInt()}%",
+                            fontSize = 10.sp,
+                            fontFamily = ManropeFamily,
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold
                         )
                     }
                 }

@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Media &amp; Voice Recording</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:wght@400;500;600;700&amp;family=Manrope:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+  tailwind.config = {
+    darkMode: "class",
+    theme: {
+      extend: {
+        "colors": {
+                "inverse-on-surface": "#f7efe9",
+                "surface-container-low": "#faf2ec",
+                "on-secondary-container": "#772d2d",
+                "secondary-container": "#fd9794",
+                "tertiary-fixed": "#bce9ff",
+                "inverse-surface": "#33302c",
+                "on-surface-variant": "#554339",
+                "primary-container": "#964407",
+                "on-background": "#1e1b17",
+                "on-primary-container": "#ffc9ad",
+                "outline-variant": "#dbc1b5",
+                "background": "#fff8f3",
+                "surface-bright": "#fff8f3",
+                "surface-container-lowest": "#ffffff",
+                "on-primary-fixed": "#331200",
+                "primary": "#733100",
+                "error-container": "#ffdad6",
+                "on-error-container": "#93000a",
+                "on-tertiary-container": "#97dfff",
+                "on-tertiary-fixed-variant": "#004d63",
+                "on-error": "#ffffff",
+                "surface-container-high": "#eee7e1",
+                "secondary-fixed": "#ffdad8",
+                "on-primary-fixed-variant": "#773300",
+                "secondary-fixed-dim": "#ffb3b0",
+                "on-secondary": "#ffffff",
+                "surface-container": "#f4ede6",
+                "warm-linen": "#FAF5EE",
+                "surface": "#FFF8EF",
+                "secondary": "#974544",
+                "outline": "#887368",
+                "on-tertiary-fixed": "#001f2a",
+                "inverse-primary": "#ffb68e",
+                "tertiary-fixed-dim": "#88d0f0",
+                "surface-dim": "#e0d9d3",
+                "primary-fixed-dim": "#ffb68e",
+                "surface-container-highest": "#e8e1db",
+                "on-primary": "#ffffff",
+                "on-tertiary": "#ffffff",
+                "on-surface": "#1e1b17",
+                "on-secondary-fixed-variant": "#792e2e",
+                "primary-fixed": "#ffdbca",
+                "tertiary-container": "#006480",
+                "surface-tint": "#99460a",
+                "error": "#ba1a1a",
+                "on-secondary-fixed": "#3f0308",
+                "tertiary": "#004b60",
+                "surface-variant": "#e8e1db"
+        },
+        "borderRadius": {
+                "DEFAULT": "1rem",
+                "lg": "2rem",
+                "xl": "3rem",
+                "full": "9999px"
+        },
+        "spacing": {
+                "stack-md": "24px",
+                "margin-mobile": "24px",
+                "gutter": "16px",
+                "stack-lg": "40px",
+                "stack-sm": "12px",
+                "margin-desktop": "40px",
+                "base": "8px"
+        },
+        "fontFamily": {
+                "label-lg": [
+                        "Manrope"
+                ],
+                "headline-md": [
+                        "EB Garamond"
+                ],
+                "body-md": [
+                        "Manrope"
+                ],
+                "headline-lg-mobile": [
+                        "EB Garamond"
+                ],
+                "headline-lg": [
+                        "EB Garamond"
+                ],
+                "label-md": [
+                        "Manrope"
+                ],
+                "display": [
+                        "EB Garamond"
+                ],
+                "title-lg": [
+                        "Manrope"
+                ],
+                "body-lg": [
+                        "Manrope"
+                ]
+        },
+        "fontSize": {
+                "label-lg": [
+                        "12px",
+                        {
+                                "lineHeight": "16px",
+                                "letterSpacing": "0.05em",
+                                "fontWeight": "600"
+                        }
+                ],
+                "headline-md": [
+                        "24px",
+                        {
+                                "lineHeight": "32px",
+                                "fontWeight": "500"
+                        }
+                ],
+                "body-md": [
+                        "14px",
+                        {
+                                "lineHeight": "20px",
+                                "fontWeight": "400"
+                        }
+                ],
+                "headline-lg-mobile": [
+                        "28px",
+                        {
+                                "lineHeight": "34px",
+                                "fontWeight": "500"
+                        }
+                ],
+                "headline-lg": [
+                        "32px",
+                        {
+                                "lineHeight": "40px",
+                                "fontWeight": "500"
+                        }
+                ],
+                "label-md": [
+                        "11px",
+                        {
+                                "lineHeight": "16px",
+                                "fontWeight": "500"
+                        }
+                ],
+                "display": [
+                        "48px",
+                        {
+                                "lineHeight": "56px",
+                                "letterSpacing": "-0.02em",
+                                "fontWeight": "500"
+                        }
+                ],
+                "title-lg": [
+                        "20px",
+                        {
+                                "lineHeight": "28px",
+                                "letterSpacing": "0.01em",
+                                "fontWeight": "600"
+                        }
+                ],
+                "body-lg": [
+                        "16px",
+                        {
+                                "lineHeight": "24px",
+                                "fontWeight": "400"
+                        }
+                ]
+        }
+},
+    },
+  }
+</script>
+<style>
+        body {
+            background-color: theme('colors.background');
+            color: theme('colors.on-background');
+        }
+        
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 300, 'GRAD' 0, 'opsz' 24;
+        }
+
+        .filled-icon {
+            font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+
+        /* Subtly animated waveform bars */
+        .waveform-bar {
+            animation: pulse-height 1.5s ease-in-out infinite alternate;
+            transform-origin: center;
+        }
+
+        @keyframes pulse-height {
+            0% { transform: scaleY(0.4); }
+            100% { transform: scaleY(1); }
+        }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col relative overflow-hidden font-body-lg text-body-lg">
+<!-- Top App Bar (Direct match to JSON) -->
+<header class="sticky top-0 w-full flex items-center justify-between px-margin-mobile py-stack-md bg-background z-40 transition-all duration-300">
+<button class="w-10 h-10 flex items-center justify-center rounded-full hover:bg-surface-container-lowest transition-colors text-primary active:scale-95 duration-200">
+<span class="material-symbols-outlined text-2xl">arrow_back</span>
+</button>
+<h1 class="font-headline-lg-mobile text-headline-lg-mobile md:font-headline-lg md:text-headline-lg text-primary">Direct</h1>
+<button class="w-10 h-10 flex items-center justify-center rounded-full hover:bg-surface-container-lowest transition-colors text-primary active:scale-95 duration-200">
+<span class="material-symbols-outlined text-2xl">more_vert</span>
+</button>
+</header>
+<!-- Main Chat Canvas -->
+<main class="flex-1 px-margin-mobile py-stack-lg flex flex-col gap-stack-lg overflow-y-auto pb-32">
+<!-- Day separator -->
+<div class="flex justify-center w-full">
+<span class="font-label-md text-label-md text-on-surface-variant bg-surface-container px-4 py-2 rounded-full border border-outline-variant">Today</span>
+</div>
+<!-- 1. Image Message: Receiving/Transfer State -->
+<div class="flex flex-col gap-base max-w-[85%] self-start">
+<div class="flex items-center gap-2 mb-1">
+<div class="w-8 h-8 rounded-full bg-surface-container-high border border-outline-variant overflow-hidden flex items-center justify-center">
+<span class="font-label-lg text-label-lg text-on-surface">EL</span>
+</div>
+<span class="font-label-lg text-label-lg text-on-surface">Elena Rostova</span>
+</div>
+<div class="relative bg-surface rounded-xl border border-outline-variant p-2 shadow-sm overflow-hidden group">
+<!-- Image Preview (Blurred for pending transfer) -->
+<div class="relative w-full aspect-[4/3] rounded-lg overflow-hidden bg-surface-container">
+<img class="w-full h-full object-cover filter blur-md opacity-60 transition-opacity duration-500" data-alt="A blurred, low-resolution preview of an arid, sunlit desert landscape. Warm terracotta sand dunes and clear skies are visible through a heavily pixelated or frosted glass effect, indicating an incomplete file transfer. The style is modern, minimalist, and serene, fitting a light-mode Saharan aesthetic." src="https://lh3.googleusercontent.com/aida-public/AB6AXuDNFrVq8nOzuAUIZiCXnsv1bajNdCAu68RjzWlQ0LMwxMvAYI15TCrXYQm9gYYEuX1ST_tJP-VoJxxMl3AqLm1jHMt9ngYDKf2n3KQmecOiBoFKQqX4DMh4iAzBEDW5_KlsajzrDTIefmZPLvHDJWmDEjB_YbbTfbOfD49OUm9idlMPWOCpY_ePCD1MgPlRljV1YGL4FSqojrn77vX31pX-PGIkuR_aYPD-E-2_2kyOCblvkOgwO_zM"/>
+<!-- Transfer Progress Overlay -->
+<div class="absolute inset-0 flex flex-col items-center justify-center bg-surface/40 backdrop-blur-sm z-10">
+<div class="flex flex-col items-center justify-center gap-2 bg-surface/80 px-6 py-3 rounded-full border border-outline-variant/30 shadow-sm">
+<span class="font-label-lg text-label-lg text-primary">72%</span>
+<div class="w-20 h-1.5 bg-outline-variant/30 rounded-full overflow-hidden">
+<div class="h-full bg-primary rounded-full" style="width: 72%"></div>
+</div>
+</div>
+</div>
+</div>
+<!-- Metadata -->
+<div class="flex items-center justify-between mt-3 px-2 pb-1">
+<div class="flex items-center gap-1.5 text-on-surface-variant opacity-80">
+<span class="material-symbols-outlined text-[16px]">lock</span>
+<span class="font-label-md text-label-md">Encrypted • 1.8 MB</span>
+</div>
+<span class="font-label-md text-label-md text-on-surface-variant opacity-60">10:42 AM</span>
+</div>
+</div>
+</div>
+<!-- 2. Voice Note Message -->
+<div class="flex flex-col gap-base max-w-[85%] self-end">
+<div class="relative bg-surface-container-low rounded-full border border-outline-variant p-2 pr-5 shadow-sm">
+<div class="flex items-center gap-4">
+<!-- Play Button -->
+<button class="w-12 h-12 flex-shrink-0 rounded-full bg-primary text-on-primary flex items-center justify-center shadow-[0_4px_20px_rgba(115,49,0,0.15)] hover:bg-surface-tint transition-colors">
+<span class="material-symbols-outlined filled-icon">play_arrow</span>
+</button>
+<!-- Waveform visualization (static for played message) -->
+<div class="flex-1 flex items-center gap-0.5 h-10 px-4 bg-surface-variant/40 rounded-full">
+<!-- Example static bars -->
+<div class="w-1 h-3 bg-primary/40 rounded-full"></div>
+<div class="w-1 h-5 bg-primary/40 rounded-full"></div>
+<div class="w-1 h-4 bg-primary/40 rounded-full"></div>
+<div class="w-1 h-7 bg-primary rounded-full"></div>
+<div class="w-1 h-6 bg-primary rounded-full"></div>
+<div class="w-1 h-8 bg-primary rounded-full"></div>
+<div class="w-1 h-5 bg-primary rounded-full"></div>
+<div class="w-1 h-4 bg-primary rounded-full"></div>
+<div class="w-1 h-6 bg-primary/40 rounded-full"></div>
+<div class="w-1 h-3 bg-primary/40 rounded-full"></div>
+<div class="w-1 h-2 bg-primary/40 rounded-full"></div>
+<div class="w-1 h-4 bg-primary/40 rounded-full"></div>
+</div>
+<!-- Duration -->
+<div class="flex flex-col items-end">
+<span class="font-label-lg text-label-lg text-on-surface">0:14</span>
+<span class="font-label-md text-label-md text-on-surface-variant opacity-60 mt-0.5">10:45 AM</span>
+</div>
+</div>
+</div>
+</div>
+</main>
+<!-- Active Voice Recording Overlay (Simulating being anchored to input area) -->
+<div class="fixed bottom-0 left-0 w-full bg-surface/90 backdrop-blur-xl border-t border-outline-variant p-stack-md z-[60] flex flex-col gap-6 shadow-[0_-10px_40px_rgba(0,0,0,0.05)] transform translate-y-0 transition-transform duration-300">
+<div class="flex flex-col items-center text-center gap-2">
+<span class="font-headline-lg-mobile text-headline-lg-mobile text-error animate-pulse">00:14</span>
+<span class="font-body-md text-body-md text-on-surface-variant">Recording voice note...</span>
+</div>
+<!-- Large Active Waveform -->
+<div class="flex items-center justify-center gap-1 h-20 px-8 mx-auto bg-surface-container rounded-full border border-outline-variant/30 shadow-sm">
+<div class="w-1.5 h-4 bg-error rounded-full waveform-bar" style="animation-delay: 0.1s"></div>
+<div class="w-1.5 h-8 bg-error rounded-full waveform-bar" style="animation-delay: 0.2s"></div>
+<div class="w-1.5 h-6 bg-error rounded-full waveform-bar" style="animation-delay: 0.3s"></div>
+<div class="w-1.5 h-12 bg-error rounded-full waveform-bar" style="animation-delay: 0.4s"></div>
+<div class="w-1.5 h-10 bg-error rounded-full waveform-bar" style="animation-delay: 0.5s"></div>
+<div class="w-1.5 h-14 bg-error rounded-full waveform-bar" style="animation-delay: 0.6s"></div>
+<div class="w-1.5 h-8 bg-error rounded-full waveform-bar" style="animation-delay: 0.7s"></div>
+<div class="w-1.5 h-12 bg-error rounded-full waveform-bar" style="animation-delay: 0.8s"></div>
+<div class="w-1.5 h-6 bg-error rounded-full waveform-bar" style="animation-delay: 0.9s"></div>
+<div class="w-1.5 h-10 bg-error rounded-full waveform-bar" style="animation-delay: 1.0s"></div>
+<div class="w-1.5 h-4 bg-error rounded-full waveform-bar" style="animation-delay: 1.1s"></div>
+</div>
+<!-- Actions -->
+<div class="flex items-center justify-between pt-4">
+<button class="px-6 py-3 font-label-lg text-label-lg text-on-surface-variant bg-surface-container hover:bg-surface-container-high rounded-full transition-colors active:scale-95 duration-200">
+                Cancel
+            </button>
+<button class="w-16 h-16 rounded-full bg-error text-on-error flex items-center justify-center shadow-[0_4px_20px_rgba(186,26,26,0.2)] hover:bg-on-error-container transition-colors active:scale-95 duration-200">
+<span class="material-symbols-outlined filled-icon text-3xl">stop</span>
+</button>
+</div>
+<!-- Safe area padding for mobile -->
+<div class="h-6"></div>
+</div>
+<!-- Hidden BottomNav (Suppressed because user is in a focused transactional flow / chat context) -->
+<!-- The BottomNav shell is excluded based on the "Task-Focused" rule. -->
+</body></html>

@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Mesh Topology</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:wght@500;600&amp;family=Manrope:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+          darkMode: "class",
+          theme: {
+            extend: {
+              "colors": {
+                      "on-primary": "#ffffff",
+                      "on-tertiary": "#ffffff",
+                      "on-tertiary-fixed": "#001f2a",
+                      "primary-fixed-dim": "#ffb68e",
+                      "outline": "#887368",
+                      "tertiary-fixed-dim": "#70d2fa",
+                      "on-secondary-container": "#782c2d",
+                      "secondary-fixed": "#ffdad8",
+                      "error-container": "#ffdad6",
+                      "background": "#fff8ef",
+                      "secondary": "#974544",
+                      "on-primary-fixed": "#331200",
+                      "on-tertiary-container": "#fbfdff",
+                      "primary-fixed": "#ffdbca",
+                      "error": "#ba1a1a",
+                      "on-surface-variant": "#554339",
+                      "on-primary-fixed-variant": "#773300",
+                      "surface": "#fff8ef",
+                      "primary-container": "#b65c21",
+                      "surface-container-high": "#ede7de",
+                      "secondary-container": "#fe9794",
+                      "surface-container-low": "#f9f3ea",
+                      "surface-container": "#f3ede4",
+                      "primary": "#964407",
+                      "on-error-container": "#93000a",
+                      "on-secondary-fixed": "#3f0308",
+                      "inverse-primary": "#ffb68e",
+                      "on-error": "#ffffff",
+                      "tertiary-fixed": "#bce9ff",
+                      "on-surface": "#1d1b16",
+                      "on-secondary": "#ffffff",
+                      "tertiary": "#006480",
+                      "inverse-on-surface": "#f6f0e7",
+                      "on-tertiary-fixed-variant": "#004d63",
+                      "secondary-fixed-dim": "#ffb3b0",
+                      "tertiary-container": "#007ea1",
+                      "on-background": "#1d1b16",
+                      "inverse-surface": "#33302a",
+                      "surface-container-lowest": "#ffffff",
+                      "outline-variant": "#dbc1b5",
+                      "surface-container-highest": "#e8e2d9",
+                      "on-secondary-fixed-variant": "#792e2f",
+                      "surface-tint": "#99460a",
+                      "surface-variant": "#e8e2d9",
+                      "on-primary-container": "#fffbff",
+                      "surface-dim": "#dfd9d0",
+                      "surface-bright": "#fff8ef"
+              },
+              "borderRadius": {
+                      "DEFAULT": "0.25rem",
+                      "lg": "0.5rem",
+                      "xl": "0.75rem",
+                      "full": "9999px"
+              },
+              "spacing": {
+                      "unit": "8px",
+                      "container-padding": "24px",
+                      "gutter": "16px",
+                      "stack-md": "24px",
+                      "stack-lg": "40px",
+                      "stack-sm": "12px"
+              },
+              "fontFamily": {
+                      "headline-md": [
+                              "EB Garamond"
+                      ],
+                      "body-lg": [
+                              "Manrope"
+                      ],
+                      "body-md": [
+                              "Manrope"
+                      ],
+                      "headline-lg": [
+                              "EB Garamond"
+                      ],
+                      "display": [
+                              "EB Garamond"
+                      ],
+                      "label-md": [
+                              "Manrope"
+                      ],
+                      "label-lg": [
+                              "Manrope"
+                      ],
+                      "headline-lg-mobile": [
+                              "EB Garamond"
+                      ],
+                      "title-lg": [
+                              "Manrope"
+                      ]
+              },
+              "fontSize": {
+                      "headline-md": [
+                              "24px",
+                              {
+                                      "lineHeight": "32px",
+                                      "fontWeight": "500"
+                              }
+                      ],
+                      "body-lg": [
+                              "16px",
+                              {
+                                      "lineHeight": "24px",
+                                      "fontWeight": "400"
+                              }
+                      ],
+                      "body-md": [
+                              "14px",
+                              {
+                                      "lineHeight": "20px",
+                                      "fontWeight": "400"
+                              }
+                      ],
+                      "headline-lg": [
+                              "32px",
+                              {
+                                      "lineHeight": "40px",
+                                      "fontWeight": "500"
+                              }
+                      ],
+                      "display": [
+                              "48px",
+                              {
+                                      "lineHeight": "56px",
+                                      "letterSpacing": "-0.02em",
+                                      "fontWeight": "500"
+                              }
+                      ],
+                      "label-md": [
+                              "11px",
+                              {
+                                      "lineHeight": "16px",
+                                      "fontWeight": "500"
+                              }
+                      ],
+                      "label-lg": [
+                              "12px",
+                              {
+                                      "lineHeight": "16px",
+                                      "letterSpacing": "0.05em",
+                                      "fontWeight": "600"
+                              }
+                      ],
+                      "headline-lg-mobile": [
+                              "28px",
+                              {
+                                      "lineHeight": "34px",
+                                      "fontWeight": "500"
+                              }
+                      ],
+                      "title-lg": [
+                              "20px",
+                              {
+                                      "lineHeight": "28px",
+                                      "letterSpacing": "0.01em",
+                                      "fontWeight": "600"
+                              }
+                      ]
+              }
+      },
+          },
+        }
+      </script>
+<style>
+        .radar-node {
+            position: absolute;
+            transform: translate(-50%, -50%);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 4px 20px rgba(194, 101, 42, 0.05);
+        }
+        .connection-line {
+            position: absolute;
+            height: 1px;
+            background-color: theme('colors.outline-variant');
+            transform-origin: 0 0;
+            z-index: 0;
+        }
+        .pulse-ring {
+            position: absolute;
+            border-radius: 50%;
+            border: 1px solid theme('colors.primary');
+            animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+            opacity: 0;
+        }
+        @keyframes pulse {
+            0% { transform: scale(1); opacity: 0.3; }
+            100% { transform: scale(2.5); opacity: 0; }
+        }
+      </style>
+</head>
+<body class="bg-background text-on-surface font-body-md min-h-screen pb-32">
+<!-- TopAppBar -->
+<header class="sticky top-0 w-full flex items-center justify-between px-container-padding py-stack-md bg-background dark:bg-background z-40 transition-all duration-300">
+<button aria-label="Signal" class="flex items-center justify-center p-2 rounded-full hover:bg-surface-container-lowest text-primary">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 0;">signal_cellular_alt</span>
+</button>
+<h1 class="font-headline-lg-mobile text-headline-lg-mobile md:font-headline-lg md:text-headline-lg text-primary text-center flex-1">Network</h1>
+<button aria-label="Emergency" class="flex items-center justify-center p-2 rounded-full hover:bg-surface-container-lowest text-primary">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 0;">emergency</span>
+</button>
+</header>
+<main class="px-container-padding py-stack-md max-w-4xl mx-auto space-y-stack-lg">
+<!-- Info Panel -->
+<section class="grid grid-cols-1 md:grid-cols-3 gap-gutter">
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl p-4 flex flex-col justify-center items-center">
+<span class="font-label-lg text-label-lg text-on-surface-variant uppercase mb-1">Mesh Health</span>
+<span class="font-title-lg text-title-lg text-primary">Excellent</span>
+</div>
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl p-4 flex flex-col justify-center items-center">
+<span class="font-label-lg text-label-lg text-on-surface-variant uppercase mb-1">Direct Links</span>
+<span class="font-title-lg text-title-lg text-on-surface">5</span>
+</div>
+<div class="bg-surface-container-lowest border border-outline-variant rounded-xl p-4 flex flex-col justify-center items-center">
+<span class="font-label-lg text-label-lg text-on-surface-variant uppercase mb-1">Discovered</span>
+<span class="font-title-lg text-title-lg text-on-surface">12</span>
+</div>
+</section>
+<!-- Topology Canvas -->
+<section class="relative w-full h-[60vh] bg-surface-container-low border border-outline-variant rounded-2xl overflow-hidden mt-stack-md">
+<!-- Grid Background -->
+<div class="absolute inset-0 opacity-10" style="background-image: radial-gradient(theme('colors.on-surface-variant') 1px, transparent 1px); background-size: 24px 24px;"></div>
+<div class="relative w-full h-full" id="radar-container">
+<!-- Lines will be injected here via JS -->
+</div>
+</section>
+<!-- Node Legend -->
+<section class="flex flex-wrap gap-4 justify-center mt-stack-sm text-sm">
+<div class="flex items-center gap-2">
+<div class="w-3 h-3 rounded-full bg-primary"></div>
+<span class="font-label-md text-label-md text-on-surface-variant">Self</span>
+</div>
+<div class="flex items-center gap-2">
+<div class="w-3 h-3 rounded-full border-2 border-primary bg-surface-container-lowest"></div>
+<span class="font-label-md text-label-md text-on-surface-variant">Relay Node</span>
+</div>
+<div class="flex items-center gap-2">
+<div class="w-2 h-2 rounded-full bg-on-surface-variant"></div>
+<span class="font-label-md text-label-md text-on-surface-variant">Peer</span>
+</div>
+</section>
+</main>
+<!-- BottomNavBar -->
+<nav class="fixed bottom-0 w-full z-50 flex justify-around items-center px-container-padding py-stack-sm pb-8 bg-surface/80 backdrop-blur-md border-t border-outline-variant transition-colors">
+<button class="flex flex-col items-center justify-center text-primary active:scale-95 transition-transform duration-200 hover:bg-surface-container-low p-2 rounded-lg">
+<span class="material-symbols-outlined mb-1" style="font-variation-settings: 'FILL' 1;">hub</span>
+<span class="font-label-lg text-label-lg">Mesh</span>
+</button>
+<button class="flex flex-col items-center justify-center text-on-surface-variant opacity-60 active:scale-95 transition-transform duration-200 hover:bg-surface-container-low p-2 rounded-lg">
+<span class="material-symbols-outlined mb-1">forum</span>
+<span class="font-label-lg text-label-lg">Direct</span>
+</button>
+<button class="flex flex-col items-center justify-center text-on-surface-variant opacity-60 active:scale-95 transition-transform duration-200 hover:bg-surface-container-low p-2 rounded-lg">
+<span class="material-symbols-outlined mb-1">explore</span>
+<span class="font-label-lg text-label-lg">Radar</span>
+</button>
+<button class="flex flex-col items-center justify-center text-on-surface-variant opacity-60 active:scale-95 transition-transform duration-200 hover:bg-surface-container-low p-2 rounded-lg">
+<span class="material-symbols-outlined mb-1">history</span>
+<span class="font-label-lg text-label-lg">Logs</span>
+</button>
+<button class="flex flex-col items-center justify-center text-on-surface-variant opacity-60 active:scale-95 transition-transform duration-200 hover:bg-surface-container-low p-2 rounded-lg">
+<span class="material-symbols-outlined mb-1">fingerprint</span>
+<span class="font-label-lg text-label-lg">Identity</span>
+</button>
+</nav>
+<script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const container = document.getElementById('radar-container');
+            const centerX = container.clientWidth / 2;
+            const centerY = container.clientHeight / 2;
+
+            const nodes = [
+                { id: 'me', type: 'self', x: centerX, y: centerY, label: 'ME' },
+                { id: 'relay1', type: 'relay', x: centerX - 120, y: centerY - 80, label: 'R1' },
+                { id: 'relay2', type: 'relay', x: centerX + 100, y: centerY + 110, label: 'R2' },
+                { id: 'peer1', type: 'peer', x: centerX - 40, y: centerY - 150, label: '' },
+                { id: 'peer2', type: 'peer', x: centerX - 200, y: centerY - 20, label: '' },
+                { id: 'peer3', type: 'peer', x: centerX + 180, y: centerY - 40, label: '' },
+                { id: 'peer4', type: 'peer', x: centerX + 40, y: centerY + 160, label: '' },
+                { id: 'peer5', type: 'peer', x: centerX - 150, y: centerY + 100, label: '' },
+            ];
+
+            const links = [
+                ['me', 'relay1'], ['me', 'relay2'],
+                ['relay1', 'peer1'], ['relay1', 'peer2'], ['relay1', 'peer5'],
+                ['relay2', 'peer3'], ['relay2', 'peer4'],
+                ['me', 'peer4'], ['relay1', 'me'] // Redundant link for network feel
+            ];
+
+            // Draw links
+            links.forEach(link => {
+                const source = nodes.find(n => n.id === link[0]);
+                const target = nodes.find(n => n.id === link[1]);
+                if (source && target) {
+                    const line = document.createElement('div');
+                    line.className = 'connection-line';
+                    
+                    const length = Math.sqrt(Math.pow(target.x - source.x, 2) + Math.pow(target.y - source.y, 2));
+                    const angle = Math.atan2(target.y - source.y, target.x - source.x) * 180 / Math.PI;
+
+                    line.style.width = `${length}px`;
+                    line.style.left = `${source.x}px`;
+                    line.style.top = `${source.y}px`;
+                    line.style.transform = `rotate(${angle}deg)`;
+                    
+                    container.appendChild(line);
+                }
+            });
+
+            // Draw nodes
+            nodes.forEach(node => {
+                const el = document.createElement('div');
+                el.className = 'radar-node z-10 font-label-md text-label-md';
+                el.style.left = `${node.x}px`;
+                el.style.top = `${node.y}px`;
+
+                if (node.type === 'self') {
+                    el.classList.add('w-12', 'h-12', 'bg-primary', 'text-on-primary');
+                    el.innerText = node.label;
+                    
+                    // Add pulse rings
+                    for(let i=0; i<2; i++) {
+                        const ring = document.createElement('div');
+                        ring.className = 'pulse-ring w-12 h-12';
+                        ring.style.animationDelay = `${i * 1.5}s`;
+                        el.appendChild(ring);
+                    }
+                } else if (node.type === 'relay') {
+                    el.classList.add('w-10', 'h-10', 'border-2', 'border-primary', 'bg-surface-container-lowest', 'text-primary');
+                    el.innerText = node.label;
+                } else {
+                    el.classList.add('w-4', 'h-4', 'bg-on-surface-variant');
+                }
+
+                container.appendChild(el);
+            });
+        });
+    </script>
+</body></html>

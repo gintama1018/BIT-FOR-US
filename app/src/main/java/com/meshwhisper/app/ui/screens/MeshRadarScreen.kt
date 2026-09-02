@@ -67,25 +67,15 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.material.icons.filled.Emergency
 import com.meshwhisper.app.data.model.PeerEntity
 import com.meshwhisper.app.data.model.TopologyEdgeEntity
 import com.meshwhisper.app.ui.components.NodeAvatar
+import com.meshwhisper.app.ui.components.SaharaTopAppBar
 import com.meshwhisper.app.ui.graph.GraphEdge
 import com.meshwhisper.app.ui.graph.GraphNode
 import com.meshwhisper.app.ui.graph.GraphPhysicsSimulation
-import com.meshwhisper.app.ui.theme.BurntSienna
-import com.meshwhisper.app.ui.theme.DustyRose
-import com.meshwhisper.app.ui.theme.EBGaramondFamily
-import com.meshwhisper.app.ui.theme.ManropeFamily
-import com.meshwhisper.app.ui.theme.TextMuted
-import com.meshwhisper.app.ui.theme.TextPrimary
-import com.meshwhisper.app.ui.theme.TextSecondary
-import com.meshwhisper.app.ui.theme.WarmAmber
-import com.meshwhisper.app.ui.theme.WarmCardBorder
-import com.meshwhisper.app.ui.theme.WarmGreen
-import com.meshwhisper.app.ui.theme.WarmLinen
-import com.meshwhisper.app.ui.theme.WarmSurface
-import com.meshwhisper.app.ui.theme.WarmSurfaceContainer
+import com.meshwhisper.app.ui.theme.*
 import com.meshwhisper.app.ui.viewmodel.MeshViewModel
 import kotlinx.coroutines.delay
 import kotlin.math.cos
@@ -110,72 +100,22 @@ fun MeshRadarScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(WarmLinen)
+            .background(SaharaBackground)
     ) {
-        // Top Header
-        Card(
-            colors = CardDefaults.cardColors(containerColor = WarmSurface),
-            shape = RoundedCornerShape(0.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.NetworkCheck,
-                            contentDescription = null,
-                            tint = BurntSienna,
-                            modifier = Modifier.size(22.dp)
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column {
-                            Text(
-                                text = "Mesh Topology",
-                                color = TextPrimary,
-                                fontSize = 18.sp,
-                                fontFamily = EBGaramondFamily,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = "$connectedCount live direct links • ${peers.size} discovered",
-                                color = TextSecondary,
-                                fontSize = 11.sp,
-                                fontFamily = ManropeFamily
-                            )
-                        }
-                    }
-
-                    Button(
-                        onClick = { viewModel.announcePresence() },
-                        colors = ButtonDefaults.buttonColors(containerColor = BurntSienna),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
-                        shape = RoundedCornerShape(8.dp) // 8px radius per DESIGN.md
-                    ) {
-                        Text(
-                            text = "Ping Mesh",
-                            color = Color.White,
-                            fontSize = 12.sp,
-                            fontFamily = ManropeFamily,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-                HorizontalDivider(color = WarmCardBorder, thickness = 0.8.dp)
-            }
-        }
+        // Sahara Header
+        SaharaTopAppBar(
+            title = "Mesh Radar",
+            subtitle = "$connectedCount LIVE DIRECT • ${peers.size} DISCOVERED",
+            actionIcon = Icons.Default.Emergency,
+            onActionClick = { viewModel.announcePresence() }
+        )
 
         // Hardware Support Warning Banner if Peripheral mode is missing
         if (!supportsPeripheral) {
             Card(
-                colors = CardDefaults.cardColors(containerColor = WarmSurfaceContainer),
-                shape = RoundedCornerShape(8.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, WarmAmber),
+                colors = CardDefaults.cardColors(containerColor = SaharaSurfaceContainerLow),
+                shape = RoundedCornerShape(10.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, SaharaWarning.copy(alpha = 0.5f)),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 6.dp)
@@ -184,11 +124,11 @@ fun MeshRadarScreen(
                     modifier = Modifier.padding(10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(imageVector = Icons.Default.Warning, contentDescription = null, tint = WarmAmber, modifier = Modifier.size(18.dp))
+                    Icon(imageVector = Icons.Default.Warning, contentDescription = null, tint = SaharaWarning, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "Device lacks BLE Peripheral mode. Operating in Central Relay mode.",
-                        color = TextPrimary,
+                        text = "Device operating in Central Relay mode.",
+                        color = SaharaOnSurface,
                         fontSize = 12.sp,
                         fontFamily = ManropeFamily
                     )
@@ -199,16 +139,16 @@ fun MeshRadarScreen(
         // View Mode Selector Tab Row
         TabRow(
             selectedTabIndex = selectedViewTab,
-            containerColor = WarmSurface,
-            contentColor = BurntSienna,
+            containerColor = SaharaBackground,
+            contentColor = SaharaPrimary,
             indicator = { tabPositions ->
                 TabRowDefaults.SecondaryIndicator(
                     Modifier.tabIndicatorOffset(tabPositions[selectedViewTab]),
-                    color = BurntSienna
+                    color = SaharaPrimary
                 )
             },
             divider = {
-                HorizontalDivider(color = WarmCardBorder, thickness = 0.8.dp)
+                HorizontalDivider(color = SaharaSurfaceContainerHigh, thickness = 0.8.dp)
             }
         ) {
             Tab(

@@ -1,85 +1,42 @@
 package com.meshwhisper.app.ui.screens
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.DoneAll
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.meshwhisper.app.data.model.MediaType
 import com.meshwhisper.app.data.model.MessageEntity
 import com.meshwhisper.app.data.model.MessageStatus
+import com.meshwhisper.app.media.MediaCompressor
 import com.meshwhisper.app.ui.components.ImageMessageBubble
 import com.meshwhisper.app.ui.components.NodeAvatar
 import com.meshwhisper.app.ui.components.VoiceNoteBubble
-import com.meshwhisper.app.ui.theme.BurntSienna
-import com.meshwhisper.app.ui.theme.BurntSiennaDim
-import com.meshwhisper.app.ui.theme.DustyRose
-import com.meshwhisper.app.ui.theme.EBGaramondFamily
-import com.meshwhisper.app.ui.theme.IncomingBubble
-import com.meshwhisper.app.ui.theme.IncomingBubbleBorder
-import com.meshwhisper.app.ui.theme.ManropeFamily
-import com.meshwhisper.app.ui.theme.OutgoingBubble
-import com.meshwhisper.app.ui.theme.OutgoingBubbleBorder
-import com.meshwhisper.app.ui.theme.TextMuted
-import com.meshwhisper.app.ui.theme.TextPrimary
-import com.meshwhisper.app.ui.theme.TextSecondary
-import com.meshwhisper.app.ui.theme.WarmAmber
-import com.meshwhisper.app.ui.theme.WarmCardBorder
-import com.meshwhisper.app.ui.theme.WarmGreen
-import com.meshwhisper.app.ui.theme.WarmLinen
-import com.meshwhisper.app.ui.theme.WarmRed
-import com.meshwhisper.app.ui.theme.WarmSurface
-import com.meshwhisper.app.ui.theme.WarmSurfaceContainer
+import com.meshwhisper.app.ui.theme.*
 import com.meshwhisper.app.ui.viewmodel.MeshViewModel
 import java.text.SimpleDateFormat
-import java.util.Calendar
-import java.util.Date
-import java.util.Locale
-import kotlin.math.abs
+import java.util.*
 
 @Composable
 fun DirectChatDetailScreen(
@@ -88,28 +45,37 @@ fun DirectChatDetailScreen(
     onBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val messages by viewModel.getDirectMessagesForPeer(peerNodeId).collectAsState(initial = emptyList())
     val peers by viewModel.peers.collectAsState()
     val connectedNodeIds by viewModel.connectedNodeIds.collectAsState()
-    val typingPeers by viewModel.typingPeers.collectAsState()
     val peer = peers.firstOrNull { it.nodeId == peerNodeId }
     val isDirect = connectedNodeIds.contains(peerNodeId)
 
-    val isPeerTyping = remember(typingPeers, peerNodeId) {
-        val lastTyping = typingPeers[peerNodeId] ?: 0L
-        System.currentTimeMillis() - lastTyping < 4000L
-    }
-
     var textInput by remember { mutableStateOf("") }
-    var menuExpanded by remember { mutableStateOf(false) }
-    var lastTypingSentMs by remember { mutableStateOf(0L) }
     val listState = rememberLazyListState()
 
-    // Track active chat lifecycle for Smart Notifications (suppresses notifications when open)
-    androidx.compose.runtime.DisposableEffect(peerNodeId) {
-        viewModel.setCurrentOpenChat(peerNodeId)
-        onDispose {
-            viewModel.setCurrentOpenChat(null)
+    // Photo picker for DM
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            val tiledResult = MediaCompressor.compressImageAsTiles(context, uri, com.meshwhisper.app.media.ImageQuality.STANDARD, 3, 3)
+            if (tiledResult != null) {
+                viewModel.sendMediaDirect(
+                    recipientNodeId = peerNodeId,
+                    mediaType = MediaType.IMAGE,
+                    mediaBytes = tiledResult.concatenatedBytes,
+                    caption = "",
+                    originalFileName = "photo_${System.currentTimeMillis()}.jpg",
+                    previewBytes = ByteArray(0),
+                    gridCols = tiledResult.gridCols,
+                    gridRows = tiledResult.gridRows,
+                    imageWidthPx = tiledResult.imageWidthPx,
+                    imageHeightPx = tiledResult.imageHeightPx,
+                    paddedTileByteLengths = tiledResult.paddedTileByteLengths
+                )
+            }
         }
     }
 
@@ -123,486 +89,210 @@ fun DirectChatDetailScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(WarmLinen)
+            .background(SaharaBackground)
     ) {
-        // Direct Top App Bar
-        Card(
-            colors = CardDefaults.cardColors(containerColor = WarmSurface),
-            shape = RoundedCornerShape(0.dp),
-            modifier = Modifier.fillMaxWidth()
+        // Direct Chat Header matching 4._direct_chat/code.html
+        Surface(
+            color = SaharaBackground,
+            modifier = Modifier
+                .fillMaxWidth()
+                .statusBarsPadding()
         ) {
-            Column {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(onClick = onBack) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back",
-                            tint = BurntSienna
-                        )
-                    }
-
-                    NodeAvatar(
-                        nodeId = peerNodeId,
-                        alias = peer?.alias ?: "Node",
-                        size = 40.dp,
-                        avatarUri = peer?.avatarUri,
-                        isDirect = isDirect,
-                        showOnlineBadge = true
-                    )
-
-                    Spacer(modifier = Modifier.width(12.dp))
-
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = peer?.alias ?: "Node-${String.format("%016X", peerNodeId).takeLast(4)}",
-                            color = TextPrimary,
-                            fontSize = 17.sp,
-                            fontFamily = EBGaramondFamily,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            val subtitleText = when {
-                                isPeerTyping -> "Typing..."
-                                isDirect -> "⚡ Direct BLE link"
-                                peer != null -> "${viewModel.formatLastSeen(peer.lastSeen)} • ${peer.hopCount} hops"
-                                else -> "Offline"
-                            }
-                            Text(
-                                text = subtitleText,
-                                color = if (isPeerTyping) BurntSienna else if (isDirect) WarmGreen else TextSecondary,
-                                fontSize = 11.sp,
-                                fontFamily = ManropeFamily,
-                                fontWeight = if (isPeerTyping || isDirect) FontWeight.SemiBold else FontWeight.Normal
-                            )
-                        }
-                    }
-
-                    Box {
-                        IconButton(onClick = { menuExpanded = true }) {
-                            Icon(
-                                imageVector = Icons.Default.MoreVert,
-                                contentDescription = "Menu",
-                                tint = TextSecondary
-                            )
-                        }
-
-                        DropdownMenu(
-                            expanded = menuExpanded,
-                            onDismissRequest = { menuExpanded = false },
-                            modifier = Modifier
-                                .background(WarmSurface)
-                                .border(0.8.dp, WarmCardBorder, RoundedCornerShape(8.dp))
-                        ) {
-                            val isBlocked = peer?.isBlocked == true
-                            val isMuted = peer?.isMuted == true
-
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        text = if (isMuted) "Unmute Notifications" else "Mute Notifications",
-                                        color = TextPrimary,
-                                        fontFamily = ManropeFamily,
-                                        fontSize = 14.sp
-                                    )
-                                },
-                                onClick = {
-                                    menuExpanded = false
-                                    viewModel.setPeerMuted(peerNodeId, !isMuted)
-                                }
-                            )
-
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        text = if (isBlocked) "Unblock Contact" else "Block Contact",
-                                        color = if (isBlocked) TextPrimary else WarmRed,
-                                        fontFamily = ManropeFamily,
-                                        fontSize = 14.sp
-                                    )
-                                },
-                                onClick = {
-                                    menuExpanded = false
-                                    viewModel.toggleBlockPeer(peerNodeId, !isBlocked)
-                                }
-                            )
-                        }
-                    }
-                }
-                HorizontalDivider(color = WarmCardBorder, thickness = 0.8.dp)
-            }
-        }
-
-        // Safety Number Warning Banner
-        if (peer?.hasKeyChanged == true) {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = WarmSurfaceContainer),
-                shape = RoundedCornerShape(0.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, WarmAmber),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp)
-                ) {
-                    Text(
-                        text = "⚠️ Safety Number Changed",
-                        color = WarmAmber,
-                        fontSize = 14.sp,
-                        fontFamily = EBGaramondFamily,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "This contact's cryptographic identity key has changed (Previous: ${peer.previousFingerprint ?: "N/A"}). This happens if they reinstalled or an adversary is attempting an impersonation.",
-                        color = TextPrimary,
-                        fontSize = 12.sp,
-                        fontFamily = ManropeFamily,
-                        lineHeight = 16.sp
-                    )
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Button(
-                        onClick = { viewModel.acknowledgeSafetyWarning(peerNodeId) },
-                        colors = ButtonDefaults.buttonColors(containerColor = BurntSienna),
-                        shape = RoundedCornerShape(8.dp),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
-                    ) {
-                        Text(
-                            text = "Trust & Verify New Safety Number",
-                            color = Color.White,
-                            fontSize = 12.sp,
-                            fontFamily = ManropeFamily,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-            }
-        }
-
-        // Blocked Banner
-        if (peer?.isBlocked == true) {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = WarmSurfaceContainer),
-                shape = RoundedCornerShape(0.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, WarmRed),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(
-                    text = "🚫 You have blocked this contact. Incoming messages are dropped.",
-                    color = WarmRed,
-                    fontSize = 12.sp,
-                    fontFamily = ManropeFamily,
-                    fontWeight = FontWeight.Medium,
-                    modifier = Modifier.padding(12.dp)
-                )
-            }
-        }
-
-        // Messages List
-        if (messages.isEmpty()) {
-            Box(
+            Row(
                 modifier = Modifier
-                    .weight(1f)
                     .fillMaxWidth()
-                    .padding(32.dp),
-                contentAlignment = Alignment.Center
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                IconButton(onClick = onBack) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Back",
+                        tint = SaharaPrimary
+                    )
+                }
+
+                NodeAvatar(
+                    nodeId = peerNodeId,
+                    alias = peer?.alias ?: "",
+                    size = 38.dp,
+                    isDirect = isDirect
+                )
+
+                Spacer(modifier = Modifier.width(12.dp))
+
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = peer?.alias?.ifBlank { "Peer 0x${String.format("%016X", peerNodeId).takeLast(4)}" } ?: "Peer",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = SaharaOnSurface,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(6.dp)
+                                .clip(CircleShape)
+                                .background(if (isDirect) SaharaOnline else SaharaPrimary)
+                        )
+                        Text(
+                            text = if (isDirect) "Direct Socket • Verified E2EE" else "Mesh Relay (${peer?.hopCount ?: 1} hops)",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = SaharaOnSurfaceVariant,
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+
+                IconButton(onClick = { }) {
                     Icon(
                         imageVector = Icons.Default.Lock,
-                        contentDescription = null,
-                        tint = BurntSienna.copy(alpha = 0.5f),
-                        modifier = Modifier.size(36.dp)
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text(
-                        text = "End-to-End Encrypted",
-                        color = TextPrimary,
-                        fontSize = 16.sp,
-                        fontFamily = EBGaramondFamily,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "Messages are end-to-end encrypted with X25519 & AES-256-GCM.\nNo relay node can inspect plaintext contents.",
-                        color = TextSecondary,
-                        fontSize = 13.sp,
-                        fontFamily = ManropeFamily,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                        lineHeight = 18.sp
+                        contentDescription = "Security",
+                        tint = SaharaPrimary,
+                        modifier = Modifier.size(20.dp)
                     )
                 }
             }
-        } else {
+        }
+
+        HorizontalDivider(color = SaharaSurfaceContainerHigh, thickness = 0.8.dp)
+
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+        ) {
             LazyColumn(
                 state = listState,
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-                verticalArrangement = Arrangement.spacedBy(3.dp)
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 120.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                itemsIndexed(messages, key = { _, msg -> msg.messageId }) { index, msg ->
-                    val prevMsg = if (index > 0) messages[index - 1] else null
-                    val nextMsg = if (index < messages.size - 1) messages[index + 1] else null
-
-                    val isNewDay = prevMsg == null || !isSameDay(prevMsg.timestamp, msg.timestamp)
-                    val isFirstInRun = prevMsg == null || prevMsg.isOutgoing != msg.isOutgoing ||
-                            isNewDay || abs(msg.timestamp - prevMsg.timestamp) > 60_000L
-                    val isLastInRun = nextMsg == null || nextMsg.isOutgoing != msg.isOutgoing ||
-                            !isSameDay(msg.timestamp, nextMsg.timestamp) || abs(nextMsg.timestamp - msg.timestamp) > 60_000L
-
-                    if (isNewDay) {
-                        DateSeparatorPill(timestamp = msg.timestamp)
-                    }
-
-                    DirectMessageBubble(
+                items(messages, key = { it.messageId }) { msg ->
+                    SaharaDirectMessageBubble(
                         msg = msg,
-                        isFirstInRun = isFirstInRun,
-                        isLastInRun = isLastInRun,
                         viewModel = viewModel
                     )
-
-                    if (isLastInRun) {
-                        Spacer(modifier = Modifier.height(6.dp))
-                    }
                 }
             }
-        }
 
-        // Message Input Field (Disabled if peer is blocked)
-        if (peer?.isBlocked == true) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(WarmSurface)
-                    .padding(16.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = "Unblock this contact to send messages",
-                    color = TextMuted,
-                    fontSize = 13.sp,
-                    fontFamily = ManropeFamily
-                )
-            }
-        } else {
-            ChatInputBar(
-                text = textInput,
-                onTextChanged = {
-                    textInput = it
-                    val now = System.currentTimeMillis()
-                    if (now - lastTypingSentMs > 2500L) {
-                        lastTypingSentMs = now
-                        viewModel.sendTyping(peerNodeId, true)
-                    }
-                },
+            // Floating Bottom Composer
+            SaharaDirectComposer(
+                textInput = textInput,
+                onTextChanged = { textInput = it },
                 onSend = {
-                    if (textInput.isNotBlank()) {
-                        viewModel.sendDirect(peerNodeId, textInput)
+                    if (textInput.trim().isNotEmpty()) {
+                        viewModel.sendDirect(peerNodeId, textInput.trim())
                         textInput = ""
-                        viewModel.sendTyping(peerNodeId, false)
                     }
                 },
-                onSendMedia = { mediaType, bytes, caption, durationMs, fileName, previewBytes, gridCols, gridRows, imageWidthPx, imageHeightPx, paddedTileByteLengths ->
-                    viewModel.sendMediaDirect(
-                        peerNodeId,
-                        mediaType,
-                        bytes,
-                        caption,
-                        durationMs,
-                        fileName,
-                        previewBytes,
-                        gridCols,
-                        gridRows,
-                        imageWidthPx,
-                        imageHeightPx,
-                        paddedTileByteLengths
-                    )
-                },
-                audioRecorder = viewModel.audioRecorder,
-                placeholder = "Message..."
+                onAttachPhoto = { photoPickerLauncher.launch("image/*") },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .imePadding()
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
             )
         }
     }
 }
 
+/**
+ * Editorial Direct Message Bubble matching 4._direct_chat/code.html
+ */
 @Composable
-fun DateSeparatorPill(timestamp: Long) {
-    val dateLabel = remember(timestamp) { formatDateSeparator(timestamp) }
-
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 10.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Box(
-            modifier = Modifier
-                .clip(RoundedCornerShape(8.dp))
-                .background(WarmSurface)
-                .border(0.8.dp, WarmCardBorder, RoundedCornerShape(8.dp))
-                .padding(horizontal = 12.dp, vertical = 4.dp)
-        ) {
-            Text(
-                text = dateLabel,
-                color = TextSecondary,
-                fontSize = 11.sp,
-                fontFamily = ManropeFamily,
-                fontWeight = FontWeight.Medium
-            )
-        }
-    }
-}
-
-@Composable
-fun DirectMessageBubble(
+private fun SaharaDirectMessageBubble(
     msg: MessageEntity,
-    isFirstInRun: Boolean,
-    isLastInRun: Boolean,
-    viewModel: MeshViewModel? = null
+    viewModel: MeshViewModel
 ) {
     val isMe = msg.isOutgoing
-    val timeFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
+    val timeFormat = remember { SimpleDateFormat("hh:mm a", Locale.getDefault()) }
     val formattedTime = remember(msg.timestamp) { timeFormat.format(Date(msg.timestamp)) }
 
-    // Dynamic corner shapes based on grouping run
-    val bubbleShape = if (isMe) {
-        RoundedCornerShape(
-            topStart = 12.dp,
-            topEnd = if (isFirstInRun) 12.dp else 4.dp,
-            bottomStart = 12.dp,
-            bottomEnd = if (isLastInRun) 2.dp else 4.dp
-        )
-    } else {
-        RoundedCornerShape(
-            topStart = if (isFirstInRun) 12.dp else 4.dp,
-            topEnd = 12.dp,
-            bottomStart = if (isLastInRun) 2.dp else 4.dp,
-            bottomEnd = 12.dp
-        )
-    }
-
-    Column(
+    Box(
         modifier = Modifier.fillMaxWidth(),
-        horizontalAlignment = if (isMe) Alignment.End else Alignment.Start
+        contentAlignment = if (isMe) Alignment.CenterEnd else Alignment.CenterStart
     ) {
-        Box(
-            modifier = Modifier
-                .clip(bubbleShape)
-                .background(if (isMe) OutgoingBubble else IncomingBubble)
-                .border(
-                    0.8.dp,
-                    if (isMe) OutgoingBubbleBorder else IncomingBubbleBorder,
-                    bubbleShape
-                )
-                .padding(start = 12.dp, top = 8.dp, end = 12.dp, bottom = 6.dp)
+        Column(
+            horizontalAlignment = if (isMe) Alignment.End else Alignment.Start,
+            modifier = Modifier.widthIn(max = 300.dp)
         ) {
-            Column {
-                val transferStates = viewModel?.transferStates?.collectAsState()?.value
-                val mediaUuid = try { java.util.UUID.fromString(msg.messageId) } catch (_: Exception) { null }
-                val transferInfo = if (mediaUuid != null) transferStates?.get(mediaUuid) else null
-
-                if (transferInfo != null && (transferInfo.state == com.meshwhisper.app.media.TransferState.SENDING || transferInfo.state == com.meshwhisper.app.media.TransferState.RECEIVING || transferInfo.state == com.meshwhisper.app.media.TransferState.RECOVERING || transferInfo.state == com.meshwhisper.app.media.TransferState.VERIFYING || transferInfo.state == com.meshwhisper.app.media.TransferState.FAILED || transferInfo.state == com.meshwhisper.app.media.TransferState.CANCELLED)) {
-                    com.meshwhisper.app.ui.components.TransferCard(
-                        message = msg,
-                        transferInfo = transferInfo,
-                        onCancel = { id -> viewModel?.cancelTransfer(id) },
-                        onRetry = { id -> viewModel?.retryTransfer(id) }
-                    )
-                } else {
+            Surface(
+                color = if (isMe) SaharaPrimaryFixed else SaharaSurfaceContainerLowest,
+                shape = RoundedCornerShape(
+                    topStart = 16.dp,
+                    topEnd = 16.dp,
+                    bottomStart = if (isMe) 16.dp else 4.dp,
+                    bottomEnd = if (isMe) 4.dp else 16.dp
+                ),
+                border = androidx.compose.foundation.BorderStroke(
+                    0.8.dp,
+                    if (isMe) SaharaOutlineVariant.copy(alpha = 0.5f) else SaharaOutlineVariant.copy(alpha = 0.5f)
+                ),
+                modifier = Modifier.shadow(
+                    elevation = 2.dp,
+                    shape = RoundedCornerShape(16.dp),
+                    spotColor = Color(0x153A302A)
+                )
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
                     when (msg.mediaType) {
-                        MediaType.FILE -> {
-                            com.meshwhisper.app.ui.components.FileMessageBubble(
-                                message = msg,
-                                isOutgoing = isMe
-                            )
-                        }
                         MediaType.IMAGE -> {
                             ImageMessageBubble(
                                 message = msg,
-                                isOutgoing = isMe,
-                                tileUpdates = viewModel?.tileUpdates
+                                tileUpdates = viewModel.tileUpdates,
+                                isOutgoing = isMe
                             )
                         }
                         MediaType.VOICE -> {
-                            if (viewModel != null) {
-                                VoiceNoteBubble(
-                                    message = msg,
-                                    isOutgoing = isMe,
-                                    audioPlayer = viewModel.audioPlayer
-                                )
-                            } else {
-                                Text(
-                                    text = "🎤 Voice note",
-                                    color = TextPrimary,
-                                    fontFamily = ManropeFamily,
-                                    fontSize = 14.sp
-                                )
-                            }
+                            VoiceNoteBubble(
+                                message = msg,
+                                isOutgoing = isMe,
+                                audioPlayer = viewModel.audioPlayer
+                            )
                         }
                         else -> {
                             Text(
                                 text = msg.text,
-                                color = TextPrimary,
-                                fontSize = 14.sp,
-                                fontFamily = ManropeFamily,
-                                lineHeight = 19.sp
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = SaharaOnSurface,
+                                fontSize = 15.sp,
+                                lineHeight = 21.sp
                             )
                         }
                     }
-                }
-                Spacer(modifier = Modifier.height(3.dp))
-                Row(
-                    modifier = Modifier.align(Alignment.End),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = formattedTime,
-                        color = if (isMe) TextSecondary else TextMuted,
-                        fontSize = 10.sp,
-                        fontFamily = ManropeFamily
-                    )
-                    if (isMe) {
-                        Spacer(modifier = Modifier.width(4.dp))
-                        when (msg.status) {
-                            MessageStatus.DELIVERED -> {
-                                Icon(
-                                    imageVector = Icons.Default.DoneAll,
-                                    contentDescription = "Delivered (ACK)",
-                                    tint = WarmGreen,
-                                    modifier = Modifier.size(14.dp)
-                                )
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    Row(
+                        modifier = Modifier.align(Alignment.End),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = formattedTime,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = SaharaOnSurfaceVariant.copy(alpha = 0.7f),
+                            fontSize = 10.sp
+                        )
+
+                        if (isMe) {
+                            val icon = when (msg.status) {
+                                MessageStatus.DELIVERED -> Icons.Default.DoneAll
+                                MessageStatus.SENT -> Icons.Default.Check
+                                else -> Icons.Default.Schedule
                             }
-                            MessageStatus.RELAYED -> {
-                                Icon(
-                                    imageVector = Icons.Default.DoneAll,
-                                    contentDescription = "Relayed",
-                                    tint = BurntSiennaDim,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                            }
-                            MessageStatus.FAILED -> {
-                                Icon(
-                                    imageVector = Icons.Default.Close,
-                                    contentDescription = "Failed",
-                                    tint = WarmRed,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                            }
-                            else -> {
-                                Icon(
-                                    imageVector = Icons.Default.Check,
-                                    contentDescription = "Sent",
-                                    tint = BurntSiennaDim,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                            }
+                            Icon(
+                                imageVector = icon,
+                                contentDescription = null,
+                                tint = if (msg.status == MessageStatus.DELIVERED) SaharaPrimary else SaharaOnSurfaceVariant.copy(alpha = 0.7f),
+                                modifier = Modifier.size(13.dp)
+                            )
                         }
                     }
                 }
@@ -611,26 +301,80 @@ fun DirectMessageBubble(
     }
 }
 
-private fun isSameDay(t1: Long, t2: Long): Boolean {
-    val c1 = Calendar.getInstance().apply { timeInMillis = t1 }
-    val c2 = Calendar.getInstance().apply { timeInMillis = t2 }
-    return c1.get(Calendar.YEAR) == c2.get(Calendar.YEAR) &&
-            c1.get(Calendar.DAY_OF_YEAR) == c2.get(Calendar.DAY_OF_YEAR)
-}
-
-private fun formatDateSeparator(timestamp: Long): String {
-    val now = Calendar.getInstance()
-    val msgTime = Calendar.getInstance().apply { timeInMillis = timestamp }
-
-    return if (now.get(Calendar.YEAR) == msgTime.get(Calendar.YEAR) &&
-        now.get(Calendar.DAY_OF_YEAR) == msgTime.get(Calendar.DAY_OF_YEAR)
+/**
+ * Floating Direct Chat Composer
+ */
+@Composable
+private fun SaharaDirectComposer(
+    textInput: String,
+    onTextChanged: (String) -> Unit,
+    onSend: () -> Unit,
+    onAttachPhoto: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        color = SaharaSurfaceContainerLowest,
+        shape = RoundedCornerShape(18.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, SaharaOutlineVariant.copy(alpha = 0.6f)),
+        modifier = modifier
+            .fillMaxWidth()
+            .shadow(6.dp, RoundedCornerShape(18.dp), spotColor = SaharaPrimary.copy(alpha = 0.15f))
     ) {
-        "Today"
-    } else if (now.get(Calendar.YEAR) == msgTime.get(Calendar.YEAR) &&
-        now.get(Calendar.DAY_OF_YEAR) - msgTime.get(Calendar.DAY_OF_YEAR) == 1
-    ) {
-        "Yesterday"
-    } else {
-        SimpleDateFormat("MMMM d, yyyy", Locale.getDefault()).format(Date(timestamp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(
+                onClick = onAttachPhoto,
+                modifier = Modifier.size(36.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.AttachFile,
+                    contentDescription = "Attach",
+                    tint = SaharaOnSurfaceVariant,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+
+            TextField(
+                value = textInput,
+                onValueChange = onTextChanged,
+                placeholder = {
+                    Text(
+                        text = "Encrypted message...",
+                        color = SaharaOnSurfaceVariant.copy(alpha = 0.6f),
+                        fontSize = 15.sp,
+                        fontFamily = ManropeFamily
+                    )
+                },
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = Color.Transparent,
+                    unfocusedContainerColor = Color.Transparent,
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent,
+                    focusedTextColor = SaharaOnSurface,
+                    unfocusedTextColor = SaharaOnSurface
+                ),
+                maxLines = 4,
+                modifier = Modifier.weight(1f)
+            )
+
+            IconButton(
+                onClick = onSend,
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(if (textInput.isNotBlank()) SaharaPrimary else SaharaPrimary.copy(alpha = 0.4f))
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.Send,
+                    contentDescription = "Send",
+                    tint = Color.White,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
     }
 }

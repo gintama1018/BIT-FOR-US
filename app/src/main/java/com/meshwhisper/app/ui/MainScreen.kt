@@ -31,7 +31,7 @@ import com.meshwhisper.app.ui.screens.IdentitySettingsScreen
 import com.meshwhisper.app.ui.screens.MeshRadarScreen
 import com.meshwhisper.app.ui.screens.PacketInspectorScreen
 import com.meshwhisper.app.ui.screens.PublicMeshScreen
-import com.meshwhisper.app.ui.theme.WarmLinen
+import com.meshwhisper.app.ui.theme.*
 import com.meshwhisper.app.ui.viewmodel.MeshViewModel
 
 enum class NavTab(val title: String, val label: String, val icon: ImageVector) {
@@ -77,14 +77,14 @@ fun MainScreen(
                 }
             }
         },
-        containerColor = WarmLinen,
+        containerColor = SaharaBackground,
         modifier = modifier.fillMaxSize()
     ) { innerPadding ->
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .background(WarmLinen)
+                .background(SaharaBackground)
         ) {
             activeDirectChatPeerId?.let { peerId ->
                 DirectChatDetailScreen(

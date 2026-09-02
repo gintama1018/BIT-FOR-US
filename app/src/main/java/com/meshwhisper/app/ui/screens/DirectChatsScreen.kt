@@ -1,37 +1,22 @@
 package com.meshwhisper.app.ui.screens
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.DoneAll
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Shield
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -42,30 +27,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.meshwhisper.app.data.model.MediaType
 import com.meshwhisper.app.data.model.MessageEntity
-import com.meshwhisper.app.data.model.MessageStatus
 import com.meshwhisper.app.data.model.PeerEntity
 import com.meshwhisper.app.ui.components.NodeAvatar
-import com.meshwhisper.app.ui.theme.BurntSienna
-import com.meshwhisper.app.ui.theme.BurntSiennaContainer
-import com.meshwhisper.app.ui.theme.DustyRose
-import com.meshwhisper.app.ui.theme.EBGaramondFamily
-import com.meshwhisper.app.ui.theme.ManropeFamily
-import com.meshwhisper.app.ui.theme.TextMuted
-import com.meshwhisper.app.ui.theme.TextPrimary
-import com.meshwhisper.app.ui.theme.TextSecondary
-import com.meshwhisper.app.ui.theme.WarmAmber
-import com.meshwhisper.app.ui.theme.WarmCardBorder
-import com.meshwhisper.app.ui.theme.WarmDivider
-import com.meshwhisper.app.ui.theme.WarmGreen
-import com.meshwhisper.app.ui.theme.WarmLinen
-import com.meshwhisper.app.ui.theme.WarmRed
-import com.meshwhisper.app.ui.theme.WarmSurface
-import com.meshwhisper.app.ui.theme.WarmSurfaceContainer
+import com.meshwhisper.app.ui.theme.*
 import com.meshwhisper.app.ui.viewmodel.MeshViewModel
 import java.text.SimpleDateFormat
-import java.util.Calendar
-import java.util.Date
-import java.util.Locale
+import java.util.*
 
 @Composable
 fun DirectChatsScreen(
@@ -76,6 +43,9 @@ fun DirectChatsScreen(
     val peers by viewModel.peers.collectAsState()
     val connectedNodeIds by viewModel.connectedNodeIds.collectAsState()
     val recentConversations by viewModel.recentConversations.collectAsState()
+
+    var isSearchActive by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
 
     // Map latest messages by peerId
     val recentMap = remember(recentConversations) {
@@ -89,10 +59,16 @@ fun DirectChatsScreen(
         map
     }
 
-    // Sort peers: active conversations first, then online status, then alias
-    val sortedPeers = remember(peers, recentMap, connectedNodeIds) {
+    // Sort peers: active conversations first, then online status, then alias, filtered by search query
+    val sortedPeers = remember(peers, recentMap, connectedNodeIds, searchQuery) {
         peers.map { peer ->
             peer.copy(isDirect = connectedNodeIds.contains(peer.nodeId))
+        }.filter { peer ->
+            if (searchQuery.isBlank()) true
+            else {
+                val hex = String.format("%016X", peer.nodeId)
+                peer.alias.contains(searchQuery, ignoreCase = true) || hex.contains(searchQuery, ignoreCase = true)
+            }
         }.sortedWith(
             compareByDescending<PeerEntity> { recentMap[it.nodeId]?.timestamp ?: 0L }
                 .thenByDescending { it.isDirect }
@@ -103,63 +79,124 @@ fun DirectChatsScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(WarmLinen)
+            .background(SaharaBackground)
     ) {
-        // Direct Header
-        Card(
-            colors = CardDefaults.cardColors(containerColor = WarmSurface),
-            shape = RoundedCornerShape(0.dp),
-            modifier = Modifier.fillMaxWidth()
+        // Top Header matching 3._direct_messages/code.html
+        Surface(
+            color = SaharaBackground,
+            modifier = Modifier
+                .fillMaxWidth()
+                .statusBarsPadding()
         ) {
-            Column {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 10.dp)
+            ) {
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = "Direct Encrypted",
-                                color = TextPrimary,
-                                fontSize = 18.sp,
-                                fontFamily = EBGaramondFamily,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Icon(
-                                imageVector = Icons.Default.Lock,
-                                contentDescription = "E2EE",
-                                tint = BurntSienna,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
-                        Text(
-                            text = "End-to-end encrypted with X25519 & AES-256-GCM",
-                            color = TextSecondary,
-                            fontSize = 11.sp,
-                            fontFamily = ManropeFamily
+                    IconButton(
+                        onClick = { viewModel.announcePresence() },
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(CircleShape)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.SignalCellularAlt,
+                            contentDescription = "Signal Status",
+                            tint = SaharaPrimary,
+                            modifier = Modifier.size(22.dp)
                         )
                     }
 
-                    Box(
+                    IconButton(
+                        onClick = {
+                            isSearchActive = !isSearchActive
+                            if (!isSearchActive) searchQuery = ""
+                        },
                         modifier = Modifier
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(WarmSurfaceContainer)
-                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                            .size(38.dp)
+                            .clip(CircleShape)
                     ) {
+                        Icon(
+                            imageVector = if (isSearchActive) Icons.Default.Close else Icons.Default.Search,
+                            contentDescription = "Search Contacts",
+                            tint = if (isSearchActive) SaharaPrimary else SaharaOnSurfaceVariant,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                }
+
+                // Collapsible Search Input Field
+                AnimatedVisibility(
+                    visible = isSearchActive,
+                    enter = fadeIn() + expandVertically(),
+                    exit = fadeOut() + shrinkVertically()
+                ) {
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        placeholder = { Text("Search alias or node hex...", color = SaharaOnSurfaceVariant.copy(alpha = 0.6f), fontSize = 14.sp) },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = SaharaPrimary,
+                            unfocusedBorderColor = SaharaOutlineVariant,
+                            focusedTextColor = SaharaOnSurface,
+                            unfocusedTextColor = SaharaOnSurface,
+                            focusedContainerColor = SaharaSurfaceContainerLowest,
+                            unfocusedContainerColor = SaharaSurfaceContainerLowest
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        singleLine = true,
+                        leadingIcon = {
+                            Icon(imageVector = Icons.Default.Search, contentDescription = null, tint = SaharaPrimary, modifier = Modifier.size(18.dp))
+                        },
+                        trailingIcon = {
+                            if (searchQuery.isNotEmpty()) {
+                                IconButton(onClick = { searchQuery = "" }) {
+                                    Icon(imageVector = Icons.Default.Clear, contentDescription = "Clear", tint = SaharaOnSurfaceVariant, modifier = Modifier.size(16.dp))
+                                }
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp)
+                    )
+                }
+
+                if (!isSearchActive) {
+                    Spacer(modifier = Modifier.height(2.dp))
+
+                    Text(
+                        text = "Direct",
+                        style = MaterialTheme.typography.displayMedium,
+                        color = SaharaPrimary,
+                        fontWeight = FontWeight.Medium
+                    )
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier.padding(top = 2.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Lock,
+                            contentDescription = "E2EE",
+                            tint = SaharaOnSurfaceVariant.copy(alpha = 0.8f),
+                            modifier = Modifier.size(13.dp)
+                        )
                         Text(
-                            text = "${peers.size} contact${if (peers.size != 1) "s" else ""}",
-                            color = TextPrimary,
+                            text = "END-TO-END ENCRYPTED",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = SaharaOnSurfaceVariant.copy(alpha = 0.8f),
                             fontSize = 11.sp,
-                            fontFamily = ManropeFamily,
+                            letterSpacing = 0.6.sp,
                             fontWeight = FontWeight.SemiBold
                         )
                     }
                 }
-                HorizontalDivider(color = WarmCardBorder, thickness = 0.8.dp)
             }
         }
 
@@ -178,21 +215,21 @@ fun DirectChatsScreen(
                     Icon(
                         imageVector = Icons.Default.Shield,
                         contentDescription = null,
-                        tint = BurntSienna.copy(alpha = 0.5f),
+                        tint = SaharaPrimary.copy(alpha = 0.35f),
                         modifier = Modifier.size(48.dp)
                     )
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
-                        text = "No mesh contacts yet",
-                        color = TextPrimary,
-                        fontSize = 18.sp,
+                        text = if (searchQuery.isNotBlank()) "No matching contacts found" else "No mesh contacts yet",
+                        color = SaharaOnSurface,
+                        fontSize = 20.sp,
                         fontFamily = EBGaramondFamily,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Medium
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = "When other MeshWhisper nodes come into BLE range, they will appear here automatically.",
-                        color = TextSecondary,
+                        text = if (searchQuery.isNotBlank()) "Try searching for a different alias or 4-digit hex ID." else "When other MeshWhisper nodes come into Wi-Fi / BLE range, they will appear here automatically.",
+                        color = SaharaOnSurfaceVariant,
                         fontSize = 13.sp,
                         fontFamily = ManropeFamily,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center,
@@ -204,19 +241,20 @@ fun DirectChatsScreen(
             LazyColumn(
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxWidth()
+                    .fillMaxWidth(),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 120.dp)
             ) {
                 items(sortedPeers, key = { it.nodeId }) { peer ->
                     val latestMessage = recentMap[peer.nodeId]
-                    InboxPeerRow(
+                    SaharaInboxPeerRow(
                         peer = peer,
                         latestMessage = latestMessage,
                         onClick = { onOpenChat(peer.nodeId) }
                     )
                     HorizontalDivider(
-                        modifier = Modifier.padding(start = 72.dp, end = 16.dp),
+                        modifier = Modifier.padding(start = 64.dp, end = 8.dp),
                         thickness = 0.6.dp,
-                        color = WarmDivider
+                        color = SaharaSurfaceContainerHigh
                     )
                 }
             }
@@ -224,8 +262,11 @@ fun DirectChatsScreen(
     }
 }
 
+/**
+ * Editorial Inbox Peer Row matching 3._direct_messages/code.html
+ */
 @Composable
-private fun InboxPeerRow(
+private fun SaharaInboxPeerRow(
     peer: PeerEntity,
     latestMessage: MessageEntity?,
     onClick: () -> Unit
@@ -238,128 +279,111 @@ private fun InboxPeerRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(horizontal = 8.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Deterministic Initials Avatar with online direct badge
-        NodeAvatar(
-            nodeId = peer.nodeId,
-            alias = peer.alias,
-            size = 48.dp,
-            isDirect = peer.isDirect,
-            showOnlineBadge = true
-        )
+        // Avatar with Direct Online Pill Dot
+        Box(modifier = Modifier.size(48.dp)) {
+            NodeAvatar(
+                nodeId = peer.nodeId,
+                alias = peer.alias,
+                size = 48.dp,
+                isDirect = peer.isDirect
+            )
+            if (peer.isDirect) {
+                Box(
+                    modifier = Modifier
+                        .size(13.dp)
+                        .align(Alignment.BottomEnd)
+                        .clip(CircleShape)
+                        .background(SaharaOnline)
+                        .border(2.dp, SaharaBackground, CircleShape)
+                )
+            }
+        }
 
         Spacer(modifier = Modifier.width(14.dp))
 
-        // Contact details & message preview
-        Column(modifier = Modifier.weight(1f)) {
+        // Peer Details & Snippet
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = peer.alias,
-                    color = TextPrimary,
-                    fontSize = 15.sp,
-                    fontFamily = ManropeFamily,
+                    text = peer.alias.ifBlank { "Peer 0x${String.format("%016X", peer.nodeId).takeLast(4)}" },
+                    style = MaterialTheme.typography.titleMedium,
+                    color = SaharaOnSurface,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
                 )
+
                 Text(
                     text = formattedTime,
-                    color = if (latestMessage != null) TextSecondary else TextMuted,
-                    fontSize = 11.sp,
-                    fontFamily = ManropeFamily
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (peer.isDirect) SaharaPrimary else SaharaOnSurfaceVariant,
+                    fontSize = 11.sp
                 )
             }
 
-            Spacer(modifier = Modifier.height(3.dp))
+            // Message Snippet
+            val snippet = when {
+                latestMessage == null -> "Encrypted session ready"
+                latestMessage.mediaType == MediaType.IMAGE -> "📷 Photo"
+                latestMessage.mediaType == MediaType.VOICE -> "🎙️ Voice Note"
+                latestMessage.mediaType == MediaType.FILE -> "📁 File Attachment"
+                else -> latestMessage.text
+            }
 
+            Text(
+                text = snippet,
+                style = MaterialTheme.typography.bodyMedium,
+                color = SaharaOnSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+
+            // Hop Pill with clean AltRoute icon
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                modifier = Modifier.padding(top = 2.dp)
             ) {
-                if (peer.hasKeyChanged) {
-                    Text(
-                        text = "⚠️ Safety number changed",
-                        color = WarmAmber,
-                        fontSize = 12.sp,
-                        fontFamily = ManropeFamily,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1
-                    )
-                } else if (peer.isBlocked) {
-                    Text(
-                        text = "🚫 Blocked contact",
-                        color = WarmRed,
-                        fontSize = 12.sp,
-                        fontFamily = ManropeFamily,
-                        maxLines = 1
-                    )
-                } else if (latestMessage != null) {
-                    if (latestMessage.isOutgoing) {
-                        if (latestMessage.status == MessageStatus.DELIVERED) {
-                            Icon(
-                                imageVector = Icons.Default.DoneAll,
-                                contentDescription = "Delivered",
-                                tint = WarmGreen,
-                                modifier = Modifier.size(14.dp)
-                            )
-                        } else {
-                            Icon(
-                                imageVector = Icons.Default.Check,
-                                contentDescription = "Sent",
-                                tint = TextMuted,
-                                modifier = Modifier.size(14.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(4.dp))
-                    }
-                    val previewText = when (latestMessage.mediaType) {
-                        MediaType.IMAGE -> if (latestMessage.text.isNotBlank() && latestMessage.text != "📷 Photo") "📷 ${latestMessage.text}" else "📷 Photo"
-                        MediaType.VOICE -> "🎤 Voice message"
-                        else -> latestMessage.text
-                    }
-                    Text(
-                        text = previewText,
-                        color = TextSecondary,
-                        fontSize = 13.sp,
-                        fontFamily = ManropeFamily,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                } else {
-                    val statusText = if (peer.isDirect) "Direct link • Tap to chat" else "${peer.hopCount} hops away (Relayed)"
-                    Text(
-                        text = statusText,
-                        color = TextMuted,
-                        fontSize = 12.sp,
-                        fontFamily = ManropeFamily,
-                        maxLines = 1
-                    )
-                }
+                Icon(
+                    imageVector = Icons.Default.AltRoute,
+                    contentDescription = null,
+                    tint = SaharaOnSurfaceVariant.copy(alpha = 0.6f),
+                    modifier = Modifier.size(12.dp)
+                )
+                Text(
+                    text = if (peer.isDirect) "Direct Link (0 hops)" else "${peer.hopCount} hop(s)",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = SaharaOnSurfaceVariant.copy(alpha = 0.6f),
+                    fontSize = 10.sp
+                )
             }
         }
     }
 }
 
 private fun formatInboxTime(timestamp: Long): String {
+    if (timestamp <= 0L) return ""
     val now = Calendar.getInstance()
-    val msgTime = Calendar.getInstance().apply { timeInMillis = timestamp }
+    val msgCal = Calendar.getInstance().apply { timeInMillis = timestamp }
 
-    return if (now.get(Calendar.YEAR) == msgTime.get(Calendar.YEAR) &&
-        now.get(Calendar.DAY_OF_YEAR) == msgTime.get(Calendar.DAY_OF_YEAR)
+    return if (now.get(Calendar.YEAR) == msgCal.get(Calendar.YEAR) &&
+        now.get(Calendar.DAY_OF_YEAR) == msgCal.get(Calendar.DAY_OF_YEAR)
     ) {
-        SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(timestamp))
-    } else if (now.get(Calendar.YEAR) == msgTime.get(Calendar.YEAR) &&
-        now.get(Calendar.DAY_OF_YEAR) - msgTime.get(Calendar.DAY_OF_YEAR) == 1
-    ) {
-        "Yesterday"
+        SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date(timestamp))
     } else {
-        SimpleDateFormat("dd/MM/yy", Locale.getDefault()).format(Date(timestamp))
+        SimpleDateFormat("MMM d", Locale.getDefault()).format(Date(timestamp))
     }
 }

@@ -628,7 +628,7 @@ class DesktopMainWindow(
         val isMe = !msg.isIncoming
         val panel = JPanel(BorderLayout()).apply {
             isOpaque = false
-            maximumSize = Dimension(Short.MAX_VALUE.toInt(), 340)
+            maximumSize = Dimension(Short.MAX_VALUE.toInt(), 600)
         }
 
         val card = JPanel(BorderLayout(0, 6)).apply {

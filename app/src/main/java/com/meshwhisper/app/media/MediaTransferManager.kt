@@ -307,39 +307,42 @@ class MediaTransferManager(
             return@withLock ""
         }
 
-        // Ground-Truth Single-Hop Enforcement for direct 1-to-1 media
-        if (!isBroadcast && !isDirectPeer(recipientNodeId)) {
-            Log.e(tag, "Blocked direct media send: peer $recipientNodeId has no active direct BLE GATT connection")
-            val message = MessageEntity(
-                messageId = mediaId.toString(),
-                senderId = cryptoEngine.nodeId,
-                recipientId = recipientNodeId,
-                senderAlias = cryptoEngine.alias,
-                text = caption.ifBlank { defaultLabelFor(mediaType, originalFileName) },
-                timestamp = System.currentTimeMillis(),
-                isOutgoing = true,
-                isBroadcast = false,
-                status = MessageStatus.FAILED,
-                mediaType = mediaType,
-                mediaUri = null,
-                mediaSizeBytes = mediaBytes.size.toLong(),
-                mediaProgress = 0.0f,
-                mediaDurationMs = durationMs,
-                originalFileName = originalFileName.ifBlank { null }
-            )
-            database.messageDao().insert(message)
-            updateTransferState(
-                mediaId,
-                TransferState.FAILED,
-                true,
-                0,
-                0,
-                0L,
-                mediaBytes.size.toLong(),
-                0L,
-                "Direct BLE connection required for media transfer"
-            )
-            return@withLock ""
+        // Validate known recipient peer for direct 1-to-1 media
+        if (!isBroadcast) {
+            val peer = database.peerDao().getPeerById(recipientNodeId)
+            if (peer == null) {
+                Log.e(tag, "Cannot send direct media to unknown peer $recipientNodeId (peer record missing)")
+                val message = MessageEntity(
+                    messageId = mediaId.toString(),
+                    senderId = cryptoEngine.nodeId,
+                    recipientId = recipientNodeId,
+                    senderAlias = cryptoEngine.alias,
+                    text = caption.ifBlank { defaultLabelFor(mediaType, originalFileName) },
+                    timestamp = System.currentTimeMillis(),
+                    isOutgoing = true,
+                    isBroadcast = false,
+                    status = MessageStatus.FAILED,
+                    mediaType = mediaType,
+                    mediaUri = null,
+                    mediaSizeBytes = mediaBytes.size.toLong(),
+                    mediaProgress = 0.0f,
+                    mediaDurationMs = durationMs,
+                    originalFileName = originalFileName.ifBlank { null }
+                )
+                database.messageDao().insert(message)
+                updateTransferState(
+                    mediaId,
+                    TransferState.FAILED,
+                    true,
+                    0,
+                    0,
+                    0L,
+                    mediaBytes.size.toLong(),
+                    0L,
+                    "Unknown recipient peer"
+                )
+                return@withLock ""
+            }
         }
 
         // Save local copy in app-private storage
@@ -537,18 +540,19 @@ class MediaTransferManager(
             val progress = (chunkIndex + 1).toFloat() / totalChunks
             val eta = calculateEta(session.throughputTracker, currentBytes, mediaBytes.size.toLong())
 
+            val isLastChunk = (chunkIndex == totalChunks - 1)
             if (mediaType != MediaType.AVATAR) {
                 database.messageDao().updateMediaTransfer(
                     messageId = mediaId.toString(),
                     progress = progress,
                     mediaUri = localFile.absolutePath,
-                    status = if (chunkIndex == totalChunks - 1 && isBroadcast) MessageStatus.SENT else MessageStatus.PENDING
+                    status = if (isLastChunk) MessageStatus.SENT else MessageStatus.PENDING
                 )
             }
 
             updateTransferState(
                 mediaId = mediaId,
-                state = if (chunkIndex == totalChunks - 1 && isBroadcast) TransferState.COMPLETE else TransferState.SENDING,
+                state = if (isLastChunk) TransferState.COMPLETE else TransferState.SENDING,
                 isOutgoing = true,
                 chunksCompleted = chunkIndex + 1,
                 totalChunks = totalChunks,

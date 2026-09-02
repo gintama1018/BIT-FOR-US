@@ -27,3 +27,33 @@ dependencies {
     testImplementation("com.google.truth:truth:1.4.4")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
 }
+
+tasks.register<Exec>("packageWindowsExe") {
+    dependsOn("installDist")
+    group = "distribution"
+    description = "Packages a standalone Windows MeshWhisper.exe application bundle via jpackage"
+
+    val jdkBin = org.gradle.internal.jvm.Jvm.current().javaHome.resolve("bin")
+    val jpackageExe = jdkBin.resolve("jpackage.exe").absolutePath
+
+    val distDir = layout.buildDirectory.dir("distributions").get().asFile
+    val installLibDir = layout.buildDirectory.dir("install/desktop/lib").get().asFile
+
+    doFirst {
+        val targetAppDir = distDir.resolve("MeshWhisper")
+        if (targetAppDir.exists()) {
+            targetAppDir.deleteRecursively()
+        }
+    }
+
+    commandLine(
+        jpackageExe,
+        "--type", "app-image",
+        "--dest", distDir.absolutePath,
+        "--name", "MeshWhisper",
+        "--input", installLibDir.absolutePath,
+        "--main-jar", "desktop.jar",
+        "--main-class", "com.meshwhisper.desktop.MainKt",
+        "--win-console"
+    )
+}

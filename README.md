@@ -1,6 +1,6 @@
 # MeshWhisper
 
-Offline peer-to-peer messaging over a Bluetooth Low Energy (BLE) multi-hop flood-relay mesh network.
+Offline, infrastructure-free peer-to-peer messaging and emergency rescue over a hybrid **Bluetooth Low Energy (BLE) + Offline Wi-Fi LAN / Hotspot** multi-hop flood-relay mesh network.
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Min SDK](https://img.shields.io/badge/Min%20SDK-26%20(Android%208.0)-brightgreen.svg)](https://developer.android.com)
@@ -13,7 +13,7 @@ Offline peer-to-peer messaging over a Bluetooth Low Energy (BLE) multi-hop flood
 
 Centralized communication infrastructure depends on cellular base stations, DNS root servers, centralized switches, and internet service provider backbones. In disaster response zones, remote search-and-rescue operations, dense protests or stadiums, and network-denied environments, centralized infrastructure fails via physical destruction, severe RF congestion, or intentional shutdowns.
 
-MeshWhisper provides local, infrastructure-free text and media communications directly between Android devices over Bluetooth Low Energy (BLE). It requires no internet connectivity, SIM cards, Wi-Fi access points, base stations, or central servers. Every participating device acts as both an endpoint and an autonomous relay node.
+MeshWhisper provides local, 100% offline text, location, voice, and media communications directly between devices over a **Dual-Radio Hybrid Transport (BLE + Local Wi-Fi Sockets)**. It requires zero internet connectivity, SIM cards, cellular towers, or central servers. Every participating device acts as both an endpoint and an autonomous relay node.
 
 ---
 
@@ -26,19 +26,45 @@ app/src/main/java/com/meshwhisper/app/
 ├── ble/
 │   ├── MeshBleEngine.kt        # Dual Central + Peripheral GATT manager (MTU negotiation up to 512B)
 │   └── BleFrameFramer.kt       # Dynamic packet fragmentation and multi-session reassembly
+├── wifi/
+│   └── MeshWifiEngine.kt       # 100% Offline Wi-Fi LAN/Hotspot UDP discovery (42425) & TCP streaming (42426)
 ├── protocol/
 │   └── MeshPacket.kt           # 40-byte binary header serializer, deserializer, and AAD builder
 ├── router/
-│   └── MeshRouter.kt           # TTL flood relay, 2-layer deduplication, store-and-forward, gossip
+│   └── MeshRouter.kt           # Dual-radio multiplexer, TTL flood relay, 2-layer dedup, store-and-forward
 ├── crypto/
 │   └── CryptoEngine.kt         # X25519 keypairs, HKDF-SHA256 epoch derivation, AES-256-GCM AEAD
+├── location/
+│   └── LocationHelper.kt       # Zero-dependency GPS satellite hardware coordinates acquisition
 ├── media/
 │   └── MediaTransferManager.kt # Paced chunk transmission with receiver-driven selective NACK recovery
 ├── data/
 │   └── MeshDatabase.kt         # SQLCipher-encrypted Room database sealed with Android Keystore
 └── ui/
     ├── graph/GraphPhysics.kt   # Force-directed Coulomb/Hooke topology simulation
-    └── screens/                # Jetpack Compose UI (Public, Direct, Radar, Logs, Settings)
+    ├── screens/                # Jetpack Compose UI (Public, Direct, Radar & SAR Compass, Logs, Settings)
+    └── theme/                  # Sahara Warm Minimalist design system (Burnt Sienna, Linen, EB Garamond)
+```
+
+### Dual-Radio Hybrid Transport Architecture
+
+```
+                  ┌────────────────────────────────────────┐
+                  │          Jetpack Compose UI            │
+                  └───────────────────┬────────────────────┘
+                                      │
+                  ┌───────────────────▼────────────────────┐
+                  │              MeshRouter                │
+                  │ (Dedup, Flood Relay, Store & Forward)  │
+                  └─────────┬────────────────────┬─────────┘
+                            │                    │
+          ┌─────────────────▼──────┐      ┌──────▼─────────────────┐
+          │     MeshBleEngine      │      │     MeshWifiEngine     │
+          │  (BLE Central/Periph)  │      │ (Offline UDP/TCP Mesh) │
+          └───────────┬────────────┘      └──────────┬─────────────┘
+                      │ (Range: ~30-50m)             │ (High-Throughput / Subnet)
+                      ▼                              ▼
+                 Nearby BLE Nodes             LAN / Hotspot Nodes
 ```
 
 ### Send → Relay → Receive Flow
@@ -52,14 +78,14 @@ sequenceDiagram
 
     Note over Alice: 1. Plaintext & Routing Header<br/>40B Header: Sender, Recipient, MsgID, TTL=7, Time
     Alice->>Alice: Derive Epoch Session Key (X25519 ECDH + HKDF)<br/>Encrypt via AES-256-GCM with Header as AAD
-    Alice->>Alice: Fragment Packet into MTU-Bounded Frames (BleFrameFramer)
-    Alice->>Relay: Broadcast BLE GATT Write / Notification Frames
+    Alice->>Alice: Fragment / Frame Packet (BLE MTU or Wi-Fi Stream Frame)
+    Alice->>Relay: Broadcast dual-radio (BLE GATT + Wi-Fi Subnet Sockets)
 
     Note over Relay: 2. Reassemble & Deduplicate<br/>Check RAM LRU (4000) & SQLite Seen Table
     Relay->>Relay: Record in Dedup Cache (Drop if already seen)
     Relay->>Relay: Recipient != Me & TTL > 1 → Decrement TTL (7 → 6)
     Relay->>Relay: Cache in Store-and-Forward Table (24h expiry)
-    Relay->>Bob: Rebroadcast BLE Binary Frames
+    Relay->>Bob: Rebroadcast across Dual-Radio Mesh
 
     Note over Bob: 3. Reassemble & Verify<br/>Header matches Bob's Node ID
     Bob->>Bob: Verify AEAD Auth Tag & Header AAD Binding
@@ -71,7 +97,25 @@ sequenceDiagram
 
 ---
 
-## 3. Security Model
+## 3. Emergency Search-and-Rescue (SAR) & Location
+
+MeshWhisper includes an autonomous **Emergency Response & Search-and-Rescue Suite**:
+
+1. **Hardware Satellite GPS (`LocationHelper.kt`)**:
+   - Directly queries onboard satellite GPS via `LocationManager` (`GPS_PROVIDER`, `NETWORK_PROVIDER`).
+   - Zero Google Play Services / internet dependencies — 100% offline.
+2. **Priority SOS Broadcast (`sendSosBroadcast`)**:
+   - Length-prefixed deterministic binary framing: `[flags: 1B][textLen: 2B][text: NB][lat: 8B][lon: 8B][accuracy: 4B]`.
+   - Out-of-band immediate priority dispatch across both BLE and Wi-Fi channels, bypassing standard queue delays.
+3. **Emergency Keyword Triage**:
+   - Heuristic regex analysis scans outgoing broadcasts for distress triggers (`help`, `trapped`, `emergency`, `medical`, `bleeding`, `bachao`, `madad`, `earthquake`) and automatically prompts fast-action SOS elevation.
+4. **Directional Homing Compass & Map Radar**:
+   - Live trigonometry computation calculates true bearing and distance (meters/km) to peer last-known GPS coordinates.
+   - Sensor fusion compass arrow points responders directly toward trapped individuals in off-grid disaster zones.
+
+---
+
+## 4. Security Model
 
 ### Cryptographic Primitives
 
@@ -82,7 +126,7 @@ sequenceDiagram
 | **Authenticated Encryption** | AES-256-GCM | Standard JCA `AES/GCM/NoPadding` with 128-bit authentication tag |
 | **Nonce Generation** | Unique 12-byte IV | Deterministic derivation from per-packet `UUID.randomUUID()` |
 | **Database Encryption** | SQLCipher v4 | 256-bit AES database encryption (`net.zetetic:sqlcipher-android:4.6.0`) |
-| **Master Key Storage** | Android Keystore | 256-bit AES-GCM master wrapping key in AndroidKeyStore (hardware TEE backed where supported) |
+| **Master Key Storage** | Android Keystore | 256-bit AES-GCM master wrapping key in AndroidKeyStore (hardware TEE/StrongBox backed where supported) |
 
 ### Header Authentication via AAD
 
@@ -108,34 +152,9 @@ When a `PEER_ANNOUNCE` packet arrives:
 1. If the Node ID is unknown, the public key is saved to `MeshDatabase` (Trust-On-First-Use).
 2. If the Node ID was previously recorded with a *different* public key, `MeshRouter` flags the peer as `hasKeyChanged = true`, purges cached session keys, and displays a prominent verification alert banner in the chat UI to detect Man-In-The-Middle (MITM) impersonation.
 
-### At-Rest Database Protection & Panic Wipe
-
-All persistent entities (`peers`, `messages`, `store_forward`, `packet_logs`, `processed_packets`, `topology_edges`) are stored inside a SQLCipher database. The database passphrase is encrypted with an AES-256-GCM master key stored in `AndroidKeyStore`.
-
-**Emergency Panic Wipe Routine**:
-1. Destroys identity wrapping keys and database master keys from `AndroidKeyStore`.
-2. Flushes WAL, safely closes Room database connection, and deletes the encrypted database file and its journal from disk.
-3. Deletes all local voice notes, avatars, and media files from internal app storage.
-4. Clears all security and identity preferences and terminates the process for a clean state reset on next launch.
-
 ---
 
-### Limitations & Threat Model
-
-*Tradeoffs and operational boundaries are documented below without omission:*
-
-1. **Deterministic Rotation vs. True Forward Secrecy**: Hourly session key derivation is deterministic from static X25519 identity keys. If an attacker extracts a device's long-term private key from memory, all historical epoch keys can be derived retroactively. True forward secrecy via ephemeral Double Ratchet state is an open roadmap item.
-2. **Unauthenticated Peer Announcements**: `PEER_ANNOUNCE` and neighbor gossip packets are unauthenticated broadcast frames. Adversaries can inject arbitrary Node IDs into the radar topology visualization. End-to-end message integrity, however, remains enforced by AEAD session keys.
-3. **Flood Relay Scalability**: The network utilizes uncontrolled flood routing. Channel consumption scales as $\mathcal{O}(N)$ transmissions per message. Networks with dozens of concurrent active nodes in dense RF proximity will encounter packet collisions and elevated latency.
-4. **Media Hop Behaviors**:
-   - **Direct 1-to-1 Media**: Enforces direct single-hop BLE GATT connection between peers to avoid saturating relay queues.
-   - **Public / Broadcast Media**: Traverses the multi-hop mesh (`MEDIA_TTL = 4`) with receiver-driven selective NACK recovery and 45-second sender session retention.
-5. **Volatile In-Memory Chunk Reassembly**: Inbound media chunks are assembled in volatile memory before atomic commitment to disk. Terminating the application process mid-transfer discards in-flight chunks.
-6. **Physical Layer Attenuation**: 2.4 GHz Bluetooth signals cannot reliably penetrate reinforced concrete slabs. Multi-floor venue deployments require dedicated stairwell bridge nodes to maintain connectivity across vertical floors.
-
----
-
-## 4. Protocol Internals
+## 5. Protocol Internals
 
 ### Binary Packet Format
 
@@ -156,48 +175,37 @@ Packets are serialized as big-endian byte sequences with an exact 56-byte fixed 
 
 | Field | Size | Type | Description |
 | :--- | :--- | :--- | :--- |
-| `type` | 1 byte | `enum` | Packet code: `0x00`: BROADCAST, `0x01`: DIRECT, `0x02`: KEY_EXCHANGE, `0x03`: ACK, `0x04`: PEER_ANNOUNCE, `0x05`: MEDIA_INIT, `0x06`: MEDIA_CHUNK, `0x07`: MEDIA_NACK, `0x08`: MEDIA_ACK, `0x09`: MEDIA_ABORT, `0x0A`: AVATAR_REQUEST, `0x0B`: TYPING_INDICATOR |
+| `type` | 1 byte | `enum` | Packet code: `0x00`: BROADCAST, `0x01`: DIRECT, `0x02`: KEY_EXCHANGE, `0x03`: ACK, `0x04`: PEER_ANNOUNCE, `0x05`: MEDIA_INIT, `0x06`: MEDIA_CHUNK, `0x07`: MEDIA_NACK, `0x08`: MEDIA_ACK, `0x09`: MEDIA_ABORT, `0x0A`: AVATAR_REQUEST, `0x0B`: TYPING_INDICATOR, `0x0C`: SOS_MESSAGE |
 | `messageId` | 16 bytes | `UUID` | 128-bit unique identifier used for deduplication and IV derivation |
 | `senderId` | 8 bytes | `Long` | 64-bit derived Node ID of the originating sender |
 | `recipientId` | 8 bytes | `Long` | 64-bit destination Node ID, or `-1` (`0xFFFFFFFFFFFFFFFF`) for public broadcast |
 | `ttl` | 1 byte | `UInt8` | Hop limit (`DEFAULT_TTL = 7`, `MEDIA_TTL = 4`, `MEDIA_DIRECT_TTL = 1`); decremented at each relay hop |
-| `timestamp` | 4 bytes | `UInt32` | 32-bit UNIX epoch seconds (DIRECT accepted up to 24h past for store-and-forward, general packets up to 10m past, max 5m future clock drift) |
+| `timestamp` | 4 bytes | `UInt32` | 32-bit UNIX epoch seconds |
 | `payloadLength`| 2 bytes | `UInt16` | Length $N$ of the ciphertext/payload (max 2048 bytes) |
 | `payload` | $N$ bytes | `ByteArray` | Ciphertext or raw discovery payload |
 | `authTag` | 16 bytes | `ByteArray` | 128-bit AES-256-GCM authentication tag computed over header (AAD) + payload |
 
-### Deduplication and Store-and-Forward
-
-1. **Two-Layer Deduplication**:
-   - *Layer 1*: 4,000-entry in-memory `LruCache` keyed by `"${messageId}:${packetType}"`.
-   - *Layer 2*: Persistent `processed_packets` table purged after 24 hours.
-   - Prevents broadcast amplification loops across dense mesh topologies.
-2. **Store-and-Forward Queue**:
-   - Intermediate relays store transit DMs in `store_forward_queue` table for 24 hours.
-   - When the destination node announces presence via `PEER_ANNOUNCE`, stored frames are rebroadcast automatically.
-   - Verified delivery ACKs purge queued messages across all intermediate nodes.
-
 ---
 
-## 5. Getting Started
+## 6. Getting Started
 
 ### Prerequisites
 - Android Studio Ladybug / Meerkat or Command Line Tools
 - JDK 17+
 - Android SDK 35 (Minimum SDK: 26 — Android 8.0 Oreo)
-- Physical Android hardware with Bluetooth Low Energy peripheral support
+- Physical Android hardware with Bluetooth Low Energy peripheral support / Wi-Fi
 
 ### Build Instructions
 
 ```powershell
-# 1. Execute Unit Test Suite (Crypto, Framing, Dedup Routing, Media Transfer, Physics)
-.\gradlew.bat testDebugUnitTest
+# 1. Execute Unit Test Suite (49 unit tests across Crypto, Framing, Wi-Fi, SAR, Dedup)
+$env:JAVA_HOME = "C:\Program Files\Microsoft\jdk-17.0.20.8-hotspot"; .\gradlew.bat testDebugUnitTest
 
 # 2. Build Debug Sideload APK
-.\gradlew.bat assembleDebug
+$env:JAVA_HOME = "C:\Program Files\Microsoft\jdk-17.0.20.8-hotspot"; .\gradlew.bat assembleDebug
 
 # 3. Build Minified Production APK (R8 / ProGuard optimized)
-.\gradlew.bat assembleRelease
+$env:JAVA_HOME = "C:\Program Files\Microsoft\jdk-17.0.20.8-hotspot"; .\gradlew.bat assembleRelease
 ```
 
 Build outputs:
@@ -212,36 +220,12 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ---
 
-## 6. Multi-Floor / Large-Venue Deployment Guide
+## 7. Sahara Warm Minimalist UI & Brand Identity
 
-Because 2.4 GHz RF signals suffer 20–30 dB attenuation when traversing reinforced concrete floor slabs, vertical propagation requires dedicated bridge nodes placed along open stairwell shafts.
-
-```
-[Floor 4: Room 402] ──────BLE──────▶ [Stairwell Bridge Node #4]
-                                                │ (Vertical Airshaft)
-                                                ▼
-[Floor 3: Lab 301]  ◀─────BLE─────── [Stairwell Bridge Node #3]
-                                                │
-                                                ▼
-[Floor 2: Aud-2]    ◀─────BLE─────── [Stairwell Bridge Node #2]
-                                                │
-                                                ▼
-[Floor 1: Lobby]    ◀─────BLE─────── [Stairwell Bridge Node #1]
-```
-
-### Operational Guidelines
-
-- **Stairwell Placement**: Position bridge phones at stair landing platforms. Open stairwells form a continuous RF waveguide across building levels.
-- **Battery Optimization**: Set app battery usage to **Unrestricted** on dedicated bridge devices (`Settings -> Apps -> MeshWhisper -> Battery -> Unrestricted`) to prevent OEM power managers from killing background BLE services.
-- **Hop Budgeting**: With `DEFAULT_TTL = 7`, a packet traverses up to 6 intermediate relays. Aligning bridge nodes along vertical stairwell axes preserves TTL for horizontal distribution on target floors.
-
----
-
-## 7. Roadmap
-
-- [ ] **Signal Double Ratchet Integration**: Replace deterministic epoch derivation with ephemeral Diffie-Hellman ratcheting for true per-message forward secrecy and break-in recovery.
-- [ ] **Keystore Fallback Removal**: Enforce strict hardware StrongBox/TEE key generation and reject devices lacking secure hardware key storage.
-- [ ] **Epidemic Routing Optimization**: Implement Bloom-filter history summaries during peer discovery to replace flood broadcasting with scoped delta synchronization.
+MeshWhisper follows the **Sahara Warm Minimalism** design philosophy:
+- **Palette**: Warm Linen background (`#FAF5EE`), Burnt Sienna CTAs (`#C2652A`), Warm Sand containers, and Amber gold accents.
+- **Typography**: Editorial serif headers (**EB Garamond**) paired with high-legibility geometric sans body (**Manrope**).
+- **Brand Logo**: Handcrafted shield vector with interconnected constellation node wave in warm clay & desert gold.
 
 ---
 

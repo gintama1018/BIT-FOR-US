@@ -77,12 +77,22 @@ class DesktopMeshRouter(
         }
     }
 
+    private var heartbeatJob: Job? = null
+
     fun start() {
         wifiEngine.start(myNodeId, myAlias)
         announcePresence()
+
+        heartbeatJob = scope.launch {
+            while (isActive) {
+                delay(6000L)
+                announcePresence()
+            }
+        }
     }
 
     fun stop() {
+        heartbeatJob?.cancel()
         wifiEngine.stop()
     }
 
@@ -236,23 +246,28 @@ class DesktopMeshRouter(
 
     private fun handlePeerAnnounce(packet: MeshPacket) {
         val payload = packet.payload
-        if (payload.size < 32 + 1) return
+        if (payload.size < 33) return
 
-        val pubKey = payload.copyOfRange(0, 32)
-        val aliasLen = payload[32].toInt() and 0xFF
-        val alias = if (payload.size >= 33 + aliasLen) {
-            String(payload, 33, aliasLen, Charsets.UTF_8)
-        } else {
-            "Node"
-        }
+        val buffer = ByteBuffer.wrap(payload)
+        val aliasLen = buffer.get().toInt() and 0xFF
+        if (buffer.remaining() < aliasLen + 32) return
+
+        val aliasBytes = ByteArray(aliasLen)
+        buffer.get(aliasBytes)
+        val alias = String(aliasBytes, Charsets.UTF_8)
+
+        val pubKey = ByteArray(32)
+        buffer.get(pubKey)
 
         val peerNodeId = PureCryptoEngine.deriveNodeId(pubKey)
+        if (peerNodeId != packet.senderId) return
+
         val peer = DesktopPeer(
             nodeId = peerNodeId,
             publicKeyHex = PureCryptoEngine.bytesToHex(pubKey),
             alias = alias,
             rssi = -50,
-            hops = MeshPacket.DEFAULT_TTL - packet.ttl + 1,
+            hops = maxOf(1, MeshPacket.DEFAULT_TTL - packet.ttl),
             lastSeen = System.currentTimeMillis(),
             publicFingerprint = PureCryptoEngine.generateFingerprint(pubKey)
         )
@@ -428,11 +443,14 @@ class DesktopMeshRouter(
     }
 
     fun announcePresence() {
-        val aliasBytes = myAlias.toByteArray(Charsets.UTF_8)
-        val payload = ByteBuffer.allocate(32 + 1 + aliasBytes.size).apply {
-            put(myPublicKey)
-            put(aliasBytes.size.toByte())
+        val rawAliasBytes = myAlias.toByteArray(Charsets.UTF_8)
+        val aliasBytes = if (rawAliasBytes.size > 255) rawAliasBytes.copyOf(255) else rawAliasBytes
+        val payload = ByteBuffer.allocate(1 + aliasBytes.size + 32 + 1 + 1).apply {
+            put((aliasBytes.size and 0xFF).toByte())
             put(aliasBytes)
+            put(myPublicKey)
+            put(0.toByte()) // directNeighbors count = 0
+            put(0.toByte()) // avatarHash = 0
         }.array()
 
         val packet = MeshPacket(
@@ -440,7 +458,7 @@ class DesktopMeshRouter(
             messageId = UUID.randomUUID(),
             senderId = myNodeId,
             recipientId = MeshPacket.BROADCAST_RECIPIENT_ID,
-            ttl = 3,
+            ttl = MeshPacket.DEFAULT_TTL,
             timestamp = System.currentTimeMillis() / 1000L,
             payload = payload
         )

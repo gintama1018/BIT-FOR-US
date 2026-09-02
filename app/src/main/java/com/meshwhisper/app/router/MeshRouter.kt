@@ -994,11 +994,13 @@ class MeshRouter(
         )
         database.storeForwardDao().insert(sf)
 
-        // Dual-Radio Dispatch: Send directly over Wi-Fi TCP if available, otherwise BLE broadcast
+        // Dual-Radio Dispatch: Send directly over Wi-Fi TCP if peer is on LAN, otherwise broadcast
         if (wifiEngine.isPeerConnected(recipientNodeId)) {
             wifiEngine.sendDirectPacket(recipientNodeId, raw)
+            bleEngine.broadcastPacket(raw)
+        } else {
+            broadcastPacket(raw)
         }
-        broadcastPacket(raw)
         logPacket("TX", packet, raw.size, "Sent direct DM to $recipientNodeId (${text.length} chars)")
 
         return msgId.toString()
@@ -1057,8 +1059,10 @@ class MeshRouter(
         )
         if (wifiEngine.isPeerConnected(recipientNodeId)) {
             wifiEngine.sendDirectPacket(recipientNodeId, raw)
+            bleEngine.broadcastPacket(raw)
+        } else {
+            broadcastPacket(raw)
         }
-        broadcastPacket(raw)
         logPacket("ACK_TX", ackPacket, raw.size, "Sent authenticated ACK for msg $originalMsgId to $recipientNodeId (ackId=$ackPacketId)")
     }
 

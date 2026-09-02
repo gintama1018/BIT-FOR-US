@@ -54,6 +54,7 @@ class MeshWifiEngine(private val context: Context) {
     private var myAlias: String = "Node"
     private var isEngineRunning = false
 
+    private var multicastLock: WifiManager.MulticastLock? = null
     private var udpSocket: DatagramSocket? = null
     private var serverSocket: ServerSocket? = null
     private var udpDiscoveryJob: Job? = null
@@ -97,6 +98,7 @@ class MeshWifiEngine(private val context: Context) {
         myAlias = alias
 
         Log.i(tag, "Starting MeshWifiEngine for node 0x${String.format("%016X", nodeId)} ($alias)")
+        acquireMulticastLock()
         refreshLocalIp()
 
         startTcpServer()
@@ -110,6 +112,7 @@ class MeshWifiEngine(private val context: Context) {
         isEngineRunning = false
 
         Log.i(tag, "Stopping MeshWifiEngine")
+        releaseMulticastLock()
         udpBeaconJob?.cancel()
         udpDiscoveryJob?.cancel()
         tcpAcceptJob?.cancel()
@@ -135,6 +138,31 @@ class MeshWifiEngine(private val context: Context) {
         _isWifiActive.value = false
     }
 
+    private fun acquireMulticastLock() {
+        try {
+            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            if (wifiManager != null) {
+                multicastLock = wifiManager.createMulticastLock("MeshWhisper:WifiMulticastLock").apply {
+                    setReferenceCounted(true)
+                    acquire()
+                }
+                Log.d(tag, "Acquired WifiManager.MulticastLock")
+            }
+        } catch (e: Exception) {
+            Log.w(tag, "Could not acquire MulticastLock: ${e.message}")
+        }
+    }
+
+    private fun releaseMulticastLock() {
+        try {
+            if (multicastLock?.isHeld == true) {
+                multicastLock?.release()
+                Log.d(tag, "Released WifiManager.MulticastLock")
+            }
+        } catch (_: Exception) {}
+        multicastLock = null
+    }
+
     fun updateAlias(newAlias: String) {
         myAlias = newAlias
     }
@@ -144,7 +172,7 @@ class MeshWifiEngine(private val context: Context) {
     }
 
     /**
-     * Broadcasts a raw MeshPacket across all connected Wi-Fi TCP streams and UDP broadcast.
+     * Broadcasts a raw MeshPacket across all connected Wi-Fi TCP streams and directed UDP subnet broadcasts.
      */
     fun broadcastPacket(rawBytes: ByteArray, excludeIp: String? = null) {
         if (!isEngineRunning) return
@@ -155,12 +183,16 @@ class MeshWifiEngine(private val context: Context) {
             sendOverTcpSession(session, rawBytes)
         }
 
-        // 2. Also send over UDP broadcast for instant flood reach to discovering nodes
+        // 2. Also send over UDP broadcast across all subnet broadcast addresses for discovering nodes
         scope.launch {
             try {
-                val broadcastAddr = InetAddress.getByName("255.255.255.255")
-                val datagram = DatagramPacket(rawBytes, rawBytes.size, broadcastAddr, UDP_DISCOVERY_PORT)
-                udpSocket?.send(datagram)
+                val targets = getBroadcastAddresses()
+                for (targetAddr in targets) {
+                    try {
+                        val datagram = DatagramPacket(rawBytes, rawBytes.size, targetAddr, UDP_DISCOVERY_PORT)
+                        udpSocket?.send(datagram)
+                    } catch (_: Exception) {}
+                }
             } catch (_: Exception) {}
         }
     }
@@ -360,9 +392,13 @@ class MeshWifiEngine(private val context: Context) {
                         buf.put(aliasBytes.size.toByte())
                         buf.put(aliasBytes)
 
-                        val broadcastAddr = InetAddress.getByName("255.255.255.255")
-                        val datagram = DatagramPacket(beaconBytes, beaconBytes.size, broadcastAddr, UDP_DISCOVERY_PORT)
-                        udpSocket?.send(datagram)
+                        val targets = getBroadcastAddresses()
+                        for (targetAddr in targets) {
+                            try {
+                                val datagram = DatagramPacket(beaconBytes, beaconBytes.size, targetAddr, UDP_DISCOVERY_PORT)
+                                udpSocket?.send(datagram)
+                            } catch (_: Exception) {}
+                        }
                     }
                 } catch (e: Exception) {
                     Log.d(tag, "Error sending UDP beacon: ${e.message}")
@@ -370,6 +406,28 @@ class MeshWifiEngine(private val context: Context) {
                 delay(3500L)
             }
         }
+    }
+
+    private fun getBroadcastAddresses(): List<InetAddress> {
+        val broadcastList = mutableListOf<InetAddress>()
+        try {
+            // Limited global broadcast
+            broadcastList.add(InetAddress.getByName("255.255.255.255"))
+
+            val interfaces = NetworkInterface.getNetworkInterfaces()
+            while (interfaces.hasMoreElements()) {
+                val iface = interfaces.nextElement()
+                if (iface.isLoopback || !iface.isUp) continue
+
+                for (interfaceAddress in iface.interfaceAddresses) {
+                    val broadcast = interfaceAddress.broadcast
+                    if (broadcast != null && broadcast is java.net.Inet4Address) {
+                        broadcastList.add(broadcast)
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        return broadcastList.distinct()
     }
 
     private fun disconnectPeer(nodeId: Long) {

@@ -50,6 +50,9 @@ class DesktopMeshRouter(
     private val _sosAlerts = MutableSharedFlow<DesktopMessage>(extraBufferCapacity = 32)
     val sosAlerts: SharedFlow<DesktopMessage> = _sosAlerts.asSharedFlow()
 
+    lateinit var mediaManager: com.meshwhisper.desktop.media.DesktopMediaManager
+        private set
+
     init {
         val existingPriv = keyStorage.getPrivateKey()
         if (existingPriv != null && existingPriv.isNotEmpty()) {
@@ -65,6 +68,21 @@ class DesktopMeshRouter(
         myNodeId = PureCryptoEngine.deriveNodeId(myPublicKey)
         myNodeIdHex = java.lang.Long.toUnsignedString(myNodeId, 16).padStart(16, '0').uppercase()
         myAlias = keyStorage.readAlias() ?: "Desktop-${myNodeIdHex.takeLast(4)}"
+
+        mediaManager = com.meshwhisper.desktop.media.DesktopMediaManager(
+            myNodeId = myNodeId,
+            myPrivateKey = myPrivateKey,
+            database = database,
+            wifiEngine = wifiEngine,
+            logger = logger,
+            scope = scope
+        )
+
+        scope.launch {
+            mediaManager.mediaTransfersUpdated.collect { updatedMsg ->
+                _incomingMessages.tryEmit(updatedMsg)
+            }
+        }
 
         wifiEngine.onPacketReceivedListener = { rawBytes, ingressSource ->
             handleIncomingRawPacket(rawBytes, ingressSource)
@@ -133,6 +151,8 @@ class DesktopMeshRouter(
             PacketType.DIRECT_MESSAGE -> handleDirectMessage(packet)
             PacketType.ACK -> handleAck(packet)
             PacketType.PEER_ANNOUNCE -> handlePeerAnnounce(packet)
+            PacketType.MEDIA_INIT -> mediaManager.handleMediaInit(packet, isBroadcast = (packet.recipientId == MeshPacket.BROADCAST_RECIPIENT_ID))
+            PacketType.MEDIA_CHUNK -> mediaManager.handleMediaChunk(packet, isBroadcast = (packet.recipientId == MeshPacket.BROADCAST_RECIPIENT_ID))
             else -> {}
         }
 

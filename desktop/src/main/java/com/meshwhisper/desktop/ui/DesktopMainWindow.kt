@@ -239,7 +239,27 @@ class DesktopMainWindow(
             )
             addActionListener { sendPublicChat() }
         }
-        bottomBox.add(publicInputField, BorderLayout.CENTER)
+        val attachBtn = JButton("📎 Attach").apply {
+            font = FONT_BODY
+            foreground = COLOR_TEXT_PRIMARY
+            background = COLOR_SURFACE
+            isFocusPainted = false
+            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            border = BorderFactory.createCompoundBorder(
+                LineBorder(COLOR_BORDER, 1, true),
+                EmptyBorder(10, 14, 10, 14)
+            )
+            addActionListener {
+                val chooser = JFileChooser()
+                if (chooser.showOpenDialog(this@DesktopMainWindow) == JFileChooser.APPROVE_OPTION) {
+                    val file = chooser.selectedFile
+                    val type = if (file.name.endsWith(".jpg", true) || file.name.endsWith(".png", true)) "IMAGE" else "FILE"
+                    router.mediaManager.sendMediaFile(com.meshwhisper.core.protocol.MeshPacket.BROADCAST_RECIPIENT_ID, file, type, "")
+                    refreshPublicMessages()
+                }
+            }
+        }
+        bottomBox.add(attachBtn, BorderLayout.WEST)
 
         val sendBtn = JButton("Broadcast").apply {
             font = FONT_BODY_BOLD
@@ -341,7 +361,28 @@ class DesktopMainWindow(
             )
             addActionListener { sendDirectChat() }
         }
-        dmBottomBox.add(dmInputField, BorderLayout.CENTER)
+        val dmAttachBtn = JButton("📎 Attach").apply {
+            font = FONT_BODY
+            foreground = COLOR_TEXT_PRIMARY
+            background = COLOR_SURFACE
+            isFocusPainted = false
+            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            border = BorderFactory.createCompoundBorder(
+                LineBorder(COLOR_BORDER, 1, true),
+                EmptyBorder(10, 14, 10, 14)
+            )
+            addActionListener {
+                val peer = selectedPeer ?: return@addActionListener
+                val chooser = JFileChooser()
+                if (chooser.showOpenDialog(this@DesktopMainWindow) == JFileChooser.APPROVE_OPTION) {
+                    val file = chooser.selectedFile
+                    val type = if (file.name.endsWith(".jpg", true) || file.name.endsWith(".png", true)) "IMAGE" else "FILE"
+                    router.mediaManager.sendMediaFile(peer.nodeId, file, type, "")
+                    refreshDmMessages()
+                }
+            }
+        }
+        dmBottomBox.add(dmAttachBtn, BorderLayout.WEST)
 
         val dmSendBtn = JButton("Send Encrypted DM").apply {
             font = FONT_BODY_BOLD
@@ -589,6 +630,28 @@ class DesktopMainWindow(
 
         card.add(headerLabel, BorderLayout.NORTH)
         card.add(textLabel, BorderLayout.CENTER)
+
+        if (!msg.mediaUri.isNullOrBlank()) {
+            val mediaFile = java.io.File(msg.mediaUri)
+            if (mediaFile.exists()) {
+                val openBtn = JButton("📂 Open Received ${msg.mediaType ?: "File"} (${mediaFile.name})").apply {
+                    font = FONT_SMALL
+                    isFocusPainted = false
+                    background = COLOR_SURFACE
+                    cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+                    addActionListener {
+                        try {
+                            if (Desktop.isDesktopSupported()) {
+                                Desktop.getDesktop().open(mediaFile)
+                            }
+                        } catch (e: Exception) {
+                            JOptionPane.showMessageDialog(this@DesktopMainWindow, "File saved at: ${mediaFile.absolutePath}")
+                        }
+                    }
+                }
+                card.add(openBtn, BorderLayout.SOUTH)
+            }
+        }
 
         if (isMe) {
             panel.add(card, BorderLayout.EAST)

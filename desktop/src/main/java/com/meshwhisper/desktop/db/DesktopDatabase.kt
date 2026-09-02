@@ -30,7 +30,10 @@ data class DesktopMessage(
     val ttlRemaining: Int = 7,
     val isChannelBroadcast: Boolean = false,
     val channelName: String? = null,
-    val isEmergencySos: Boolean = false
+    val isEmergencySos: Boolean = false,
+    val mediaType: String? = null,
+    val mediaUri: String? = null,
+    val mediaSizeBytes: Long = 0L
 )
 
 data class DesktopStoreForward(
@@ -113,9 +116,16 @@ class DesktopDatabase(
                         ttlRemaining INTEGER NOT NULL DEFAULT 7,
                         isChannelBroadcast INTEGER NOT NULL DEFAULT 0,
                         channelName TEXT,
-                        isEmergencySos INTEGER NOT NULL DEFAULT 0
+                        isEmergencySos INTEGER NOT NULL DEFAULT 0,
+                        mediaType TEXT,
+                        mediaUri TEXT,
+                        mediaSizeBytes INTEGER DEFAULT 0
                     );
                 """.trimIndent())
+
+                try { stmt.execute("ALTER TABLE messages ADD COLUMN mediaType TEXT;") } catch (_: Exception) {}
+                try { stmt.execute("ALTER TABLE messages ADD COLUMN mediaUri TEXT;") } catch (_: Exception) {}
+                try { stmt.execute("ALTER TABLE messages ADD COLUMN mediaSizeBytes INTEGER DEFAULT 0;") } catch (_: Exception) {}
 
                 // 3. Store and Forward
                 stmt.execute("""
@@ -240,8 +250,8 @@ class DesktopDatabase(
                 INSERT OR REPLACE INTO messages (
                     messageId, senderNodeId, recipientNodeId, text, timestamp,
                     isIncoming, isAcked, isDelivered, ttlRemaining, isChannelBroadcast,
-                    channelName, isEmergencySos
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    channelName, isEmergencySos, mediaType, mediaUri, mediaSizeBytes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """.trimIndent()
             conn.prepareStatement(sql).use { stmt ->
                 stmt.setString(1, msg.messageId)
@@ -256,6 +266,9 @@ class DesktopDatabase(
                 stmt.setInt(10, if (msg.isChannelBroadcast) 1 else 0)
                 stmt.setString(11, msg.channelName)
                 stmt.setInt(12, if (msg.isEmergencySos) 1 else 0)
+                stmt.setString(13, msg.mediaType)
+                stmt.setString(14, msg.mediaUri)
+                stmt.setLong(15, msg.mediaSizeBytes)
                 stmt.executeUpdate()
             }
         }
@@ -295,6 +308,10 @@ class DesktopDatabase(
     }
 
     private fun mapMessage(rs: ResultSet): DesktopMessage {
+        val mType = try { rs.getString("mediaType") } catch (_: Exception) { null }
+        val mUri = try { rs.getString("mediaUri") } catch (_: Exception) { null }
+        val mSize = try { rs.getLong("mediaSizeBytes") } catch (_: Exception) { 0L }
+
         return DesktopMessage(
             messageId = rs.getString("messageId"),
             senderNodeId = rs.getLong("senderNodeId"),
@@ -307,7 +324,10 @@ class DesktopDatabase(
             ttlRemaining = rs.getInt("ttlRemaining"),
             isChannelBroadcast = rs.getInt("isChannelBroadcast") == 1,
             channelName = rs.getString("channelName"),
-            isEmergencySos = rs.getInt("isEmergencySos") == 1
+            isEmergencySos = rs.getInt("isEmergencySos") == 1,
+            mediaType = mType,
+            mediaUri = mUri,
+            mediaSizeBytes = mSize
         )
     }
 

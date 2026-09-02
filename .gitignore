@@ -8,7 +8,12 @@
 .externalNativeBuild
 .cxx
 /app/build
-/build
+/core/build
+/desktop/build
+**/build/
+.kotlin/
+.vscode/
+build_log.txt
 *.apk
 *.ap_
 *.dex

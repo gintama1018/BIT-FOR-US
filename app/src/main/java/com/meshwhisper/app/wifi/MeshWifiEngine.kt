@@ -40,6 +40,7 @@ class MeshWifiEngine(private val context: Context) {
     companion object {
         const val UDP_DISCOVERY_PORT = 42425
         const val TCP_DATA_PORT = 42426
+        const val MAX_WIFI_PACKETS_PER_SEC = 50
         private val BEACON_MAGIC = byteArrayOf(0x4D, 0x57, 0x49, 0x46) // 'MWIF'
         private const val MAX_PACKET_SIZE = 10 * 1024 * 1024 // 10MB max stream frame
     }
@@ -64,6 +65,20 @@ class MeshWifiEngine(private val context: Context) {
     // NodeId -> Active Peer Socket Session
     private val activePeers = ConcurrentHashMap<Long, PeerTcpSession>()
     private val peerIpToNodeId = ConcurrentHashMap<String, Long>()
+    private val ipRateLimits = ConcurrentHashMap<String, MutableList<Long>>()
+
+    private fun isRateLimitExceeded(ip: String): Boolean {
+        val now = System.currentTimeMillis()
+        val timestamps = ipRateLimits.getOrPut(ip) { mutableListOf() }
+        synchronized(timestamps) {
+            timestamps.removeAll { now - it > 1000L }
+            if (timestamps.size >= MAX_WIFI_PACKETS_PER_SEC) {
+                return true
+            }
+            timestamps.add(now)
+            return false
+        }
+    }
 
     // State flows
     private val _isWifiActive = MutableStateFlow(false)
@@ -285,7 +300,12 @@ class MeshWifiEngine(private val context: Context) {
                     }
                     val frameBytes = ByteArray(frameLen)
                     inStream.readFully(frameBytes)
-                    onPacketReceivedListener?.invoke(frameBytes, remoteIp)
+
+                    if (isRateLimitExceeded(remoteIp)) {
+                        Log.w(tag, "Wi-Fi TCP rate limit exceeded for $remoteIp (> $MAX_WIFI_PACKETS_PER_SEC frames/sec), throttling packet")
+                    } else {
+                        onPacketReceivedListener?.invoke(frameBytes, remoteIp)
+                    }
                 }
             } catch (e: Exception) {
                 Log.d(tag, "TCP connection ended for $remoteIp: ${e.message}")

@@ -210,7 +210,7 @@ class MultiHopRelayAndSecurityMeshTest {
     }
 
     @Test
-    fun testHourlyEpochSessionKeyRotation() {
+    fun testHourlyEpochSessionKeyDomainSeparation() {
         val (alicePriv, alicePub) = PureCryptoEngine.generateX25519KeyPair()
         val (bobPriv, bobPub) = PureCryptoEngine.generateX25519KeyPair()
 
@@ -222,9 +222,44 @@ class MultiHopRelayAndSecurityMeshTest {
         val tsHour2 = 1720000000L + 3600L
         val keyHour2 = PureCryptoEngine.derivePeerSessionKey(alicePriv, bobPub, tsHour2)
 
-        // Keys MUST be distinct across different epoch hours (Forward Secrecy)
+        // Keys MUST be distinct across different epoch hours (Session Key Domain Separation)
         assertThat(keyHour1).isNotEqualTo(keyHour2)
         assertThat(keyHour1.size).isEqualTo(32)
         assertThat(keyHour2.size).isEqualTo(32)
+    }
+
+    @Test
+    fun testEd25519DigitalSignatureAndAntiSpoofingValidation() {
+        // Node A identity
+        val (alicePriv, alicePub) = PureCryptoEngine.generateX25519KeyPair()
+        val aliceSigningPub = PureCryptoEngine.deriveSigningPublicKey(alicePriv)
+
+        // Attacker Mallory identity
+        val (malloryPriv, malloryPub) = PureCryptoEngine.generateX25519KeyPair()
+        val mallorySigningPub = PureCryptoEngine.deriveSigningPublicKey(malloryPriv)
+
+        val announceData = "NODE_ALIAS=StationAlpha;GPS=12.9716,77.5946".toByteArray(Charsets.UTF_8)
+
+        // 1. Alice signs her legitimate announce data
+        val validSignature = PureCryptoEngine.sign(alicePriv, announceData)
+        assertThat(validSignature.size).isEqualTo(64)
+
+        // Receiver verifies with Alice's public key -> MUST SUCCEED
+        val isValidAlice = PureCryptoEngine.verifySignature(aliceSigningPub, announceData, validSignature)
+        assertThat(isValidAlice).isTrue()
+
+        // 2. Attack Scenario A: Mallory tries to claim Alice's announce with Mallory's key -> MUST FAIL
+        val isForgedKeyRejected = PureCryptoEngine.verifySignature(mallorySigningPub, announceData, validSignature)
+        assertThat(isForgedKeyRejected).isFalse()
+
+        // 3. Attack Scenario B: Mallory tampers with Alice's GPS coordinates in-transit -> MUST FAIL
+        val tamperedData = "NODE_ALIAS=StationAlpha;GPS=99.9999,99.9999".toByteArray(Charsets.UTF_8)
+        val isTamperedRejected = PureCryptoEngine.verifySignature(aliceSigningPub, tamperedData, validSignature)
+        assertThat(isTamperedRejected).isFalse()
+
+        // 4. Attack Scenario C: Mallory signs fake data claiming Alice's identity -> MUST FAIL
+        val forgedMallorySig = PureCryptoEngine.sign(malloryPriv, announceData)
+        val isFakeSigRejected = PureCryptoEngine.verifySignature(aliceSigningPub, announceData, forgedMallorySig)
+        assertThat(isFakeSigRejected).isFalse()
     }
 }

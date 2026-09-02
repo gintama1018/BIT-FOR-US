@@ -163,6 +163,61 @@ fun DirectChatDetailScreen(
 
         HorizontalDivider(color = SaharaSurfaceContainerHigh, thickness = 0.8.dp)
 
+        // Safety Number Changed Security Alert Banner (Fix P1-1)
+        if (peer?.hasKeyChanged == true) {
+            Surface(
+                color = SaharaErrorContainer.copy(alpha = 0.7f),
+                shape = RoundedCornerShape(12.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, SaharaError.copy(alpha = 0.6f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Warning,
+                            contentDescription = null,
+                            tint = SaharaError,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "SECURITY WARNING: SAFETY NUMBER CHANGED",
+                            color = SaharaError,
+                            fontSize = 11.sp,
+                            fontFamily = ManropeFamily,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "The cryptographic identity key for ${peer.alias} has changed. This can happen if they reinstalled the app or if a Man-In-The-Middle attack is occurring. Verify out-of-band via QR before sharing sensitive data.",
+                        color = SaharaOnSurface,
+                        fontSize = 11.sp,
+                        fontFamily = ManropeFamily,
+                        lineHeight = 15.sp
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Button(
+                        onClick = { viewModel.acknowledgeKeyChange(peerNodeId) },
+                        colors = ButtonDefaults.buttonColors(containerColor = SaharaError),
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                        modifier = Modifier.height(30.dp)
+                    ) {
+                        Text(
+                            text = "Acknowledge & Trust New Key",
+                            color = Color.White,
+                            fontSize = 11.sp,
+                            fontFamily = ManropeFamily,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+        }
+
         Box(
             modifier = Modifier
                 .weight(1f)

@@ -562,9 +562,14 @@ class MeshBleEngine(private val context: Context) {
             if (hasMeshService || result.scanRecord?.serviceData?.containsKey(ParcelUuid(BleConstants.MESH_SERVICE_UUID)) == true) {
                 onPeerDiscoveredListener?.invoke(address, rssi)
 
-                // Auto-connect if not already connected or connecting
+                // Auto-connect if not already connected or connecting (Capped at 5 concurrent links to prevent hardware limits)
                 if (!activeGattClients.containsKey(address) && !connectedCentrals.containsKey(address)) {
-                    connectToPeer(device, rssi)
+                    val currentConnections = activeGattClients.size + connectedCentrals.size
+                    if (currentConnections < MAX_CONCURRENT_GATT_CONNECTIONS) {
+                        connectToPeer(device, rssi)
+                    } else {
+                        Log.d(tag, "GATT connection limit ($MAX_CONCURRENT_GATT_CONNECTIONS) reached. Peer $address will communicate via mesh flood relay.")
+                    }
                 }
             }
         }
@@ -787,5 +792,9 @@ class MeshBleEngine(private val context: Context) {
                 delay(15L) // Pace raw BLE frame writes to prevent write-queue saturation
             }
         }
+    }
+
+    companion object {
+        const val MAX_CONCURRENT_GATT_CONNECTIONS = 5
     }
 }

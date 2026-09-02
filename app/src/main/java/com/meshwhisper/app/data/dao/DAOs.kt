@@ -98,6 +98,9 @@ interface StoreForwardDao {
     @Query("SELECT * FROM store_forward_queue WHERE recipientId = :recipientId AND expiresAt > :currentTime ORDER BY createdAt ASC")
     suspend fun getPendingForRecipient(recipientId: Long, currentTime: Long): List<StoreForwardEntity>
 
+    @Query("SELECT DISTINCT recipientId FROM store_forward_queue WHERE expiresAt > :currentTime")
+    suspend fun getPendingRecipients(currentTime: Long = System.currentTimeMillis()): List<Long>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(item: StoreForwardEntity)
 

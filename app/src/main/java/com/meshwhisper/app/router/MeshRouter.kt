@@ -16,6 +16,8 @@ import com.meshwhisper.app.protocol.MeshPacket
 import com.meshwhisper.app.protocol.PacketType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -99,6 +101,21 @@ class MeshRouter(
         wifiEngine.onPeerConnectedListener = { peerId, ip ->
             scope.launch {
                 announcePresence()
+            }
+        }
+
+        // Periodic Store-and-Forward Drain Sweep (Fix #10)
+        scope.launch {
+            while (isActive) {
+                delay(30_000L)
+                try {
+                    val pendingRecipients = database.storeForwardDao().getPendingRecipients()
+                    for (recipientId in pendingRecipients) {
+                        drainStoreAndForwardQueueForPeer(recipientId)
+                    }
+                } catch (e: Exception) {
+                    Log.d(tag, "Store-and-Forward periodic sweep error: ${e.message}")
+                }
             }
         }
     }
@@ -205,9 +222,29 @@ class MeshRouter(
     // =========================================================================
 
     private suspend fun handlePeerAnnounce(packet: MeshPacket, ingressAddress: String?) {
-        logPacket("RX", packet, packet.payload.size + MeshPacket.OVERHEAD_SIZE, "Peer announce from ${packet.senderId}")
-
         if (packet.payload.size < 32) return
+
+        // Cryptographic Signature Verification for PEER_ANNOUNCE (Anti-Spoofing P0-1 Fix)
+        if (packet.payload.size >= 32 + 64) {
+            val unsignedData = packet.payload.copyOfRange(0, packet.payload.size - 64)
+            val signature = packet.payload.copyOfRange(packet.payload.size - 64, packet.payload.size)
+
+            val tempBuffer = ByteBuffer.wrap(unsignedData)
+            val tempAliasLen = tempBuffer.get().toInt() and 0xFF
+            if (tempBuffer.remaining() >= tempAliasLen + 32) {
+                tempBuffer.position(1 + tempAliasLen)
+                val tempPubKey = ByteArray(32)
+                tempBuffer.get(tempPubKey)
+
+                val isSigValid = cryptoEngine.verifySignature(tempPubKey, unsignedData, signature)
+                if (!isSigValid) {
+                    logPacket("DROP", packet, packet.payload.size + MeshPacket.OVERHEAD_SIZE, "REJECTED: Forged / Invalid Ed25519 signature in PEER_ANNOUNCE from ${packet.senderId}")
+                    Log.w(tag, "SECURITY ALERT: Dropped forged PEER_ANNOUNCE from ${packet.senderId} (signature verification failed)")
+                    return
+                }
+            }
+        }
+
         val buffer = ByteBuffer.wrap(packet.payload)
         val aliasLen = buffer.get().toInt() and 0xFF
         if (buffer.remaining() < aliasLen + 32) return
@@ -345,7 +382,7 @@ class MeshRouter(
     ) {
         logPacket("RX", packet, rawBytes.size, "Broadcast msg from ${packet.senderId}")
 
-        // Decrypt public payload with AAD header verification
+        // Decrypt public payload with AAD header verification and Ed25519 sender authentication (P0-2 Fix)
         try {
             val decryptedBytes = cryptoEngine.decrypt(
                 ciphertext = packet.payload,
@@ -354,8 +391,26 @@ class MeshRouter(
                 aesKey = cryptoEngine.publicChannelKey,
                 aad = packet.getAuthenticatedHeaderBytes()
             )
-            val text = String(decryptedBytes, Charsets.UTF_8)
+
             val sender = database.peerDao().getPeerById(packet.senderId)
+            val (text, isValidSender) = if (decryptedBytes.size >= 64) {
+                val tBytes = decryptedBytes.copyOfRange(0, decryptedBytes.size - 64)
+                val signature = decryptedBytes.copyOfRange(decryptedBytes.size - 64, decryptedBytes.size)
+                val valid = if (sender != null) {
+                    val pubKey = CryptoEngine.hexToBytes(sender.publicKeyHex)
+                    cryptoEngine.verifySignature(pubKey, tBytes, signature)
+                } else true
+                Pair(String(tBytes, Charsets.UTF_8), valid)
+            } else {
+                Pair(String(decryptedBytes, Charsets.UTF_8), true)
+            }
+
+            if (!isValidSender) {
+                logPacket("DROP", packet, rawBytes.size, "REJECTED: Forged broadcast signature from ${packet.senderId}")
+                Log.w(tag, "SECURITY ALERT: Dropped forged broadcast from ${packet.senderId} (Ed25519 signature verification failed)")
+                return
+            }
+
             val senderAlias = sender?.alias ?: "Node-${String.format("%016X", packet.senderId).takeLast(4)}"
 
             val messageEntity = MessageEntity(
@@ -648,6 +703,13 @@ class MeshRouter(
             buffer.putLong(System.currentTimeMillis())
         }
 
+        // Generate Ed25519 digital signature over the announcement data (Anti-Spoofing P0-1 Fix)
+        val unsignedPayload = buffer.array()
+        val signature = cryptoEngine.sign(unsignedPayload)
+        val signedPayload = ByteArray(unsignedPayload.size + signature.size)
+        System.arraycopy(unsignedPayload, 0, signedPayload, 0, unsignedPayload.size)
+        System.arraycopy(signature, 0, signedPayload, unsignedPayload.size, signature.size)
+
         val packet = MeshPacket(
             type = PacketType.PEER_ANNOUNCE,
             messageId = UUID.randomUUID(),
@@ -655,7 +717,7 @@ class MeshRouter(
             recipientId = MeshPacket.BROADCAST_RECIPIENT_ID,
             ttl = MeshPacket.DEFAULT_TTL,
             timestamp = System.currentTimeMillis() / 1000L,
-            payload = payload
+            payload = signedPayload
         )
 
         val raw = MeshPacket.serialize(packet)
@@ -706,6 +768,10 @@ class MeshRouter(
             payloadBuf.putFloat(accuracyMeters)
         }
         val payloadBytes = payloadBuf.array()
+        val signature = cryptoEngine.sign(payloadBytes)
+        val signedPlaintext = ByteArray(payloadBytes.size + signature.size)
+        System.arraycopy(payloadBytes, 0, signedPlaintext, 0, payloadBytes.size)
+        System.arraycopy(signature, 0, signedPlaintext, payloadBytes.size, signature.size)
 
         val aad = MeshPacket.computeAad(
             type = PacketType.SOS_MESSAGE,
@@ -716,7 +782,7 @@ class MeshRouter(
         )
 
         val (ciphertext, authTag) = cryptoEngine.encrypt(
-            plaintext = payloadBytes,
+            plaintext = signedPlaintext,
             messageId = msgId,
             aesKey = cryptoEngine.publicChannelKey,
             aad = aad
@@ -791,11 +857,31 @@ class MeshRouter(
                 aad = packet.getAuthenticatedHeaderBytes()
             )
 
+            val sender = database.peerDao().getPeerById(packet.senderId)
+
+            val (sosPayload, isSenderVerified) = if (decryptedBytes.size >= 64 + 3) {
+                val unsigned = decryptedBytes.copyOfRange(0, decryptedBytes.size - 64)
+                val sig = decryptedBytes.copyOfRange(decryptedBytes.size - 64, decryptedBytes.size)
+                val valid = if (sender != null) {
+                    val pubKey = CryptoEngine.hexToBytes(sender.publicKeyHex)
+                    cryptoEngine.verifySignature(pubKey, unsigned, sig)
+                } else true
+                Pair(unsigned, valid)
+            } else {
+                Pair(decryptedBytes, true)
+            }
+
+            if (!isSenderVerified) {
+                logPacket("DROP", packet, rawBytes.size, "REJECTED: Forged SOS alert signature from ${packet.senderId}")
+                Log.w(tag, "SECURITY ALERT: Dropped forged SOS alert from ${packet.senderId} (Ed25519 signature verification failed)")
+                return
+            }
+
             var sosText = ""
             var lat: Double? = null
             var lon: Double? = null
 
-            val buf = ByteBuffer.wrap(decryptedBytes)
+            val buf = ByteBuffer.wrap(sosPayload)
             if (buf.remaining() >= 3) {
                 val flags = buf.get().toInt() and 0xFF
                 val textLen = buf.short.toInt() and 0xFFFF
@@ -809,7 +895,6 @@ class MeshRouter(
                         lon = buf.double
                         val accuracy = buf.float
 
-                        val sender = database.peerDao().getPeerById(packet.senderId)
                         val senderAlias = sender?.alias ?: "Node-${String.format("%016X", packet.senderId).takeLast(4)}"
                         database.locationDao().insertOrUpdate(
                             com.meshwhisper.app.data.model.LastKnownLocationEntity(
@@ -825,10 +910,9 @@ class MeshRouter(
                 }
             } else {
                 // Fallback for legacy plain text
-                sosText = String(decryptedBytes, Charsets.UTF_8)
+                sosText = String(sosPayload, Charsets.UTF_8)
             }
 
-            val sender = database.peerDao().getPeerById(packet.senderId)
             val senderAlias = sender?.alias ?: "Node-${String.format("%016X", packet.senderId).takeLast(4)}"
 
             val messageEntity = MessageEntity(
@@ -865,6 +949,11 @@ class MeshRouter(
     suspend fun sendBroadcastMessage(text: String): String {
         val msgId = UUID.randomUUID()
         val textBytes = text.toByteArray(Charsets.UTF_8)
+        val signature = cryptoEngine.sign(textBytes)
+        val signedPlaintext = ByteArray(textBytes.size + signature.size)
+        System.arraycopy(textBytes, 0, signedPlaintext, 0, textBytes.size)
+        System.arraycopy(signature, 0, signedPlaintext, textBytes.size, signature.size)
+
         val timestamp = System.currentTimeMillis() / 1000L
 
         val aad = MeshPacket.computeAad(
@@ -876,7 +965,7 @@ class MeshRouter(
         )
 
         val encResult = cryptoEngine.encrypt(
-            plaintext = textBytes,
+            plaintext = signedPlaintext,
             messageId = msgId,
             aesKey = cryptoEngine.publicChannelKey,
             aad = aad

@@ -47,14 +47,7 @@ import androidx.compose.material3.TabRow
 import androidx.compose.material3.TabRowDefaults
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -934,13 +927,19 @@ fun RssiProximityHomingView(
     viewModel: MeshViewModel
 ) {
     val targetPeer = peers.find { it.nodeId == selectedPeerId } ?: peers.firstOrNull()
-    val rssi = targetPeer?.rssi ?: -75
+    val rawRssi = targetPeer?.rssi ?: -75
 
-    // Proximity Distance Tiering
+    // Exponential Moving Average (EMA) smoothing (alpha = 0.25) to prevent physical multipath flicker
+    var smoothedRssi by remember(targetPeer?.nodeId) { mutableFloatStateOf(rawRssi.toFloat()) }
+    LaunchedEffect(rawRssi) {
+        smoothedRssi = (smoothedRssi * 0.75f) + (rawRssi.toFloat() * 0.25f)
+    }
+
+    // Relative RF Signal Proximity Tiering (Honest RF propagation without false meter claims)
     val (statusTitle, statusColor, pulseSpeed) = when {
-        rssi >= -60 -> Triple("IMMEDIATE PROXIMITY (< 1m)", WarmGreen, 400)
-        rssi >= -80 -> Triple("NEARBY (1m - 5m)", WarmAmber, 800)
-        else -> Triple("SEARCHING / WEAK (> 5m)", DustyRose, 1400)
+        smoothedRssi >= -62f -> Triple("STRONG SIGNAL (Immediate Proximity)", SaharaOnline, 400)
+        smoothedRssi >= -78f -> Triple("MODERATE SIGNAL (Close Range)", SaharaWarning, 800)
+        else -> Triple("WEAK SIGNAL (Distant / Obstacles)", SaharaPrimary, 1400)
     }
 
     val infiniteTransition = rememberInfiniteTransition(label = "HomingPulse")
@@ -1032,7 +1031,7 @@ fun RssiProximityHomingView(
 
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
-                    text = if (targetPeer?.isDirect == true) "$rssi" else "Mesh",
+                    text = if (targetPeer?.isDirect == true) "${smoothedRssi.toInt()}" else "Mesh",
                     color = Color.White,
                     fontSize = 18.sp,
                     fontFamily = ManropeFamily,

@@ -9,6 +9,9 @@ import org.bouncycastle.crypto.params.HKDFParameters
 import org.bouncycastle.crypto.params.X25519KeyGenerationParameters
 import org.bouncycastle.crypto.params.X25519PrivateKeyParameters
 import org.bouncycastle.crypto.params.X25519PublicKeyParameters
+import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
+import org.bouncycastle.crypto.params.Ed25519PublicKeyParameters
+import org.bouncycastle.crypto.signers.Ed25519Signer
 import java.nio.ByteBuffer
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -68,6 +71,55 @@ object PureCryptoEngine {
     fun derivePublicKey(privateKey: ByteArray): ByteArray {
         val privParams = X25519PrivateKeyParameters(privateKey, 0)
         return privParams.generatePublicKey().encoded
+    }
+
+    /**
+     * Derives a 32-byte Ed25519 signing private key from the master identity private seed using domain-separated HKDF-SHA256.
+     */
+    fun deriveSigningPrivateKey(identitySeed: ByteArray): ByteArray {
+        val hkdf = HKDFBytesGenerator(SHA256Digest())
+        hkdf.init(HKDFParameters(identitySeed, HKDF_DM_SALT, "MESHWHISPER_ED25519_SIGNING_KEY_V1".toByteArray(Charsets.UTF_8)))
+        val out = ByteArray(32)
+        hkdf.generateBytes(out, 0, 32)
+        return out
+    }
+
+    /**
+     * Derives a 32-byte Ed25519 signing public key from the master identity private seed.
+     */
+    fun deriveSigningPublicKey(identitySeed: ByteArray): ByteArray {
+        val signingPriv = deriveSigningPrivateKey(identitySeed)
+        val privParams = Ed25519PrivateKeyParameters(signingPriv, 0)
+        return privParams.generatePublicKey().encoded
+    }
+
+    /**
+     * Cryptographically signs a message/packet byte payload with the node's Ed25519 identity key.
+     * Produces an unforgeable 64-byte Ed25519 digital signature.
+     */
+    fun sign(identitySeed: ByteArray, data: ByteArray): ByteArray {
+        val signingPriv = deriveSigningPrivateKey(identitySeed)
+        val privParams = Ed25519PrivateKeyParameters(signingPriv, 0)
+        val signer = Ed25519Signer()
+        signer.init(true, privParams)
+        signer.update(data, 0, data.size)
+        return signer.generateSignature()
+    }
+
+    /**
+     * Verifies an Ed25519 digital signature against the claimed sender's 32-byte signing public key.
+     */
+    fun verifySignature(signingPublicKey: ByteArray, data: ByteArray, signature: ByteArray): Boolean {
+        if (signature.size != 64 || signingPublicKey.size != 32) return false
+        return try {
+            val pubParams = Ed25519PublicKeyParameters(signingPublicKey, 0)
+            val verifier = Ed25519Signer()
+            verifier.init(false, pubParams)
+            verifier.update(data, 0, data.size)
+            verifier.verifySignature(signature)
+        } catch (_: Exception) {
+            false
+        }
     }
 
     /**

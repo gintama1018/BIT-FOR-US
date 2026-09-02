@@ -7,6 +7,7 @@ import com.meshwhisper.app.MeshApplication
 import com.meshwhisper.app.data.model.MessageEntity
 import com.meshwhisper.app.data.model.PacketLogEntity
 import com.meshwhisper.app.data.model.PeerEntity
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -228,6 +229,14 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
                 isMuted = existing?.isMuted ?: false
             )
             database.peerDao().insertOrUpdate(entity)
+        }
+    }
+
+    fun acknowledgeKeyChange(nodeId: Long) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val peer = database.peerDao().getPeerById(nodeId) ?: return@launch
+            val updated = peer.copy(hasKeyChanged = false)
+            database.peerDao().insertOrUpdate(updated)
         }
     }
 

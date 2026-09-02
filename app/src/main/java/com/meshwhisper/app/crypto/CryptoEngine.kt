@@ -238,6 +238,22 @@ class CryptoEngine private constructor(private val context: Context) : SecureKey
             .apply()
     }
 
+    val signingPublicKey: ByteArray by lazy {
+        PureCryptoEngine.deriveSigningPublicKey(privateKeyBytes)
+    }
+
+    val signingPublicKeyHex: String by lazy {
+        PureCryptoEngine.bytesToHex(signingPublicKey)
+    }
+
+    fun sign(data: ByteArray): ByteArray {
+        return PureCryptoEngine.sign(privateKeyBytes, data)
+    }
+
+    fun verifySignature(signingPublicKeyBytes: ByteArray, data: ByteArray, signature: ByteArray): Boolean {
+        return PureCryptoEngine.verifySignature(signingPublicKeyBytes, data, signature)
+    }
+
     fun encrypt(
         plaintext: ByteArray,
         messageId: UUID,

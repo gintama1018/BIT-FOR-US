@@ -177,7 +177,25 @@ class DesktopMeshRouter(
                 aesKey = publicChannelKey,
                 aad = aad
             )
-            val text = String(decryptedBytes, Charsets.UTF_8)
+
+            val peer = database.getPeer(packet.senderId)
+            val (text, isVerified) = if (decryptedBytes.size >= 64) {
+                val tBytes = decryptedBytes.copyOfRange(0, decryptedBytes.size - 64)
+                val sig = decryptedBytes.copyOfRange(decryptedBytes.size - 64, decryptedBytes.size)
+                val valid = if (peer != null) {
+                    val pubKey = PureCryptoEngine.hexToBytes(peer.publicKeyHex)
+                    PureCryptoEngine.verifySignature(pubKey, tBytes, sig)
+                } else true
+                Pair(String(tBytes, Charsets.UTF_8), valid)
+            } else {
+                Pair(String(decryptedBytes, Charsets.UTF_8), true)
+            }
+
+            if (!isVerified) {
+                logger.w(TAG, "REJECTED: Forged signature on broadcast/SOS message from 0x${String.format("%016X", packet.senderId)}")
+                return
+            }
+
             val msg = DesktopMessage(
                 messageId = packet.messageId.toString(),
                 senderNodeId = packet.senderId,
@@ -268,6 +286,24 @@ class DesktopMeshRouter(
         val payload = packet.payload
         if (payload.size < 33) return
 
+        // Verify Ed25519 signature if present (Fix P0-1)
+        if (payload.size >= 33 + 64) {
+            val unsigned = payload.copyOfRange(0, payload.size - 64)
+            val sig = payload.copyOfRange(payload.size - 64, payload.size)
+            val tempBuf = ByteBuffer.wrap(unsigned)
+            val aLen = tempBuf.get().toInt() and 0xFF
+            if (tempBuf.remaining() >= aLen + 32) {
+                tempBuf.position(1 + aLen)
+                val pKey = ByteArray(32)
+                tempBuf.get(pKey)
+                val valid = PureCryptoEngine.verifySignature(pKey, unsigned, sig)
+                if (!valid) {
+                    logger.w(TAG, "REJECTED: Forged PEER_ANNOUNCE signature from 0x${String.format("%016X", packet.senderId)}")
+                    return
+                }
+            }
+        }
+
         val buffer = ByteBuffer.wrap(payload)
         val aliasLen = buffer.get().toInt() and 0xFF
         if (buffer.remaining() < aliasLen + 32) return
@@ -299,6 +335,11 @@ class DesktopMeshRouter(
         val msgId = UUID.randomUUID()
         val timestamp = System.currentTimeMillis() / 1000L
         val plainBytes = text.toByteArray(Charsets.UTF_8)
+        val signature = PureCryptoEngine.sign(myPrivateKey, plainBytes)
+        val signedPlain = ByteArray(plainBytes.size + signature.size)
+        System.arraycopy(plainBytes, 0, signedPlain, 0, plainBytes.size)
+        System.arraycopy(signature, 0, signedPlain, plainBytes.size, signature.size)
+
         val publicChannelKey = PureCryptoEngine.derivePublicChannelKey()
 
         val type = if (isSos) PacketType.SOS_MESSAGE else PacketType.BROADCAST_MESSAGE
@@ -311,7 +352,7 @@ class DesktopMeshRouter(
         )
 
         val encResult = PureCryptoEngine.encrypt(
-            plaintext = plainBytes,
+            plaintext = signedPlain,
             messageId = msgId,
             aesKey = publicChannelKey,
             aad = aad
@@ -465,13 +506,18 @@ class DesktopMeshRouter(
     fun announcePresence() {
         val rawAliasBytes = myAlias.toByteArray(Charsets.UTF_8)
         val aliasBytes = if (rawAliasBytes.size > 255) rawAliasBytes.copyOf(255) else rawAliasBytes
-        val payload = ByteBuffer.allocate(1 + aliasBytes.size + 32 + 1 + 1).apply {
+        val unsignedPayload = ByteBuffer.allocate(1 + aliasBytes.size + 32 + 1 + 1).apply {
             put((aliasBytes.size and 0xFF).toByte())
             put(aliasBytes)
             put(myPublicKey)
             put(0.toByte()) // directNeighbors count = 0
             put(0.toByte()) // avatarHash = 0
         }.array()
+
+        val sig = PureCryptoEngine.sign(myPrivateKey, unsignedPayload)
+        val signedPayload = ByteArray(unsignedPayload.size + sig.size)
+        System.arraycopy(unsignedPayload, 0, signedPayload, 0, unsignedPayload.size)
+        System.arraycopy(sig, 0, signedPayload, unsignedPayload.size, sig.size)
 
         val packet = MeshPacket(
             type = PacketType.PEER_ANNOUNCE,
@@ -480,7 +526,7 @@ class DesktopMeshRouter(
             recipientId = MeshPacket.BROADCAST_RECIPIENT_ID,
             ttl = MeshPacket.DEFAULT_TTL,
             timestamp = System.currentTimeMillis() / 1000L,
-            payload = payload
+            payload = signedPayload
         )
 
         val raw = MeshPacket.serialize(packet)

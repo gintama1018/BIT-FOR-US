@@ -708,6 +708,39 @@ fun IdentitySettingsScreen(
                     )
                 }
             }
+
+            // App Brand Footer
+            item {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Image(
+                        painter = androidx.compose.ui.res.painterResource(id = com.meshwhisper.app.R.drawable.meshwhisper_logo),
+                        contentDescription = "MeshWhisper Logo",
+                        modifier = Modifier
+                            .size(68.dp)
+                            .clip(RoundedCornerShape(16.dp))
+                            .border(1.dp, WarmCardBorder, RoundedCornerShape(16.dp))
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = "MeshWhisper",
+                        color = TextPrimary,
+                        fontSize = 18.sp,
+                        fontFamily = EBGaramondFamily,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Decentralized Offline Emergency Mesh • v1.0.0",
+                        color = TextSecondary,
+                        fontSize = 12.sp,
+                        fontFamily = ManropeFamily
+                    )
+                }
+            }
         }
     }
 

@@ -384,29 +384,40 @@ private fun PublicChannelHeader(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Column {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    androidx.compose.foundation.Image(
+                        painter = androidx.compose.ui.res.painterResource(id = com.meshwhisper.app.R.drawable.meshwhisper_logo),
+                        contentDescription = "Logo",
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .border(0.8.dp, WarmCardBorder, RoundedCornerShape(8.dp))
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = "Public Mesh",
+                                color = TextPrimary,
+                                fontSize = 18.sp,
+                                fontFamily = EBGaramondFamily,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Icon(
+                                imageVector = Icons.Default.CellTower,
+                                contentDescription = "Public Mesh",
+                                tint = BurntSienna,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
                         Text(
-                            text = "Public Mesh",
-                            color = TextPrimary,
-                            fontSize = 18.sp,
-                            fontFamily = EBGaramondFamily,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Icon(
-                            imageVector = Icons.Default.CellTower,
-                            contentDescription = "Public Mesh",
-                            tint = BurntSienna,
-                            modifier = Modifier.size(16.dp)
+                            text = "Encrypted with mesh-wide community key",
+                            color = TextSecondary,
+                            fontSize = 11.sp,
+                            fontFamily = ManropeFamily
                         )
                     }
-                    Text(
-                        text = "Encrypted with mesh-wide community key",
-                        color = TextSecondary,
-                        fontSize = 11.sp,
-                        fontFamily = ManropeFamily
-                    )
                 }
 
                 Row(verticalAlignment = Alignment.CenterVertically) {

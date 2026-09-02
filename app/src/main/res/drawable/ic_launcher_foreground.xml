@@ -4,25 +4,40 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Center Node -->
+    
+    <!-- Shield Outer Badge Frame -->
     <path
-        android:fillColor="#00E676"
-        android:pathData="M54,54m-8,0a8,8 0,1 1,16 0a8,8 0,1 1,-16 0" />
-    <!-- Node Top -->
+        android:strokeColor="#2A231D"
+        android:strokeWidth="3.2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M34,36 L54,28 L74,36 L74,58 C74,72 54,82 54,82 C54,82 34,72 34,58 Z" />
+
+    <!-- Inner Mesh Interconnect Links (Soundwave Constellation) -->
     <path
-        android:fillColor="#00B0FF"
-        android:pathData="M54,28m-6,0a6,6 0,1 1,12 0a6,6 0,1 1,-12 0" />
-    <!-- Node Left -->
+        android:strokeColor="#D48A37"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M24,54 L36,46 L44,60 L54,38 L64,60 L72,46 L84,54" />
+
     <path
-        android:fillColor="#00B0FF"
-        android:pathData="M30,68m-6,0a6,6 0,1 1,12 0a6,6 0,1 1,-12 0" />
-    <!-- Node Right -->
-    <path
-        android:fillColor="#00B0FF"
-        android:pathData="M78,68m-6,0a6,6 0,1 1,12 0a6,6 0,1 1,-12 0" />
-    <!-- Mesh Link Lines -->
-    <path
-        android:strokeColor="#69F0AE"
-        android:strokeWidth="2.5"
-        android:pathData="M54,34 L54,46 M34,64 L48,58 M74,64 L60,58 M36,68 L72,68" />
+        android:strokeColor="#C2652A"
+        android:strokeWidth="1.4"
+        android:strokeAlpha="0.75"
+        android:pathData="M36,46 L44,38 L54,38 L64,38 L72,46 M36,46 L44,68 L54,76 L64,68 L72,46 M44,60 L44,68 M64,60 L64,68 M44,38 L54,48 L64,38" />
+
+    <!-- Constellation Core Nodes (Burnt Sienna & Warm Amber) -->
+    <path android:fillColor="#C2652A" android:pathData="M24,54m-3.5,0a3.5,3.5 0,1 1,7 0a3.5,3.5 0,1 1,-7 0" />
+    <path android:fillColor="#C2652A" android:pathData="M84,54m-3.5,0a3.5,3.5 0,1 1,7 0a3.5,3.5 0,1 1,-7 0" />
+    <path android:fillColor="#D48A37" android:pathData="M36,46m-3,0a3,3 0,1 1,6 0a3,3 0,1 1,-6 0" />
+    <path android:fillColor="#D48A37" android:pathData="M72,46m-3,0a3,3 0,1 1,6 0a3,3 0,1 1,-6 0" />
+    <path android:fillColor="#C2652A" android:pathData="M44,60m-3.2,0a3.2,3.2 0,1 1,6.4 0a3.2,3.2 0,1 1,-6.4 0" />
+    <path android:fillColor="#C2652A" android:pathData="M64,60m-3.2,0a3.2,3.2 0,1 1,6.4 0a3.2,3.2 0,1 1,-6.4 0" />
+    <path android:fillColor="#C2652A" android:pathData="M54,38m-3.8,0a3.8,3.8 0,1 1,7.6 0a3.8,3.8 0,1 1,-7.6 0" />
+    <path android:fillColor="#D48A37" android:pathData="M44,38m-2.5,0a2.5,2.5 0,1 1,5 0a2.5,2.5 0,1 1,-5 0" />
+    <path android:fillColor="#D48A37" android:pathData="M64,38m-2.5,0a2.5,2.5 0,1 1,5 0a2.5,2.5 0,1 1,-5 0" />
+    <path android:fillColor="#C2652A" android:pathData="M54,76m-3,0a3,3 0,1 1,6 0a3,3 0,1 1,-6 0" />
+    <path android:fillColor="#D48A37" android:pathData="M44,68m-2.5,0a2.5,2.5 0,1 1,5 0a2.5,2.5 0,1 1,-5 0" />
+    <path android:fillColor="#D48A37" android:pathData="M64,68m-2.5,0a2.5,2.5 0,1 1,5 0a2.5,2.5 0,1 1,-5 0" />
 </vector>

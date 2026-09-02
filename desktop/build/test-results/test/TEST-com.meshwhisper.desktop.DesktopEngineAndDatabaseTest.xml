@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.meshwhisper.desktop.DesktopEngineAndDatabaseTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-09-02T07:48:39.884Z" hostname="DESKTOP-U6LKRTT" time="3.902">
+  <properties/>
+  <testcase name="testKeyStorageEncryptionAndPersistence" classname="com.meshwhisper.desktop.DesktopEngineAndDatabaseTest" time="2.026"/>
+  <testcase name="testDatabaseAllTablesOperations" classname="com.meshwhisper.desktop.DesktopEngineAndDatabaseTest" time="0.666"/>
+  <testcase name="testDesktopRouterPublicAndSosTransmission" classname="com.meshwhisper.desktop.DesktopEngineAndDatabaseTest" time="1.208"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

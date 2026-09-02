@@ -19,52 +19,52 @@ MeshWhisper provides local, 100% offline text, location, voice, and media commun
 
 ## 2. Architecture Overview
 
-### Core Components
+### Modular Architecture Layout
 
 ```
-app/src/main/java/com/meshwhisper/app/
-├── ble/
-│   ├── MeshBleEngine.kt        # Dual Central + Peripheral GATT manager (MTU negotiation up to 512B)
-│   └── BleFrameFramer.kt       # Dynamic packet fragmentation and multi-session reassembly
-├── wifi/
-│   └── MeshWifiEngine.kt       # 100% Offline Wi-Fi LAN/Hotspot UDP discovery (42425) & TCP streaming (42426)
-├── protocol/
-│   └── MeshPacket.kt           # 40-byte binary header serializer, deserializer, and AAD builder
-├── router/
-│   └── MeshRouter.kt           # Dual-radio multiplexer, TTL flood relay, 2-layer dedup, store-and-forward
-├── crypto/
-│   └── CryptoEngine.kt         # X25519 keypairs, HKDF-SHA256 epoch derivation, AES-256-GCM AEAD
-├── location/
-│   └── LocationHelper.kt       # Zero-dependency GPS satellite hardware coordinates acquisition
-├── media/
-│   └── MediaTransferManager.kt # Paced chunk transmission with receiver-driven selective NACK recovery
-├── data/
-│   └── MeshDatabase.kt         # SQLCipher-encrypted Room database sealed with Android Keystore
-└── ui/
-    ├── graph/GraphPhysics.kt   # Force-directed Coulomb/Hooke topology simulation
-    ├── screens/                # Jetpack Compose UI (Public, Direct, Radar & SAR Compass, Logs, Settings)
-    └── theme/                  # Sahara Warm Minimalist design system (Burnt Sienna, Linen, EB Garamond)
+MeshWhisper/
+├── core/                               # Pure Kotlin JVM Shared Module (Zero Android SDK dependencies)
+│   └── src/main/java/com/meshwhisper/core/
+│       ├── protocol/MeshPacket.kt      # 56-byte binary wire protocol, serializer & AAD builder
+│       ├── crypto/PureCryptoEngine.kt  # Pure BouncyCastle X25519 ECDH, HKDF-SHA256, AES-256-GCM
+│       ├── crypto/SecureKeyStorage.kt  # Platform-independent key storage contract
+│       ├── router/LruDedupCache.kt     # Pure Kotlin LinkedHashMap thread-safe LRU dedup cache
+│       └── logging/MeshLogger.kt       # Platform-neutral logging abstraction
+│
+├── app/                                # Android Application Module (Dual-Radio BLE + Wi-Fi)
+│   └── src/main/java/com/meshwhisper/app/
+│       ├── ble/MeshBleEngine.kt        # Dual Central + Peripheral GATT manager (MTU up to 512B)
+│       ├── ble/BleFrameFramer.kt       # Dynamic packet fragmentation & reassembly
+│       ├── wifi/MeshWifiEngine.kt      # Offline Wi-Fi LAN/Hotspot UDP discovery (42425) & TCP (42426)
+│       ├── router/MeshRouter.kt        # Dual-radio multiplexer, flood relay & store-and-forward
+│       ├── crypto/CryptoEngine.kt      # AndroidKeyStore hardware TEE key wrapping & preferences
+│       ├── data/MeshDatabase.kt        # SQLCipher-encrypted Room database sealed with Keystore
+│       ├── location/LocationHelper.kt  # Zero-dependency hardware GPS satellite acquisition
+│       └── ui/                         # Jetpack Compose Sahara Warm UI & Radar Compass
+│
+└── desktop/                            # Windows / macOS Companion Mesh Station
+    └── src/main/java/com/meshwhisper/desktop/
+        ├── crypto/DesktopPassphraseKeyStorage.kt # PBKDF2-HMAC-SHA256 encrypted identity vault
+        ├── db/DesktopDatabase.kt       # Embedded SQLite (sqlite-jdbc) with 6 core tables & topology_edges
+        ├── wifi/DesktopWifiEngine.kt   # Pure java.net UDP discovery & high-throughput TCP streaming
+        ├── router/DesktopMeshRouter.kt # Desktop flood router, dedup & topology edge tracker
+        └── Main.kt                     # Interactive Desktop Mesh Station & Management Console
 ```
 
-### Dual-Radio Hybrid Transport Architecture
+### Dual-Radio Cross-Platform Mesh Architecture
 
 ```
-                  ┌────────────────────────────────────────┐
-                  │          Jetpack Compose UI            │
-                  └───────────────────┬────────────────────┘
-                                      │
-                  ┌───────────────────▼────────────────────┐
-                  │              MeshRouter                │
-                  │ (Dedup, Flood Relay, Store & Forward)  │
-                  └─────────┬────────────────────┬─────────┘
-                            │                    │
-          ┌─────────────────▼──────┐      ┌──────▼─────────────────┐
-          │     MeshBleEngine      │      │     MeshWifiEngine     │
-          │  (BLE Central/Periph)  │      │ (Offline UDP/TCP Mesh) │
-          └───────────┬────────────┘      └──────────┬─────────────┘
-                      │ (Range: ~30-50m)             │ (High-Throughput / Subnet)
-                      ▼                              ▼
-                 Nearby BLE Nodes             LAN / Hotspot Nodes
+  ┌─────────────────────────────────┐        ┌─────────────────────────────────┐
+  │      Android Mobile Node        │        │   Windows / macOS Station Node  │
+  │   (BLE Central + Peripheral)    │        │   (High-Throughput Wi-Fi Host)  │
+  └─────────┬──────────────┬────────┘        └────────────────┬────────────────┘
+            │              │                                  │
+    (BLE: 30-50m)    (Local Wi-Fi)                      (Local Wi-Fi)
+            │              │                                  │
+            ▼              └──────────────────┬───────────────┘
+     Nearby BLE Nodes                         ▼
+                                100% Offline Wi-Fi LAN / Hotspot
+                             (UDP 42425 Discovery | TCP 42426 Stream)
 ```
 
 ### Send → Relay → Receive Flow
@@ -220,22 +220,23 @@ Packets are serialized as big-endian byte sequences with an exact 56-byte fixed 
 - Android SDK 35 (Minimum SDK: 26 — Android 8.0 Oreo)
 - Physical Android hardware with Bluetooth Low Energy peripheral support / Wi-Fi
 
-### Build Instructions
+### Build & Run Instructions
 
 ```powershell
-# 1. Execute Unit Test Suite (49 unit tests across Crypto, Framing, Wi-Fi, SAR, Dedup)
-$env:JAVA_HOME = "C:\Program Files\Microsoft\jdk-17.0.20.8-hotspot"; .\gradlew.bat testDebugUnitTest
+# 1. Run Complete Test Suite across all modules (:core, :desktop, :app)
+$env:JAVA_HOME = "C:\Program Files\Microsoft\jdk-17.0.20.8-hotspot"; .\gradlew.bat test
 
-# 2. Build Debug Sideload APK
-$env:JAVA_HOME = "C:\Program Files\Microsoft\jdk-17.0.20.8-hotspot"; .\gradlew.bat assembleDebug
+# 2. Build Android Debug Sideload APK
+$env:JAVA_HOME = "C:\Program Files\Microsoft\jdk-17.0.20.8-hotspot"; .\gradlew.bat :app:assembleDebug
 
-# 3. Build Minified Production APK (R8 / ProGuard optimized)
-$env:JAVA_HOME = "C:\Program Files\Microsoft\jdk-17.0.20.8-hotspot"; .\gradlew.bat assembleRelease
+# 3. Run Desktop Mesh Station (Windows / macOS / Linux)
+$env:JAVA_HOME = "C:\Program Files\Microsoft\jdk-17.0.20.8-hotspot"; .\gradlew.bat :desktop:run --console=plain
 ```
 
 Build outputs:
 - Debug APK: `app/build/outputs/apk/debug/app-debug.apk`
 - Release APK: `app/build/outputs/apk/release/app-release-unsigned.apk`
+- Desktop Fat JAR: `desktop/build/libs/desktop.jar`
 
 ### Sideload Installation
 
@@ -257,9 +258,9 @@ MeshWhisper follows the **Sahara Warm Minimalism** design philosophy:
 ## 9. Engineering Roadmap
 
 - [x] **Phase 1: Hybrid Multi-Transport** (BLE + 100% Offline Wi-Fi LAN / Hotspot TCP & UDP Sockets)
-- [ ] **Phase 2: Topic Groups & Mesh Channels** (`#rescue`, `#medical`, `#general` rooms with scoped key derivation)
-- [x] **Phase 3: Search-and-Rescue (SAR) Suite** (GPS satellite acquisition, priority SOS flood routing, directional radar compass)
-- [ ] **Phase 4: Cross-Platform Desktop Client** (Windows / macOS companion mesh station)
+- [x] **Phase 2: Cross-Platform Expansion** (Shared `:core` protocol & crypto library + Windows/macOS Desktop Station with embedded SQLite)
+- [x] **Phase 3: Search-and-Rescue (SAR) Suite** (GPS satellite hardware acquisition, priority SOS flood routing, directional radar compass)
+- [ ] **Phase 4: Topic Groups & Mesh Channels** (`#rescue`, `#medical`, `#general` rooms with scoped key derivation)
 - [ ] **Phase 5: Push-To-Talk Voice Mesh** (Ultra-compact Opus audio streaming over hybrid channels)
 - [ ] **Future Security Hardening**: Ephemeral Signal Double Ratchet session key progression for per-message forward secrecy.
 

@@ -58,6 +58,9 @@ android {
 }
 
 dependencies {
+    // Shared Core Module (Protocol, Pure Crypto, Deduplication)
+    implementation(project(":core"))
+
     // AndroidX Core & Lifecycle
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")

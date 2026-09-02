@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.meshwhisper.core.CoreProtocolAndCryptoTest" tests="4" skipped="0" failures="0" errors="0" timestamp="2026-09-02T07:47:56.819Z" hostname="DESKTOP-U6LKRTT" time="1.63">
+  <properties/>
+  <testcase name="testMeshPacketSerializationAndDeserialization" classname="com.meshwhisper.core.CoreProtocolAndCryptoTest" time="0.291"/>
+  <testcase name="testPureCryptoEngineX25519AndAead" classname="com.meshwhisper.core.CoreProtocolAndCryptoTest" time="1.329"/>
+  <testcase name="testAadComputation" classname="com.meshwhisper.core.CoreProtocolAndCryptoTest" time="0.001"/>
+  <testcase name="testLruDedupCacheEviction" classname="com.meshwhisper.core.CoreProtocolAndCryptoTest" time="0.007"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

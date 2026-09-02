@@ -20,4 +20,6 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "MeshWhisper"
+include(":core")
 include(":app")
+include(":desktop")

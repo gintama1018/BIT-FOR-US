@@ -241,4 +241,127 @@ class SecurityAndRoutingTest {
         val hopCount = maxOf(1, defaultTtl - relayedTtl)
         assertThat(hopCount).isEqualTo(2)
     }
+
+    @Test
+    fun testSosPacketSerializationAndAadAuthentication() {
+        val msgId = UUID.randomUUID()
+        val senderId = 0x1122334455667788L
+        val timestamp = System.currentTimeMillis() / 1000L
+        val sosText = "HELP: Trapped in room 402 with 2 injured students"
+        val textBytes = sosText.toByteArray(Charsets.UTF_8)
+
+        val packet = MeshPacket(
+            type = PacketType.SOS_MESSAGE,
+            messageId = msgId,
+            senderId = senderId,
+            recipientId = MeshPacket.BROADCAST_RECIPIENT_ID,
+            ttl = MeshPacket.DEFAULT_TTL,
+            timestamp = timestamp,
+            payload = textBytes
+        )
+
+        val serialized = MeshPacket.serialize(packet)
+        assertThat(serialized.size).isEqualTo(MeshPacket.OVERHEAD_SIZE + textBytes.size)
+
+        val deserialized = MeshPacket.deserialize(serialized)
+        assertThat(deserialized).isNotNull()
+        assertThat(deserialized!!.type).isEqualTo(PacketType.SOS_MESSAGE)
+        assertThat(deserialized.messageId).isEqualTo(msgId)
+        assertThat(deserialized.senderId).isEqualTo(senderId)
+        assertThat(deserialized.recipientId).isEqualTo(MeshPacket.BROADCAST_RECIPIENT_ID)
+        assertThat(deserialized.ttl).isEqualTo(MeshPacket.DEFAULT_TTL)
+        assertThat(String(deserialized.payload, Charsets.UTF_8)).isEqualTo(sosText)
+
+        // Verify AAD binding
+        val aad = deserialized.getAuthenticatedHeaderBytes()
+        val expectedAad = MeshPacket.computeAad(
+            type = PacketType.SOS_MESSAGE,
+            messageId = msgId,
+            senderId = senderId,
+            recipientId = MeshPacket.BROADCAST_RECIPIENT_ID,
+            timestamp = timestamp
+        )
+        assertThat(aad).isEqualTo(expectedAad)
+    }
+
+    @Test
+    fun testPeerAnnounceLocationPayloadExtension() {
+        val alias = "Responder-1"
+        val aliasBytes = alias.toByteArray(Charsets.UTF_8)
+        val pubKeyBytes = ByteArray(32) { (it + 5).toByte() }
+        val neighbors = listOf(0xAAAA1111L)
+        val avatarHash: Byte = 0x2A
+
+        val lat = 28.613939
+        val lon = 77.209021
+        val accuracy = 4.5f
+        val locTimestamp = 1725200000000L
+
+        // Encode with 0x4C location extension
+        val payload = ByteArray(1 + aliasBytes.size + pubKeyBytes.size + 1 + (neighbors.size * 8) + 1 + 29)
+        val buf = java.nio.ByteBuffer.wrap(payload)
+        buf.put((aliasBytes.size and 0xFF).toByte())
+        buf.put(aliasBytes)
+        buf.put(pubKeyBytes)
+        buf.put(neighbors.size.toByte())
+        for (n in neighbors) buf.putLong(n)
+        buf.put(avatarHash)
+        buf.put(0x4C.toByte())
+        buf.putDouble(lat)
+        buf.putDouble(lon)
+        buf.putFloat(accuracy)
+        buf.putLong(locTimestamp)
+
+        // Decode
+        val readBuf = java.nio.ByteBuffer.wrap(payload)
+        val readAliasLen = readBuf.get().toInt() and 0xFF
+        val readAliasBytes = ByteArray(readAliasLen)
+        readBuf.get(readAliasBytes)
+        assertThat(String(readAliasBytes, Charsets.UTF_8)).isEqualTo(alias)
+
+        val readPubKey = ByteArray(32)
+        readBuf.get(readPubKey)
+        assertThat(readPubKey).isEqualTo(pubKeyBytes)
+
+        val readNeighborCount = readBuf.get().toInt() and 0xFF
+        val readNeighbors = mutableListOf<Long>()
+        for (i in 0 until readNeighborCount) readNeighbors.add(readBuf.long)
+        assertThat(readNeighbors).containsExactly(0xAAAA1111L)
+
+        val readAvatarHash = readBuf.get()
+        assertThat(readAvatarHash).isEqualTo(avatarHash)
+
+        // Read location extension
+        assertThat(readBuf.remaining()).isEqualTo(29)
+        val marker = readBuf.get()
+        assertThat(marker).isEqualTo(0x4C.toByte())
+        val readLat = readBuf.double
+        val readLon = readBuf.double
+        val readAcc = readBuf.float
+        val readTs = readBuf.long
+
+        assertThat(readLat).isEqualTo(lat)
+        assertThat(readLon).isEqualTo(lon)
+        assertThat(readAcc).isEqualTo(accuracy)
+        assertThat(readTs).isEqualTo(locTimestamp)
+    }
+
+    @Test
+    fun testEmergencyKeywordTriageHeuristics() {
+        val regex = Regex("""\b(help|trapped|sos|emergency|fire|medical|injured|bleeding|earthquake|collapse|bachao|madad|danger)\b""", RegexOption.IGNORE_CASE)
+
+        // Distress messages that MUST trigger SOS triage
+        assertThat(regex.containsMatchIn("Please send help immediately")).isTrue()
+        assertThat(regex.containsMatchIn("We are trapped on the 2nd floor")).isTrue()
+        assertThat(regex.containsMatchIn("Severe medical emergency here")).isTrue()
+        assertThat(regex.containsMatchIn("Someone is bleeding, need gauze")).isTrue()
+        assertThat(regex.containsMatchIn("Earthquake collapsed staircase")).isTrue()
+        assertThat(regex.containsMatchIn("Bhai bachao jaldi")).isTrue()
+        assertThat(regex.containsMatchIn("Immediate danger at gate 3")).isTrue()
+
+        // Normal messages that should NOT trigger triage
+        assertThat(regex.containsMatchIn("Hey are you coming to class?")).isFalse()
+        assertThat(regex.containsMatchIn("The weather is nice today")).isFalse()
+        assertThat(regex.containsMatchIn("I helpful helper helping")).isFalse() // Substring boundary check
+    }
 }

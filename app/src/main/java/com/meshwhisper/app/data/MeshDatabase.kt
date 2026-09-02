@@ -8,12 +8,14 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import com.meshwhisper.app.crypto.CryptoEngine
+import com.meshwhisper.app.data.dao.LocationDao
 import com.meshwhisper.app.data.dao.MessageDao
 import com.meshwhisper.app.data.dao.PacketLogDao
 import com.meshwhisper.app.data.dao.PeerDao
 import com.meshwhisper.app.data.dao.ProcessedPacketDao
 import com.meshwhisper.app.data.dao.StoreForwardDao
 import com.meshwhisper.app.data.dao.TopologyEdgeDao
+import com.meshwhisper.app.data.model.LastKnownLocationEntity
 import com.meshwhisper.app.data.model.MessageEntity
 import com.meshwhisper.app.data.model.PacketLogEntity
 import com.meshwhisper.app.data.model.PeerEntity
@@ -36,9 +38,10 @@ import javax.crypto.spec.SecretKeySpec
         StoreForwardEntity::class,
         PacketLogEntity::class,
         ProcessedPacketEntity::class,
-        TopologyEdgeEntity::class
+        TopologyEdgeEntity::class,
+        LastKnownLocationEntity::class
     ],
-    version = 8,
+    version = 9,
     exportSchema = false
 )
 abstract class MeshDatabase : RoomDatabase() {
@@ -49,6 +52,7 @@ abstract class MeshDatabase : RoomDatabase() {
     abstract fun packetLogDao(): PacketLogDao
     abstract fun processedPacketDao(): ProcessedPacketDao
     abstract fun topologyEdgeDao(): TopologyEdgeDao
+    abstract fun locationDao(): LocationDao
 
     companion object {
         private const val TAG = "MeshDatabase"
@@ -95,6 +99,22 @@ abstract class MeshDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_8_9 = object : androidx.room.migration.Migration(8, 9) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messages ADD COLUMN isSos INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS last_known_locations (
+                        nodeId INTEGER NOT NULL PRIMARY KEY,
+                        alias TEXT NOT NULL,
+                        latitude REAL NOT NULL,
+                        longitude REAL NOT NULL,
+                        accuracyMeters REAL NOT NULL DEFAULT 0.0,
+                        timestamp INTEGER NOT NULL
+                    )
+                """.trimIndent())
+            }
+        }
+
         @Volatile
         private var INSTANCE: MeshDatabase? = null
 
@@ -119,7 +139,7 @@ abstract class MeshDatabase : RoomDatabase() {
                 "meshwhisper_encrypted_db"
             )
                 .openHelperFactory(supportFactory)
-                .addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
+                .addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
                 .fallbackToDestructiveMigration()
                 .build()
         }

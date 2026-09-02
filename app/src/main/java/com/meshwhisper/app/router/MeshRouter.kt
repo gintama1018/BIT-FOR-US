@@ -58,12 +58,12 @@ class MeshRouter(
         isDirectPeer = { bleEngine.isDirectlyConnected(it) }
     )
 
-    // Cooldown map to prevent spamming store-and-forward drains on every 4s heartbeat
     private val lastDrainTimes = java.util.concurrent.ConcurrentHashMap<Long, Long>()
     private val logCounter = java.util.concurrent.atomic.AtomicInteger(0)
 
     var onTypingIndicatorListener: ((senderId: Long, isTyping: Boolean) -> Unit)? = null
     var onIncomingMessageListener: ((senderId: Long, senderAlias: String, text: String, isBroadcast: Boolean) -> Unit)? = null
+    var onSosAlertReceivedListener: ((senderId: Long, senderAlias: String, text: String, lat: Double?, lon: Double?) -> Unit)? = null
 
     init {
         bleEngine.onPacketReceivedListener = { packetBytes, ingressAddress ->
@@ -177,6 +177,9 @@ class MeshRouter(
                 PacketType.TYPING_INDICATOR -> {
                     handleTypingIndicator(packet, rawBytes, ingressAddress)
                 }
+                PacketType.SOS_MESSAGE -> {
+                    handleSosMessage(packet, rawBytes, ingressAddress)
+                }
             }
         }
     }
@@ -248,6 +251,27 @@ class MeshRouter(
         var peerAvatarHash: Byte = 0
         if (buffer.hasRemaining()) {
             peerAvatarHash = buffer.get()
+        }
+
+        // Parse optional location extension (0x4C + 8B lat + 8B lon + 4B accuracy + 8B timestamp = 29 bytes)
+        if (buffer.remaining() >= 29) {
+            val marker = buffer.get()
+            if (marker == 0x4C.toByte()) {
+                val lat = buffer.double
+                val lon = buffer.double
+                val accuracy = buffer.float
+                val locTimestamp = buffer.long
+                database.locationDao().insertOrUpdate(
+                    com.meshwhisper.app.data.model.LastKnownLocationEntity(
+                        nodeId = packet.senderId,
+                        alias = alias,
+                        latitude = lat,
+                        longitude = lon,
+                        accuracyMeters = accuracy,
+                        timestamp = locTimestamp
+                    )
+                )
+            }
         }
 
         // Check if existing peer has rotated or changed public key (TOFU safety check)
@@ -568,7 +592,7 @@ class MeshRouter(
         }
     }
 
-    suspend fun announcePresence() {
+    suspend fun announcePresence(latitude: Double? = null, longitude: Double? = null, accuracyMeters: Float = 0f) {
         val rawAliasBytes = cryptoEngine.alias.toByteArray(Charsets.UTF_8)
         val aliasBytes = if (rawAliasBytes.size > 255) rawAliasBytes.copyOf(255) else rawAliasBytes
         val pubKeyBytes = cryptoEngine.publicKeyBytes
@@ -588,7 +612,9 @@ class MeshRouter(
             0.toByte()
         }
 
-        val payload = ByteArray(1 + aliasBytes.size + pubKeyBytes.size + 1 + (directNeighbors.size * 8) + 1)
+        val hasLocation = (latitude != null && longitude != null)
+        val locationBytes = if (hasLocation) 1 + 8 + 8 + 4 + 8 else 0 // 29 bytes
+        val payload = ByteArray(1 + aliasBytes.size + pubKeyBytes.size + 1 + (directNeighbors.size * 8) + 1 + locationBytes)
         val buffer = ByteBuffer.wrap(payload)
         buffer.put((aliasBytes.size and 0xFF).toByte())
         buffer.put(aliasBytes)
@@ -598,6 +624,13 @@ class MeshRouter(
             buffer.putLong(nId)
         }
         buffer.put(avatarHash)
+        if (hasLocation) {
+            buffer.put(0x4C.toByte()) // 'L'
+            buffer.putDouble(latitude!!)
+            buffer.putDouble(longitude!!)
+            buffer.putFloat(accuracyMeters)
+            buffer.putLong(System.currentTimeMillis())
+        }
 
         val packet = MeshPacket(
             type = PacketType.PEER_ANNOUNCE,
@@ -625,6 +658,184 @@ class MeshRouter(
         }
         bleEngine.broadcastPacket(raw)
         logPacket("TX", packet, raw.size, "Broadcasted local peer announce (${directNeighbors.size} neighbors)")
+
+        if (hasLocation) {
+            database.locationDao().insertOrUpdate(
+                com.meshwhisper.app.data.model.LastKnownLocationEntity(
+                    nodeId = cryptoEngine.nodeId,
+                    alias = cryptoEngine.alias,
+                    latitude = latitude!!,
+                    longitude = longitude!!,
+                    accuracyMeters = accuracyMeters,
+                    timestamp = System.currentTimeMillis()
+                )
+            )
+        }
+    }
+
+    suspend fun sendSosBroadcast(text: String, latitude: Double? = null, longitude: Double? = null): String {
+        val msgId = UUID.randomUUID()
+        val textBytes = text.toByteArray(Charsets.UTF_8)
+        val timestamp = System.currentTimeMillis() / 1000L
+
+        val payloadBytes = if (latitude != null && longitude != null) {
+            val buf = ByteBuffer.allocate(textBytes.size + 1 + 8 + 8 + 4)
+            buf.put(textBytes)
+            buf.put(0x4C.toByte()) // 'L'
+            buf.putDouble(latitude)
+            buf.putDouble(longitude)
+            buf.putFloat(10.0f) // 10m default accuracy
+            buf.array()
+        } else {
+            textBytes
+        }
+
+        val aad = MeshPacket.computeAad(
+            type = PacketType.SOS_MESSAGE,
+            messageId = msgId,
+            senderId = cryptoEngine.nodeId,
+            recipientId = MeshPacket.BROADCAST_RECIPIENT_ID,
+            timestamp = timestamp
+        )
+
+        val (ciphertext, authTag) = cryptoEngine.encrypt(
+            plaintext = payloadBytes,
+            messageId = msgId,
+            aesKey = cryptoEngine.publicChannelKey,
+            aad = aad
+        )
+
+        val packet = MeshPacket(
+            type = PacketType.SOS_MESSAGE,
+            messageId = msgId,
+            senderId = cryptoEngine.nodeId,
+            recipientId = MeshPacket.BROADCAST_RECIPIENT_ID,
+            ttl = MeshPacket.DEFAULT_TTL,
+            timestamp = timestamp,
+            payload = ciphertext,
+            authTag = authTag
+        )
+
+        val raw = MeshPacket.serialize(packet)
+        val dedupKey = "${packet.messageId}:${PacketType.SOS_MESSAGE.code}"
+        synchronized(dedupCache) {
+            dedupCache.put(dedupKey, System.currentTimeMillis())
+        }
+        database.processedPacketDao().markSeen(
+            com.meshwhisper.app.data.model.ProcessedPacketEntity(
+                messageId = packet.messageId.toString(),
+                timestamp = System.currentTimeMillis()
+            )
+        )
+
+        val messageEntity = MessageEntity(
+            messageId = msgId.toString(),
+            senderId = cryptoEngine.nodeId,
+            recipientId = MeshPacket.BROADCAST_RECIPIENT_ID,
+            senderAlias = cryptoEngine.alias,
+            text = text,
+            timestamp = System.currentTimeMillis(),
+            isOutgoing = true,
+            isBroadcast = true,
+            status = MessageStatus.DELIVERED,
+            isSos = true
+        )
+        database.messageDao().insert(messageEntity)
+
+        bleEngine.broadcastPacket(raw)
+        logPacket("TX", packet, raw.size, "Broadcasted EMERGENCY SOS message")
+
+        if (latitude != null && longitude != null) {
+            database.locationDao().insertOrUpdate(
+                com.meshwhisper.app.data.model.LastKnownLocationEntity(
+                    nodeId = cryptoEngine.nodeId,
+                    alias = cryptoEngine.alias,
+                    latitude = latitude,
+                    longitude = longitude,
+                    accuracyMeters = 10f,
+                    timestamp = System.currentTimeMillis()
+                )
+            )
+        }
+
+        return msgId.toString()
+    }
+
+    private suspend fun handleSosMessage(packet: MeshPacket, rawBytes: ByteArray, ingressAddress: String?) {
+        logPacket("RX", packet, rawBytes.size, "EMERGENCY SOS broadcast from ${packet.senderId}")
+
+        try {
+            val decryptedBytes = cryptoEngine.decrypt(
+                ciphertext = packet.payload,
+                authTag = packet.authTag,
+                messageId = packet.messageId,
+                aesKey = cryptoEngine.publicChannelKey,
+                aad = packet.getAuthenticatedHeaderBytes()
+            )
+
+            var sosText: String
+            var lat: Double? = null
+            var lon: Double? = null
+
+            val buf = ByteBuffer.wrap(decryptedBytes)
+            if (decryptedBytes.size >= 21 && decryptedBytes[decryptedBytes.size - 21] == 0x4C.toByte()) {
+                val textLen = decryptedBytes.size - 21
+                val tBytes = ByteArray(textLen)
+                buf.get(tBytes)
+                sosText = String(tBytes, Charsets.UTF_8)
+                buf.get() // Skip 0x4C
+                lat = buf.double
+                lon = buf.double
+                val accuracy = buf.float
+
+                val sender = database.peerDao().getPeerById(packet.senderId)
+                val senderAlias = sender?.alias ?: "Node-${String.format("%016X", packet.senderId).takeLast(4)}"
+                database.locationDao().insertOrUpdate(
+                    com.meshwhisper.app.data.model.LastKnownLocationEntity(
+                        nodeId = packet.senderId,
+                        alias = senderAlias,
+                        latitude = lat,
+                        longitude = lon,
+                        accuracyMeters = accuracy,
+                        timestamp = packet.timestamp * 1000L
+                    )
+                )
+            } else {
+                sosText = String(decryptedBytes, Charsets.UTF_8)
+            }
+
+            val sender = database.peerDao().getPeerById(packet.senderId)
+            val senderAlias = sender?.alias ?: "Node-${String.format("%016X", packet.senderId).takeLast(4)}"
+
+            val messageEntity = MessageEntity(
+                messageId = packet.messageId.toString(),
+                senderId = packet.senderId,
+                recipientId = MeshPacket.BROADCAST_RECIPIENT_ID,
+                senderAlias = senderAlias,
+                text = sosText,
+                timestamp = packet.timestamp * 1000L,
+                isOutgoing = false,
+                isBroadcast = true,
+                status = MessageStatus.DELIVERED,
+                hopCount = MeshPacket.DEFAULT_TTL - packet.ttl,
+                isSos = true
+            )
+            database.messageDao().insert(messageEntity)
+
+            onIncomingMessageListener?.invoke(packet.senderId, senderAlias, sosText, true)
+            onSosAlertReceivedListener?.invoke(packet.senderId, senderAlias, sosText, lat, lon)
+        } catch (e: Exception) {
+            Log.e(tag, "Failed to decrypt SOS packet: ${e.message}")
+        }
+
+        // Priority flood relay: rebroadcast immediately
+        if (packet.ttl > 1 && packet.senderId != cryptoEngine.nodeId) {
+            val relayedPacket = packet.decrementTtl()
+            val relayedBytes = MeshPacket.serialize(relayedPacket)
+            bleEngine.broadcastPacket(relayedBytes, ingressAddress)
+            _relayedPacketsCount.value += 1
+            logPacket("RELAY", relayedPacket, relayedBytes.size, "Priority relaying EMERGENCY SOS message")
+        }
     }
 
     suspend fun sendBroadcastMessage(text: String): String {

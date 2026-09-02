@@ -59,7 +59,8 @@ data class MessageEntity(
     val mediaProgress: Float = 1.0f,
     val mediaDurationMs: Long = 0L,
     val originalFileName: String? = null,
-    val mediaPreviewBase64: String? = null
+    val mediaPreviewBase64: String? = null,
+    val isSos: Boolean = false
 )
 
 @Entity(tableName = "store_forward_queue")
@@ -112,5 +113,18 @@ data class TopologyEdgeEntity(
     val rssi: Int = 0,
     val lastSeen: Long = System.currentTimeMillis()
 )
+
+@Entity(tableName = "last_known_locations")
+data class LastKnownLocationEntity(
+    @PrimaryKey val nodeId: Long,
+    val alias: String,
+    val latitude: Double,
+    val longitude: Double,
+    val accuracyMeters: Float = 0f,
+    val timestamp: Long = System.currentTimeMillis()
+) {
+    val nodeIdHex: String
+        get() = String.format("%016X", nodeId)
+}
 
 

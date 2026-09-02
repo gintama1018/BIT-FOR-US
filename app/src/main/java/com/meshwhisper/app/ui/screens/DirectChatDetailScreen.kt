@@ -169,12 +169,7 @@ fun DirectChatDetailScreen(
                             val subtitleText = when {
                                 isPeerTyping -> "Typing..."
                                 isDirect -> "⚡ Direct BLE link"
-                                peer != null -> {
-                                    val diffMs = System.currentTimeMillis() - peer.lastSeen
-                                    if (diffMs < 60_000L) "⚡ Active just now"
-                                    else if (diffMs < 3600_000L) "Active ${diffMs / 60_000L}m ago (${peer.hopCount} hops)"
-                                    else "Offline"
-                                }
+                                peer != null -> "${viewModel.formatLastSeen(peer.lastSeen)} • ${peer.hopCount} hops"
                                 else -> "Offline"
                             }
                             Text(

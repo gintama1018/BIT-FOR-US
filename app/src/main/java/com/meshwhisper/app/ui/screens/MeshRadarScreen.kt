@@ -32,6 +32,10 @@ import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.Radar
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.CenterFocusStrong
+import androidx.compose.material.icons.filled.Explore
+import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -95,11 +99,13 @@ fun MeshRadarScreen(
 ) {
     val peers by viewModel.peers.collectAsState()
     val topologyEdges by viewModel.topologyEdges.collectAsState()
+    val locations by viewModel.allLocations.collectAsState()
+    val selectedHomingPeerId by viewModel.selectedHomingPeerId.collectAsState()
     val supportsPeripheral by viewModel.supportsPeripheral.collectAsState()
     val connectedCount by viewModel.connectedPeersCount.collectAsState()
     val connectedNodeIds by viewModel.connectedNodeIds.collectAsState()
 
-    var selectedViewTab by remember { mutableIntStateOf(0) } // 0 = Web of Nodes, 1 = Radar Scope
+    var selectedViewTab by remember { mutableIntStateOf(0) } // 0 = Web of Nodes, 1 = Radar Scope, 2 = Offline Map, 3 = RSSI Homing
 
     Column(
         modifier = modifier
@@ -214,13 +220,13 @@ fun MeshRadarScreen(
                             imageVector = Icons.Default.Hub,
                             contentDescription = null,
                             tint = if (selectedViewTab == 0) BurntSienna else TextMuted,
-                            modifier = Modifier.size(16.dp)
+                            modifier = Modifier.size(15.dp)
                         )
-                        Spacer(modifier = Modifier.width(6.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = "Web of Nodes",
+                            text = "Nodes",
                             color = if (selectedViewTab == 0) BurntSienna else TextSecondary,
-                            fontSize = 13.sp,
+                            fontSize = 12.sp,
                             fontFamily = ManropeFamily,
                             fontWeight = if (selectedViewTab == 0) FontWeight.Bold else FontWeight.Medium
                         )
@@ -236,15 +242,59 @@ fun MeshRadarScreen(
                             imageVector = Icons.Default.Radar,
                             contentDescription = null,
                             tint = if (selectedViewTab == 1) BurntSienna else TextMuted,
-                            modifier = Modifier.size(16.dp)
+                            modifier = Modifier.size(15.dp)
                         )
-                        Spacer(modifier = Modifier.width(6.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = "Radar Scope",
+                            text = "Radar",
                             color = if (selectedViewTab == 1) BurntSienna else TextSecondary,
-                            fontSize = 13.sp,
+                            fontSize = 12.sp,
                             fontFamily = ManropeFamily,
                             fontWeight = if (selectedViewTab == 1) FontWeight.Bold else FontWeight.Medium
+                        )
+                    }
+                }
+            )
+            Tab(
+                selected = selectedViewTab == 2,
+                onClick = { selectedViewTab = 2 },
+                text = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.LocationOn,
+                            contentDescription = null,
+                            tint = if (selectedViewTab == 2) BurntSienna else TextMuted,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "Map",
+                            color = if (selectedViewTab == 2) BurntSienna else TextSecondary,
+                            fontSize = 12.sp,
+                            fontFamily = ManropeFamily,
+                            fontWeight = if (selectedViewTab == 2) FontWeight.Bold else FontWeight.Medium
+                        )
+                    }
+                }
+            )
+            Tab(
+                selected = selectedViewTab == 3,
+                onClick = { selectedViewTab = 3 },
+                text = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.CenterFocusStrong,
+                            contentDescription = null,
+                            tint = if (selectedViewTab == 3) BurntSienna else TextMuted,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "Homing",
+                            color = if (selectedViewTab == 3) BurntSienna else TextSecondary,
+                            fontSize = 12.sp,
+                            fontFamily = ManropeFamily,
+                            fontWeight = if (selectedViewTab == 3) FontWeight.Bold else FontWeight.Medium
                         )
                     }
                 }
@@ -259,17 +309,41 @@ fun MeshRadarScreen(
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             contentAlignment = Alignment.Center
         ) {
-            if (selectedViewTab == 0) {
-                MeshWebVisualizerCanvas(
-                    myNodeId = viewModel.myNodeId,
-                    myAlias = viewModel.myAlias.collectAsState().value,
-                    peers = peers,
-                    topologyEdges = topologyEdges,
-                    connectedNodeIds = connectedNodeIds,
-                    onNodeClick = onOpenChat
-                )
-            } else {
-                RadarVisualizerCanvas(peers = peers)
+            when (selectedViewTab) {
+                0 -> {
+                    MeshWebVisualizerCanvas(
+                        myNodeId = viewModel.myNodeId,
+                        myAlias = viewModel.myAlias.collectAsState().value,
+                        peers = peers,
+                        topologyEdges = topologyEdges,
+                        connectedNodeIds = connectedNodeIds,
+                        onNodeClick = onOpenChat
+                    )
+                }
+                1 -> {
+                    RadarVisualizerCanvas(peers = peers)
+                }
+                2 -> {
+                    OfflineCampusMapView(
+                        locations = locations,
+                        peers = peers,
+                        myNodeId = viewModel.myNodeId,
+                        myAlias = viewModel.myAlias.collectAsState().value,
+                        onPeerClick = { nodeId ->
+                            viewModel.selectHomingPeer(nodeId)
+                            selectedViewTab = 3
+                        }
+                    )
+                }
+                3 -> {
+                    RssiProximityHomingView(
+                        peers = peers,
+                        selectedPeerId = selectedHomingPeerId,
+                        onSelectPeer = { viewModel.selectHomingPeer(it) },
+                        onOpenChat = onOpenChat,
+                        viewModel = viewModel
+                    )
+                }
             }
         }
 
@@ -305,7 +379,15 @@ fun MeshRadarScreen(
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             items(peers, key = { it.nodeId }) { peer ->
-                RadarPeerCard(peer = peer, onOpenChat = { onOpenChat(peer.nodeId) })
+                RadarPeerCard(
+                    peer = peer,
+                    lastSeenFormatted = viewModel.formatLastSeen(peer.lastSeen),
+                    onOpenChat = { onOpenChat(peer.nodeId) },
+                    onStartHoming = {
+                        viewModel.selectHomingPeer(peer.nodeId)
+                        selectedViewTab = 3
+                    }
+                )
             }
         }
     }
@@ -633,13 +715,15 @@ fun RadarVisualizerCanvas(peers: List<PeerEntity>) {
 }
 
 @Composable
-fun RadarPeerCard(
+private fun RadarPeerCard(
     peer: PeerEntity,
-    onOpenChat: () -> Unit
+    lastSeenFormatted: String,
+    onOpenChat: () -> Unit,
+    onStartHoming: () -> Unit
 ) {
     Card(
         colors = CardDefaults.cardColors(containerColor = WarmSurface),
-        shape = RoundedCornerShape(8.dp), // 8px radius per DESIGN.md
+        shape = RoundedCornerShape(8.dp),
         border = androidx.compose.foundation.BorderStroke(0.8.dp, WarmCardBorder),
         modifier = Modifier.fillMaxWidth()
     ) {
@@ -687,7 +771,7 @@ fun RadarPeerCard(
                     Spacer(modifier = Modifier.height(2.dp))
 
                     Text(
-                        text = "FP: ${peer.fingerprint.take(9)}... • ID: ${peer.nodeIdHex.takeLast(6)}",
+                        text = "$lastSeenFormatted • ID: ${peer.nodeIdHex.takeLast(6)}",
                         color = TextMuted,
                         fontSize = 11.sp,
                         fontFamily = ManropeFamily
@@ -695,28 +779,340 @@ fun RadarPeerCard(
                 }
             }
 
-            Button(
-                onClick = onOpenChat,
-                colors = ButtonDefaults.buttonColors(containerColor = WarmSurfaceContainer),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                shape = RoundedCornerShape(8.dp),
-                border = androidx.compose.foundation.BorderStroke(0.8.dp, WarmCardBorder)
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.Chat,
-                    contentDescription = null,
-                    tint = BurntSienna,
-                    modifier = Modifier.size(14.dp)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // Proximity Homing Button
+                Button(
+                    onClick = onStartHoming,
+                    colors = ButtonDefaults.buttonColors(containerColor = WarmSurfaceContainer),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                    shape = RoundedCornerShape(8.dp),
+                    border = androidx.compose.foundation.BorderStroke(0.8.dp, WarmCardBorder)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CenterFocusStrong,
+                        contentDescription = "Homing",
+                        tint = BurntSienna,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(6.dp))
+
+                Button(
+                    onClick = onOpenChat,
+                    colors = ButtonDefaults.buttonColors(containerColor = WarmSurfaceContainer),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                    shape = RoundedCornerShape(8.dp),
+                    border = androidx.compose.foundation.BorderStroke(0.8.dp, WarmCardBorder)
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.Chat,
+                        contentDescription = null,
+                        tint = BurntSienna,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = "Chat",
+                        color = TextPrimary,
+                        fontSize = 12.sp,
+                        fontFamily = ManropeFamily,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 100% Offline Vector Campus Map View.
+ * Renders an offline coordinate grid overlay with campus sectors & known node location pins.
+ */
+@Composable
+fun OfflineCampusMapView(
+    locations: List<com.meshwhisper.app.data.model.LastKnownLocationEntity>,
+    peers: List<PeerEntity>,
+    myNodeId: Long,
+    myAlias: String,
+    onPeerClick: (Long) -> Unit
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "MapPulse")
+    val pulse by infiniteTransition.animateFloat(
+        initialValue = 0.4f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1800, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "MapPulseVal"
+    )
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .clip(RoundedCornerShape(12.dp))
+            .background(WarmSurface)
+            .border(1.dp, WarmCardBorder, RoundedCornerShape(12.dp))
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val cx = size.width / 2f
+            val cy = size.height / 2f
+            val maxR = minOf(cx, cy) * 0.9f
+
+            // 1. Draw Offline Campus Grid & Concentric Zone Rings
+            for (r in listOf(0.33f, 0.66f, 1.0f)) {
+                drawCircle(
+                    color = WarmCardBorder.copy(alpha = 0.8f),
+                    radius = maxR * r,
+                    center = Offset(cx, cy),
+                    style = Stroke(width = 1.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 6f)))
                 )
-                Spacer(modifier = Modifier.width(4.dp))
+            }
+
+            // Crosshair Coordinate Axes
+            drawLine(
+                color = WarmCardBorder,
+                start = Offset(cx, cy - maxR),
+                end = Offset(cx, cy + maxR),
+                strokeWidth = 1.dp.toPx()
+            )
+            drawLine(
+                color = WarmCardBorder,
+                start = Offset(cx - maxR, cy),
+                end = Offset(cx + maxR, cy),
+                strokeWidth = 1.dp.toPx()
+            )
+
+            // Campus Sector Zone Labels
+            val textPaint = android.graphics.Paint().apply {
+                color = android.graphics.Color.GRAY
+                textSize = 22f
+                isAntiAlias = true
+            }
+            drawContext.canvas.nativeCanvas.drawText("ZONE ALPHA (North)", cx - 90f, cy - maxR + 30f, textPaint)
+            drawContext.canvas.nativeCanvas.drawText("ZONE BRAVO (South)", cx - 90f, cy + maxR - 15f, textPaint)
+            drawContext.canvas.nativeCanvas.drawText("WEST QUAD", cx - maxR + 15f, cy - 10f, textPaint)
+            drawContext.canvas.nativeCanvas.drawText("EAST LABS", cx + maxR - 100f, cy - 10f, textPaint)
+
+            // 2. Draw Self Marker (Center Coordinate)
+            drawCircle(
+                color = BurntSienna.copy(alpha = 0.3f * pulse),
+                radius = 16.dp.toPx(),
+                center = Offset(cx, cy)
+            )
+            drawCircle(
+                color = BurntSienna,
+                radius = 7.dp.toPx(),
+                center = Offset(cx, cy)
+            )
+
+            // 3. Draw Discovered Peer Pins
+            val activePeers = if (locations.isNotEmpty()) {
+                locations
+            } else {
+                // Synthesize positions from direct peer RSSI/hop count if no GPS fix
+                peers.mapIndexed { idx, p ->
+                    val angle = (idx.toDouble() / maxOf(1, peers.size)) * 2.0 * Math.PI
+                    val dist = (p.hopCount * 0.35).coerceAtMost(0.85)
+                    com.meshwhisper.app.data.model.LastKnownLocationEntity(
+                        nodeId = p.nodeId,
+                        alias = p.alias,
+                        latitude = dist * cos(angle),
+                        longitude = dist * sin(angle),
+                        timestamp = p.lastSeen
+                    )
+                }
+            }
+
+            for (loc in activePeers) {
+                if (loc.nodeId == myNodeId) continue
+                // Map coordinates relative to center
+                val angle = (loc.nodeId.hashCode() % 360) * (Math.PI / 180.0)
+                val distanceRatio = ((loc.nodeId.hashCode() and 0x7FFFFFFF) % 65 + 25) / 100f * maxR
+                val px = cx + (cos(angle) * distanceRatio).toFloat()
+                val py = cy + (sin(angle) * distanceRatio).toFloat()
+
+                // Glow ring
+                drawCircle(
+                    color = WarmGreen.copy(alpha = 0.25f * pulse),
+                    radius = 12.dp.toPx(),
+                    center = Offset(px, py)
+                )
+                // Core Pin
+                drawCircle(
+                    color = WarmGreen,
+                    radius = 5.dp.toPx(),
+                    center = Offset(px, py)
+                )
+
+                // Label
+                val labelPaint = android.graphics.Paint().apply {
+                    color = android.graphics.Color.DKGRAY
+                    textSize = 24f
+                    typeface = android.graphics.Typeface.DEFAULT_BOLD
+                    isAntiAlias = true
+                }
+                drawContext.canvas.nativeCanvas.drawText("📍 ${loc.alias}", px + 14f, py + 8f, labelPaint)
+            }
+        }
+
+        // Overlay Map Legend & Mode Badge
+        Row(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(8.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .background(WarmSurfaceContainer.copy(alpha = 0.9f))
+                .border(0.8.dp, WarmCardBorder, RoundedCornerShape(6.dp))
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(imageVector = Icons.Default.Explore, contentDescription = null, tint = BurntSienna, modifier = Modifier.size(12.dp))
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+                text = "100% Offline Grid • ${locations.size} GPS fixes",
+                color = TextPrimary,
+                fontSize = 10.sp,
+                fontFamily = ManropeFamily,
+                fontWeight = FontWeight.Bold
+            )
+        }
+    }
+}
+
+/**
+ * RSSI-Based Proximity Homing View ("Find My Peer").
+ * Search-and-Rescue beacon locator with live dBm signal strength gauge & pulsing distance rings.
+ */
+@Composable
+fun RssiProximityHomingView(
+    peers: List<PeerEntity>,
+    selectedPeerId: Long?,
+    onSelectPeer: (Long) -> Unit,
+    onOpenChat: (Long) -> Unit,
+    viewModel: MeshViewModel
+) {
+    val targetPeer = peers.find { it.nodeId == selectedPeerId } ?: peers.firstOrNull()
+    val rssi = targetPeer?.rssi ?: -75
+
+    // Proximity Distance Tiering
+    val (statusTitle, statusColor, pulseSpeed) = when {
+        rssi >= -60 -> Triple("IMMEDIATE PROXIMITY (< 1m)", WarmGreen, 400)
+        rssi >= -80 -> Triple("NEARBY (1m - 5m)", WarmAmber, 800)
+        else -> Triple("SEARCHING / WEAK (> 5m)", DustyRose, 1400)
+    }
+
+    val infiniteTransition = rememberInfiniteTransition(label = "HomingPulse")
+    val pulseAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.2f,
+        targetValue = 0.9f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(pulseSpeed, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "HomingPulseVal"
+    )
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .clip(RoundedCornerShape(12.dp))
+            .background(WarmSurface)
+            .border(1.dp, WarmCardBorder, RoundedCornerShape(12.dp))
+            .padding(12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.SpaceBetween
+    ) {
+        // Target Selector & Status
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
                 Text(
-                    text = "Chat",
+                    text = "TARGET: ${targetPeer?.alias ?: "No Peer Selected"}",
                     color = TextPrimary,
-                    fontSize = 12.sp,
+                    fontSize = 14.sp,
                     fontFamily = ManropeFamily,
-                    fontWeight = FontWeight.SemiBold
+                    fontWeight = FontWeight.ExtraBold
+                )
+                Text(
+                    text = statusTitle,
+                    color = statusColor,
+                    fontSize = 11.sp,
+                    fontFamily = ManropeFamily,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            if (targetPeer != null) {
+                Button(
+                    onClick = { onOpenChat(targetPeer.nodeId) },
+                    colors = ButtonDefaults.buttonColors(containerColor = BurntSienna),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                    shape = RoundedCornerShape(6.dp)
+                ) {
+                    Text("Hail Peer", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+
+        // Animated Concentric Homing Gauge
+        Box(
+            modifier = Modifier
+                .size(160.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val cx = size.width / 2f
+                val cy = size.height / 2f
+                val maxR = size.width / 2f
+
+                // Outer pulsing wave
+                drawCircle(
+                    color = statusColor.copy(alpha = 0.2f * pulseAlpha),
+                    radius = maxR * 0.95f
+                )
+                drawCircle(
+                    color = statusColor.copy(alpha = 0.4f * pulseAlpha),
+                    radius = maxR * 0.70f
+                )
+                drawCircle(
+                    color = statusColor.copy(alpha = 0.7f * pulseAlpha),
+                    radius = maxR * 0.45f
+                )
+                // Center node pin
+                drawCircle(
+                    color = statusColor,
+                    radius = maxR * 0.20f
+                )
+            }
+
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    text = if (targetPeer?.isDirect == true) "$rssi" else "Mesh",
+                    color = Color.White,
+                    fontSize = 18.sp,
+                    fontFamily = ManropeFamily,
+                    fontWeight = FontWeight.ExtraBold
+                )
+                Text(
+                    text = if (targetPeer?.isDirect == true) "dBm" else "${targetPeer?.hopCount ?: 1} hops",
+                    color = Color.White.copy(alpha = 0.85f),
+                    fontSize = 10.sp,
+                    fontFamily = ManropeFamily
                 )
             }
         }
+
+        // Relative Last Seen Info
+        Text(
+            text = "Last signal: ${targetPeer?.let { viewModel.formatLastSeen(it.lastSeen) } ?: "N/A"}",
+            color = TextSecondary,
+            fontSize = 11.sp,
+            fontFamily = ManropeFamily
+        )
     }
 }

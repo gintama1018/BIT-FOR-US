@@ -53,6 +53,18 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
     val topologyEdges: StateFlow<List<com.meshwhisper.app.data.model.TopologyEdgeEntity>> = database.topologyEdgeDao().getAllEdges()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val allLocations: StateFlow<List<com.meshwhisper.app.data.model.LastKnownLocationEntity>> = database.locationDao().getAllLocations()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val sosMessages: StateFlow<List<MessageEntity>> = database.messageDao().getSosMessages()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    private val _activeSosAlert = MutableStateFlow<SosAlertEvent?>(null)
+    val activeSosAlert: StateFlow<SosAlertEvent?> = _activeSosAlert.asStateFlow()
+
+    private val _selectedHomingPeerId = MutableStateFlow<Long?>(null)
+    val selectedHomingPeerId: StateFlow<Long?> = _selectedHomingPeerId.asStateFlow()
+
     // Engine & Router State
     val isBluetoothEnabled: StateFlow<Boolean> = bleEngine.isBluetoothEnabled
     val connectedPeersCount: StateFlow<Int> = bleEngine.connectedPeersCount
@@ -91,9 +103,46 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun announcePresence() {
+    fun announcePresence(latitude: Double? = null, longitude: Double? = null, accuracyMeters: Float = 0f) {
         viewModelScope.launch {
-            router.announcePresence()
+            router.announcePresence(latitude, longitude, accuracyMeters)
+        }
+    }
+
+    fun sendSosBroadcast(text: String, latitude: Double? = null, longitude: Double? = null) {
+        if (text.isBlank()) return
+        viewModelScope.launch {
+            router.sendSosBroadcast(text.trim(), latitude, longitude)
+        }
+    }
+
+    fun dismissSosAlert() {
+        _activeSosAlert.value = null
+    }
+
+    fun selectHomingPeer(peerId: Long?) {
+        _selectedHomingPeerId.value = peerId
+    }
+
+    fun checkEmergencyKeywords(input: String): Boolean {
+        if (input.isBlank()) return false
+        val regex = Regex("""\b(help|trapped|sos|emergency|fire|medical|injured|bleeding|earthquake|collapse|bachao|madad|danger)\b""", RegexOption.IGNORE_CASE)
+        return regex.containsMatchIn(input)
+    }
+
+    fun formatLastSeen(timestamp: Long): String {
+        if (timestamp <= 0L) return "Never seen"
+        val diff = System.currentTimeMillis() - timestamp
+        val seconds = diff / 1000
+        val minutes = seconds / 60
+        val hours = minutes / 60
+        val days = hours / 24
+        return when {
+            seconds < 15 -> "Active just now"
+            seconds < 60 -> "Active ${seconds}s ago"
+            minutes < 60 -> "Seen ${minutes}m ago"
+            hours < 24 -> "Seen ${hours}h ago"
+            else -> "Seen ${days}d ago"
         }
     }
 
@@ -441,6 +490,18 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+
+        // Emergency SOS Broadcast Listener
+        router.onSosAlertReceivedListener = { senderId, senderAlias, text, lat, lon ->
+            _activeSosAlert.value = SosAlertEvent(
+                senderId = senderId,
+                senderAlias = senderAlias,
+                text = text,
+                latitude = lat,
+                longitude = lon,
+                timestamp = System.currentTimeMillis()
+            )
+        }
     }
 
     fun setBackgroundRelayEnabled(enabled: Boolean) {
@@ -482,3 +543,12 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         app.stopMeshService()
     }
 }
+
+data class SosAlertEvent(
+    val senderId: Long,
+    val senderAlias: String,
+    val text: String,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    val timestamp: Long = System.currentTimeMillis()
+)

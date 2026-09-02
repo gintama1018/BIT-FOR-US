@@ -86,6 +86,9 @@ interface MessageDao {
     @Query("UPDATE messages SET mediaProgress = :progress, mediaUri = :mediaUri, status = :status WHERE messageId = :messageId")
     suspend fun updateMediaTransfer(messageId: String, progress: Float, mediaUri: String?, status: MessageStatus)
 
+    @Query("SELECT * FROM messages WHERE isSos = 1 ORDER BY timestamp DESC LIMIT :limit")
+    fun getSosMessages(limit: Int = 50): Flow<List<MessageEntity>>
+
     @Query("DELETE FROM messages")
     suspend fun deleteAll()
 }
@@ -153,4 +156,20 @@ interface TopologyEdgeDao {
     @Query("DELETE FROM topology_edges")
     suspend fun deleteAll()
 }
+
+@Dao
+interface LocationDao {
+    @Query("SELECT * FROM last_known_locations ORDER BY timestamp DESC")
+    fun getAllLocations(): Flow<List<com.meshwhisper.app.data.model.LastKnownLocationEntity>>
+
+    @Query("SELECT * FROM last_known_locations WHERE nodeId = :nodeId LIMIT 1")
+    suspend fun getLocationForNode(nodeId: Long): com.meshwhisper.app.data.model.LastKnownLocationEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertOrUpdate(location: com.meshwhisper.app.data.model.LastKnownLocationEntity)
+
+    @Query("DELETE FROM last_known_locations")
+    suspend fun deleteAll()
+}
+
 

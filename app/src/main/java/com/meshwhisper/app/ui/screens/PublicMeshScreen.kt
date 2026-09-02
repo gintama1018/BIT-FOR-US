@@ -26,6 +26,12 @@ import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.CellTower
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.Emergency
+import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -42,6 +48,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -83,8 +95,15 @@ fun PublicMeshScreen(
 ) {
     val messages by viewModel.broadcastMessages.collectAsState()
     val connectedNodes by viewModel.connectedPeersCount.collectAsState()
+    val activeSos by viewModel.activeSosAlert.collectAsState()
     var textInput by remember { mutableStateOf("") }
+    var showSosDialog by remember { mutableStateOf(false) }
+    var sosCustomText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
+
+    val isSosKeywordDetected = remember(textInput) {
+        viewModel.checkEmergencyKeywords(textInput)
+    }
 
     // Track active chat lifecycle for Smart Notifications (suppresses public notifications when open)
     DisposableEffect(Unit) {
@@ -101,13 +120,83 @@ fun PublicMeshScreen(
         }
     }
 
+    if (showSosDialog) {
+        AlertDialog(
+            onDismissRequest = { showSosDialog = false },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("🚨", fontSize = 20.sp)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Broadcast Emergency SOS",
+                        color = WarmRed,
+                        fontFamily = EBGaramondFamily,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp
+                    )
+                }
+            },
+            text = {
+                Column {
+                    Text(
+                        text = "This will transmit a high-priority SOS flood packet to ALL mesh nodes in range with maximum TTL relay priority.",
+                        color = TextPrimary,
+                        fontSize = 13.sp,
+                        fontFamily = ManropeFamily
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = sosCustomText,
+                        onValueChange = { sosCustomText = it },
+                        placeholder = { Text("Describe emergency (e.g. Trapped in B-Wing, Medical need)...", fontSize = 12.sp) },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = WarmRed,
+                            cursorColor = WarmRed
+                        )
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val finalMsg = if (sosCustomText.isNotBlank()) sosCustomText.trim() else "🚨 EMERGENCY SOS — Assistance needed immediately!"
+                        viewModel.sendSosBroadcast(finalMsg)
+                        showSosDialog = false
+                        sosCustomText = ""
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = WarmRed)
+                ) {
+                    Text("BROADCAST SOS", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { showSosDialog = false }) {
+                    Text("Cancel", color = TextSecondary)
+                }
+            },
+            containerColor = WarmSurface
+        )
+    }
+
     Column(
         modifier = modifier
             .fillMaxSize()
             .background(WarmLinen)
     ) {
         // Channel Top Header
-        PublicChannelHeader(connectedNodes = connectedNodes)
+        PublicChannelHeader(
+            connectedNodes = connectedNodes,
+            onSosClick = { showSosDialog = true }
+        )
+
+        // Active SOS Banner
+        if (activeSos != null) {
+            SosAlertBanner(
+                alert = activeSos!!,
+                onDismiss = { viewModel.dismissSosAlert() }
+            )
+        }
 
         // Messages List
         if (messages.isEmpty()) {
@@ -162,7 +251,7 @@ fun PublicMeshScreen(
             }
         }
 
-        // Message Input Field with Attachment & Voice Support
+        // Message Input Field with Attachment, Voice, & Keyword Triage
         ChatInputBar(
             text = textInput,
             onTextChanged = { textInput = it },
@@ -172,6 +261,11 @@ fun PublicMeshScreen(
                     textInput = ""
                 }
             },
+            onSendSos = {
+                viewModel.sendSosBroadcast(textInput)
+                textInput = ""
+            },
+            isSosSuggested = isSosKeywordDetected,
             onSendMedia = { mediaType, bytes, caption, durationMs, fileName, previewBytes, gridCols, gridRows, imageWidthPx, imageHeightPx, paddedTileByteLengths ->
                 viewModel.sendMediaBroadcast(
                     mediaType,
@@ -194,7 +288,89 @@ fun PublicMeshScreen(
 }
 
 @Composable
-private fun PublicChannelHeader(connectedNodes: Int) {
+private fun SosAlertBanner(
+    alert: com.meshwhisper.app.ui.viewmodel.SosAlertEvent,
+    onDismiss: () -> Unit
+) {
+    val infiniteTransition = rememberInfiniteTransition()
+    val pulseAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.75f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(600, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        )
+    )
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = WarmRed.copy(alpha = 0.12f * pulseAlpha)),
+        shape = RoundedCornerShape(8.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .border(1.2.dp, WarmRed.copy(alpha = 0.9f * pulseAlpha), RoundedCornerShape(8.dp))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(text = "🚨", fontSize = 22.sp)
+                Spacer(modifier = Modifier.width(10.dp))
+                Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "EMERGENCY SOS: ${alert.senderAlias}",
+                            color = WarmRed,
+                            fontSize = 13.sp,
+                            fontFamily = ManropeFamily,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                    }
+                    Text(
+                        text = alert.text,
+                        color = TextPrimary,
+                        fontSize = 13.sp,
+                        fontFamily = ManropeFamily,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 2
+                    )
+                    if (alert.latitude != null && alert.longitude != null) {
+                        Text(
+                            text = String.format("📍 %.4f, %.4f", alert.latitude, alert.longitude),
+                            color = TextSecondary,
+                            fontSize = 11.sp,
+                            fontFamily = ManropeFamily
+                        )
+                    }
+                }
+            }
+            IconButton(
+                onClick = onDismiss,
+                modifier = Modifier.size(28.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "Dismiss",
+                    tint = TextSecondary,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PublicChannelHeader(
+    connectedNodes: Int,
+    onSosClick: () -> Unit = {}
+) {
     Card(
         colors = CardDefaults.cardColors(containerColor = WarmSurface),
         shape = RoundedCornerShape(0.dp),
@@ -233,28 +409,54 @@ private fun PublicChannelHeader(connectedNodes: Int) {
                     )
                 }
 
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(WarmSurfaceContainer)
-                        .border(0.8.dp, WarmCardBorder, RoundedCornerShape(16.dp))
-                        .padding(horizontal = 10.dp, vertical = 4.dp)
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(6.dp)
-                                .clip(CircleShape)
-                                .background(if (connectedNodes > 0) WarmGreen else TextMuted)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = if (connectedNodes > 0) "$connectedNodes peer${if (connectedNodes != 1) "s" else ""}" else "Scanning...",
-                            color = if (connectedNodes > 0) TextPrimary else TextMuted,
-                            fontSize = 11.sp,
-                            fontFamily = ManropeFamily,
-                            fontWeight = FontWeight.SemiBold
-                        )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // SOS Fast-Action Button
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(WarmRed.copy(alpha = 0.15f))
+                            .border(1.dp, WarmRed.copy(alpha = 0.6f), RoundedCornerShape(16.dp))
+                            .clickable { onSosClick() }
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("🚨", fontSize = 11.sp)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "SOS",
+                                color = WarmRed,
+                                fontSize = 11.sp,
+                                fontFamily = ManropeFamily,
+                                fontWeight = FontWeight.ExtraBold
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.width(8.dp))
+
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(WarmSurfaceContainer)
+                            .border(0.8.dp, WarmCardBorder, RoundedCornerShape(16.dp))
+                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .clip(CircleShape)
+                                    .background(if (connectedNodes > 0) WarmGreen else TextMuted)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = if (connectedNodes > 0) "$connectedNodes peer${if (connectedNodes != 1) "s" else ""}" else "Scanning...",
+                                color = if (connectedNodes > 0) TextPrimary else TextMuted,
+                                fontSize = 11.sp,
+                                fontFamily = ManropeFamily,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
                     }
                 }
             }
@@ -281,9 +483,19 @@ fun BroadcastMessageBubble(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.padding(bottom = 2.dp, start = if (isMe) 0.dp else 4.dp, end = if (isMe) 4.dp else 0.dp)
         ) {
+            if (msg.isSos) {
+                Text(
+                    text = "🚨 SOS",
+                    color = WarmRed,
+                    fontSize = 11.sp,
+                    fontFamily = ManropeFamily,
+                    fontWeight = FontWeight.ExtraBold
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+            }
             Text(
                 text = if (isMe) "You" else msg.senderAlias,
-                color = if (isMe) BurntSienna else DustyRose,
+                color = if (msg.isSos) WarmRed else if (isMe) BurntSienna else DustyRose,
                 fontSize = 11.sp,
                 fontFamily = ManropeFamily,
                 fontWeight = FontWeight.Bold
@@ -309,10 +521,10 @@ fun BroadcastMessageBubble(
                         bottomEnd = if (isMe) 2.dp else 12.dp
                     )
                 )
-                .background(if (isMe) OutgoingBubble else IncomingBubble)
+                .background(if (msg.isSos) WarmRed.copy(alpha = 0.18f) else if (isMe) OutgoingBubble else IncomingBubble)
                 .border(
-                    0.8.dp,
-                    if (isMe) OutgoingBubbleBorder else IncomingBubbleBorder,
+                    if (msg.isSos) 1.2.dp else 0.8.dp,
+                    if (msg.isSos) WarmRed.copy(alpha = 0.7f) else if (isMe) OutgoingBubbleBorder else IncomingBubbleBorder,
                     RoundedCornerShape(12.dp)
                 )
                 .padding(horizontal = 14.dp, vertical = 10.dp)
@@ -389,6 +601,8 @@ fun ChatInputBar(
     text: String,
     onTextChanged: (String) -> Unit,
     onSend: () -> Unit,
+    onSendSos: (() -> Unit)? = null,
+    isSosSuggested: Boolean = false,
     onSendMedia: ((
         mediaType: MediaType,
         bytes: ByteArray,
@@ -492,6 +706,45 @@ fun ChatInputBar(
         modifier = Modifier.fillMaxWidth()
     ) {
         Column {
+            // Keyword Triage Prompt Bar
+            if (isSosSuggested && onSendSos != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(WarmRed.copy(alpha = 0.12f))
+                        .padding(horizontal = 14.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("🚨", fontSize = 13.sp)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Distress keyword detected",
+                            color = WarmRed,
+                            fontSize = 12.sp,
+                            fontFamily = ManropeFamily,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(WarmRed)
+                            .clickable { onSendSos() }
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = "BROADCAST SOS",
+                            color = Color.White,
+                            fontSize = 10.sp,
+                            fontFamily = ManropeFamily,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                    }
+                }
+            }
+
             HorizontalDivider(color = WarmCardBorder, thickness = 0.8.dp)
             if (isRecording) {
                 // Active Voice Recording Bar

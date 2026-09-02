@@ -20,7 +20,8 @@ enum class PacketType(val code: Byte) {
     TYPING_INDICATOR(0x08),
     MEDIA_NACK(0x09),
     MEDIA_ACK(0x0A),
-    MEDIA_ABORT(0x0B);
+    MEDIA_ABORT(0x0B),
+    SOS_MESSAGE(0x0C);
 
     companion object {
         fun fromCode(code: Byte): PacketType? {

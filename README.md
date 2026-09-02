@@ -152,9 +152,34 @@ When a `PEER_ANNOUNCE` packet arrives:
 1. If the Node ID is unknown, the public key is saved to `MeshDatabase` (Trust-On-First-Use).
 2. If the Node ID was previously recorded with a *different* public key, `MeshRouter` flags the peer as `hasKeyChanged = true`, purges cached session keys, and displays a prominent verification alert banner in the chat UI to detect Man-In-The-Middle (MITM) impersonation.
 
+### At-Rest Database Protection & Panic Wipe
+
+All persistent entities (`peers`, `messages`, `store_forward`, `packet_logs`, `processed_packets`, `topology_edges`, `last_known_locations`) are stored inside a SQLCipher database. The database passphrase is encrypted with an AES-256-GCM master key stored in `AndroidKeyStore`.
+
+**Emergency Panic Wipe Routine**:
+1. Destroys identity wrapping keys and database master keys from `AndroidKeyStore`.
+2. Flushes WAL, safely closes Room database connection, and deletes the encrypted database file and its journal from disk.
+3. Deletes all local voice notes, avatars, and media files from internal app storage.
+4. Clears all security and identity preferences and terminates the process for a clean state reset on next launch.
+
 ---
 
-## 5. Protocol Internals
+## 5. Operational Boundaries & Threat Model
+
+*To prevent overclaiming, the technical boundaries, physical constraints, and threat model of MeshWhisper are explicitly documented below:*
+
+| Aspect | Current Architecture Behavior | Operational Boundary / Threat Model |
+| :--- | :--- | :--- |
+| **Forward Secrecy** | Hourly deterministic epoch keys via X25519 ECDH + HKDF-SHA256 | Not per-message Double Ratchet; long-term key extraction allows historical epoch recovery. (Roadmap item) |
+| **Peer Discovery Authentication** | Plaintext `PEER_ANNOUNCE` broadcast frames | Discovery topology beacons are unauthenticated; message payloads and ACKs are authenticated via AEAD. |
+| **Flood Routing Scalability** | TTL-bounded (7 hops) + 2-layer dedup (4000-entry LRU + SQLite) | Flood traffic is $\mathcal{O}(N)$ per broadcast. Best suited for tactical teams (10–50 nodes); high density requires relay pacing. |
+| **RF Physical Propagation** | 2.4 GHz Bluetooth 5.0 LE & 2.4/5 GHz Wi-Fi Sockets | Concrete slabs attenuate 20–30 dB; multi-floor building coverage requires dedicated stairwell bridge relay nodes. |
+| **GPS Acquisition Indoors** | Hardware GPS satellite fix via Android `LocationManager` | Deep indoor/basement locations lack satellite line-of-sight; system gracefully attaches the latest cached coordinates. |
+| **Media Chunk Assembly** | Progressive tile streaming with selective NACK retransmission | Media chunks assemble in memory before atomic disk write; unexpected app termination mid-transfer requires sender retransmission. |
+
+---
+
+## 6. Protocol Internals
 
 ### Binary Packet Format
 
@@ -187,7 +212,7 @@ Packets are serialized as big-endian byte sequences with an exact 56-byte fixed 
 
 ---
 
-## 6. Getting Started
+## 7. Getting Started
 
 ### Prerequisites
 - Android Studio Ladybug / Meerkat or Command Line Tools
@@ -220,7 +245,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ---
 
-## 7. Sahara Warm Minimalist UI & Brand Identity
+## 8. Sahara Warm Minimalist UI & Brand Identity
 
 MeshWhisper follows the **Sahara Warm Minimalism** design philosophy:
 - **Palette**: Warm Linen background (`#FAF5EE`), Burnt Sienna CTAs (`#C2652A`), Warm Sand containers, and Amber gold accents.
@@ -229,6 +254,18 @@ MeshWhisper follows the **Sahara Warm Minimalism** design philosophy:
 
 ---
 
-## 8. License
+## 9. Engineering Roadmap
+
+- [x] **Phase 1: Hybrid Multi-Transport** (BLE + 100% Offline Wi-Fi LAN / Hotspot TCP & UDP Sockets)
+- [ ] **Phase 2: Topic Groups & Mesh Channels** (`#rescue`, `#medical`, `#general` rooms with scoped key derivation)
+- [x] **Phase 3: Search-and-Rescue (SAR) Suite** (GPS satellite acquisition, priority SOS flood routing, directional radar compass)
+- [ ] **Phase 4: Cross-Platform Desktop Client** (Windows / macOS companion mesh station)
+- [ ] **Phase 5: Push-To-Talk Voice Mesh** (Ultra-compact Opus audio streaming over hybrid channels)
+- [ ] **Future Security Hardening**: Ephemeral Signal Double Ratchet session key progression for per-message forward secrecy.
+
+---
+
+## 10. License
 
 MeshWhisper is licensed under the [Apache License, Version 2.0](LICENSE).
+

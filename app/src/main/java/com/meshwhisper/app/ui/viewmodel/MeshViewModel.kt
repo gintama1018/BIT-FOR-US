@@ -105,14 +105,24 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
 
     fun announcePresence(latitude: Double? = null, longitude: Double? = null, accuracyMeters: Float = 0f) {
         viewModelScope.launch {
-            router.announcePresence(latitude, longitude, accuracyMeters)
+            val loc = if (latitude != null && longitude != null) {
+                com.meshwhisper.app.location.LocationData(latitude, longitude, accuracyMeters)
+            } else {
+                app.locationHelper.getLastKnownLocation()
+            }
+            router.announcePresence(loc?.latitude, loc?.longitude, loc?.accuracy ?: 0f)
         }
     }
 
-    fun sendSosBroadcast(text: String, latitude: Double? = null, longitude: Double? = null) {
+    fun sendSosBroadcast(text: String, latitude: Double? = null, longitude: Double? = null, accuracyMeters: Float = 0f) {
         if (text.isBlank()) return
         viewModelScope.launch {
-            router.sendSosBroadcast(text.trim(), latitude, longitude)
+            val loc = if (latitude != null && longitude != null) {
+                com.meshwhisper.app.location.LocationData(latitude, longitude, accuracyMeters)
+            } else {
+                app.locationHelper.getCurrentLocation(timeoutMs = 2500L) ?: app.locationHelper.getLastKnownLocation()
+            }
+            router.sendSosBroadcast(text.trim(), loc?.latitude, loc?.longitude, loc?.accuracy ?: 0f)
         }
     }
 

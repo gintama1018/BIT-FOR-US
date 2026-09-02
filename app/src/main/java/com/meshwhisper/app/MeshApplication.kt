@@ -18,6 +18,7 @@ class MeshApplication : Application() {
     lateinit var database: MeshDatabase private set
     lateinit var bleEngine: MeshBleEngine private set
     lateinit var router: MeshRouter private set
+    lateinit var locationHelper: com.meshwhisper.app.location.LocationHelper private set
 
     override fun onCreate() {
         super.onCreate()
@@ -31,6 +32,7 @@ class MeshApplication : Application() {
 
         createNotificationChannel()
 
+        locationHelper = com.meshwhisper.app.location.LocationHelper(this)
         cryptoEngine = CryptoEngine.getInstance(this)
         database = MeshDatabase.getInstance(this)
         bleEngine = MeshBleEngine(this)

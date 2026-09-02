@@ -139,7 +139,7 @@ fun PublicMeshScreen(
             text = {
                 Column {
                     Text(
-                        text = "This will transmit a high-priority SOS flood packet to ALL mesh nodes in range with maximum TTL relay priority.",
+                        text = "This will transmit an urgent SOS broadcast with your latest GPS coordinates across the decentralized mesh network with multi-hop flood relay.",
                         color = TextPrimary,
                         fontSize = 13.sp,
                         fontFamily = ManropeFamily

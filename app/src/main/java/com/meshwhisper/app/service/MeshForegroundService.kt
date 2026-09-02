@@ -134,7 +134,8 @@ class MeshForegroundService : Service() {
             val app = MeshApplication.instance
             while (isActive) {
                 try {
-                    app.router.announcePresence()
+                    val loc = app.locationHelper.getLastKnownLocation()
+                    app.router.announcePresence(loc?.latitude, loc?.longitude, loc?.accuracy ?: 0f)
                 } catch (e: Exception) {
                     Log.e(tag, "Error during announcePresence heartbeat: ${e.message}")
                 }

@@ -250,6 +250,13 @@ class SecurityAndRoutingTest {
         val sosText = "HELP: Trapped in room 402 with 2 injured students"
         val textBytes = sosText.toByteArray(Charsets.UTF_8)
 
+        // Deterministic framed payload with flags=0 (no location)
+        val payloadBuf = java.nio.ByteBuffer.allocate(1 + 2 + textBytes.size)
+        payloadBuf.put(0x00.toByte())
+        payloadBuf.putShort((textBytes.size and 0xFFFF).toShort())
+        payloadBuf.put(textBytes)
+        val framedPayload = payloadBuf.array()
+
         val packet = MeshPacket(
             type = PacketType.SOS_MESSAGE,
             messageId = msgId,
@@ -257,11 +264,11 @@ class SecurityAndRoutingTest {
             recipientId = MeshPacket.BROADCAST_RECIPIENT_ID,
             ttl = MeshPacket.DEFAULT_TTL,
             timestamp = timestamp,
-            payload = textBytes
+            payload = framedPayload
         )
 
         val serialized = MeshPacket.serialize(packet)
-        assertThat(serialized.size).isEqualTo(MeshPacket.OVERHEAD_SIZE + textBytes.size)
+        assertThat(serialized.size).isEqualTo(MeshPacket.OVERHEAD_SIZE + framedPayload.size)
 
         val deserialized = MeshPacket.deserialize(serialized)
         assertThat(deserialized).isNotNull()
@@ -270,7 +277,15 @@ class SecurityAndRoutingTest {
         assertThat(deserialized.senderId).isEqualTo(senderId)
         assertThat(deserialized.recipientId).isEqualTo(MeshPacket.BROADCAST_RECIPIENT_ID)
         assertThat(deserialized.ttl).isEqualTo(MeshPacket.DEFAULT_TTL)
-        assertThat(String(deserialized.payload, Charsets.UTF_8)).isEqualTo(sosText)
+
+        // Parse framed payload
+        val readBuf = java.nio.ByteBuffer.wrap(deserialized.payload)
+        val flags = readBuf.get().toInt() and 0xFF
+        val textLen = readBuf.short.toInt() and 0xFFFF
+        val tBytes = ByteArray(textLen)
+        readBuf.get(tBytes)
+        assertThat(flags).isEqualTo(0)
+        assertThat(String(tBytes, Charsets.UTF_8)).isEqualTo(sosText)
 
         // Verify AAD binding
         val aad = deserialized.getAuthenticatedHeaderBytes()
@@ -282,6 +297,58 @@ class SecurityAndRoutingTest {
             timestamp = timestamp
         )
         assertThat(aad).isEqualTo(expectedAad)
+    }
+
+    @Test
+    fun testSosFramingWithLocationAndCoincidentalLetterL() {
+        // String where character at (length - 21) is intentionally 'L' to ensure zero false positives
+        val trickyText = "This is a sentence with Long words and Letters inside it!!"
+        val textBytes = trickyText.toByteArray(Charsets.UTF_8)
+        val lat = 28.6139
+        val lon = 77.2090
+        val acc = 8.5f
+
+        // 1. Framed WITH location (flags = 1)
+        val withLocBuf = java.nio.ByteBuffer.allocate(1 + 2 + textBytes.size + 20)
+        withLocBuf.put(0x01.toByte())
+        withLocBuf.putShort((textBytes.size and 0xFFFF).toShort())
+        withLocBuf.put(textBytes)
+        withLocBuf.putDouble(lat)
+        withLocBuf.putDouble(lon)
+        withLocBuf.putFloat(acc)
+        val payloadWithLoc = withLocBuf.array()
+
+        val readWithLoc = java.nio.ByteBuffer.wrap(payloadWithLoc)
+        val flags1 = readWithLoc.get().toInt() and 0xFF
+        val len1 = readWithLoc.short.toInt() and 0xFFFF
+        val str1Bytes = ByteArray(len1)
+        readWithLoc.get(str1Bytes)
+        val parsedLat = readWithLoc.double
+        val parsedLon = readWithLoc.double
+        val parsedAcc = readWithLoc.float
+
+        assertThat(flags1).isEqualTo(1)
+        assertThat(String(str1Bytes, Charsets.UTF_8)).isEqualTo(trickyText)
+        assertThat(parsedLat).isEqualTo(lat)
+        assertThat(parsedLon).isEqualTo(lon)
+        assertThat(parsedAcc).isEqualTo(acc)
+
+        // 2. Framed WITHOUT location (flags = 0) even with 'L' in the text
+        val withoutLocBuf = java.nio.ByteBuffer.allocate(1 + 2 + textBytes.size)
+        withoutLocBuf.put(0x00.toByte())
+        withoutLocBuf.putShort((textBytes.size and 0xFFFF).toShort())
+        withoutLocBuf.put(textBytes)
+        val payloadWithoutLoc = withoutLocBuf.array()
+
+        val readWithoutLoc = java.nio.ByteBuffer.wrap(payloadWithoutLoc)
+        val flags0 = readWithoutLoc.get().toInt() and 0xFF
+        val len0 = readWithoutLoc.short.toInt() and 0xFFFF
+        val str0Bytes = ByteArray(len0)
+        readWithoutLoc.get(str0Bytes)
+
+        assertThat(flags0).isEqualTo(0)
+        assertThat(String(str0Bytes, Charsets.UTF_8)).isEqualTo(trickyText)
+        assertThat(readWithoutLoc.hasRemaining()).isFalse() // No leftover false location bytes!
     }
 
     @Test

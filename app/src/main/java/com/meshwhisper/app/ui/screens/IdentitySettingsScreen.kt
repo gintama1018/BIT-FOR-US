@@ -643,12 +643,19 @@ fun IdentitySettingsScreen(
                         Spacer(modifier = Modifier.height(12.dp))
 
                         val isBtOn by viewModel.isBluetoothEnabled.collectAsState()
+                        val isWifiOn by viewModel.isWifiActive.collectAsState()
+                        val localIp by viewModel.localIpAddress.collectAsState()
+                        val wifiPeersCount by viewModel.wifiPeersCount.collectAsState()
+
                         DiagnosticRow("Bluetooth Radio", if (isBtOn) "Enabled (Radio Active)" else "Disabled (Radio Off)", isBtOn)
                         DiagnosticRow("BLE Peripheral (Advertiser)", if (supportsPeripheral) "Supported (Dual-Role)" else "Degraded (Central only)", supportsPeripheral)
+                        DiagnosticRow("Wi-Fi Subnet Sockets", if (isWifiOn) "Active (Port 42425/42426)" else "Searching / Offline", isWifiOn)
+                        DiagnosticRow("Local Subnet IP", localIp ?: "No LAN / Hotspot", localIp != null)
+                        DiagnosticRow("Wi-Fi Connected Peers", "$wifiPeersCount active TCP link${if (wifiPeersCount != 1) "s" else ""}", wifiPeersCount > 0)
                         DiagnosticRow("GATT Server", "Active (512-byte MTU)", true)
                         DiagnosticRow("BLE Central Scanner", "Active (Low-Latency)", true)
                         DiagnosticRow("Crypto Subsystem", "X25519 + AES-256-GCM + AAD", true)
-                        DiagnosticRow("Routing Algorithm", "Flood + TTL (7) + Persistent Dedup", true)
+                        DiagnosticRow("Routing Algorithm", "Dual-Radio Flood + TTL (7)", true)
                     }
                 }
             }

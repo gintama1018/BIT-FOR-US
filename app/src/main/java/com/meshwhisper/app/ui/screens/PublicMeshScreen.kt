@@ -40,6 +40,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -95,6 +96,7 @@ fun PublicMeshScreen(
 ) {
     val messages by viewModel.broadcastMessages.collectAsState()
     val connectedNodes by viewModel.connectedPeersCount.collectAsState()
+    val wifiPeersCount by viewModel.wifiPeersCount.collectAsState()
     val activeSos by viewModel.activeSosAlert.collectAsState()
     var textInput by remember { mutableStateOf("") }
     var showSosDialog by remember { mutableStateOf(false) }
@@ -148,20 +150,22 @@ fun PublicMeshScreen(
                     OutlinedTextField(
                         value = sosCustomText,
                         onValueChange = { sosCustomText = it },
-                        placeholder = { Text("Describe emergency (e.g. Trapped in B-Wing, Medical need)...", fontSize = 12.sp) },
+                        placeholder = { Text("Describe emergency / needs (optional)...", color = TextMuted) },
                         modifier = Modifier.fillMaxWidth(),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = WarmRed,
-                            cursorColor = WarmRed
-                        )
+                            unfocusedBorderColor = WarmCardBorder
+                        ),
+                        shape = RoundedCornerShape(8.dp),
+                        maxLines = 3
                     )
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        val finalMsg = if (sosCustomText.isNotBlank()) sosCustomText.trim() else "🚨 EMERGENCY SOS — Assistance needed immediately!"
-                        viewModel.sendSosBroadcast(finalMsg)
+                        val text = if (sosCustomText.isNotBlank()) "🚨 SOS: ${sosCustomText.trim()}" else "🚨 EMERGENCY SOS: Immediate assistance requested!"
+                        viewModel.sendSosBroadcast(text)
                         showSosDialog = false
                         sosCustomText = ""
                     },
@@ -171,7 +175,7 @@ fun PublicMeshScreen(
                 }
             },
             dismissButton = {
-                androidx.compose.material3.TextButton(onClick = { showSosDialog = false }) {
+                TextButton(onClick = { showSosDialog = false }) {
                     Text("Cancel", color = TextSecondary)
                 }
             },
@@ -187,6 +191,7 @@ fun PublicMeshScreen(
         // Channel Top Header
         PublicChannelHeader(
             connectedNodes = connectedNodes,
+            wifiPeersCount = wifiPeersCount,
             onSosClick = { showSosDialog = true }
         )
 
@@ -369,6 +374,7 @@ private fun SosAlertBanner(
 @Composable
 private fun PublicChannelHeader(
     connectedNodes: Int,
+    wifiPeersCount: Int = 0,
     onSosClick: () -> Unit = {}
 ) {
     Card(
@@ -453,16 +459,23 @@ private fun PublicChannelHeader(
                             .padding(horizontal = 10.dp, vertical = 4.dp)
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
+                            val isOnline = (connectedNodes > 0 || wifiPeersCount > 0)
                             Box(
                                 modifier = Modifier
                                     .size(6.dp)
                                     .clip(CircleShape)
-                                    .background(if (connectedNodes > 0) WarmGreen else TextMuted)
+                                    .background(if (isOnline) WarmGreen else TextMuted)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
+                            val badgeText = when {
+                                wifiPeersCount > 0 && connectedNodes > 0 -> "⚡ $connectedNodes BLE • $wifiPeersCount LAN"
+                                wifiPeersCount > 0 -> "⚡ $wifiPeersCount LAN"
+                                connectedNodes > 0 -> "$connectedNodes peer${if (connectedNodes != 1) "s" else ""}"
+                                else -> "Scanning..."
+                            }
                             Text(
-                                text = if (connectedNodes > 0) "$connectedNodes peer${if (connectedNodes != 1) "s" else ""}" else "Scanning...",
-                                color = if (connectedNodes > 0) TextPrimary else TextMuted,
+                                text = badgeText,
+                                color = if (isOnline) TextPrimary else TextMuted,
                                 fontSize = 11.sp,
                                 fontFamily = ManropeFamily,
                                 fontWeight = FontWeight.SemiBold

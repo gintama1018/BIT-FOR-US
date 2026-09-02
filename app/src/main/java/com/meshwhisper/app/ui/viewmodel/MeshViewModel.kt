@@ -76,6 +76,12 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
     val relayedPacketsCount: StateFlow<Int> = router.relayedPacketsCount
     val totalPacketsReceived: StateFlow<Int> = router.totalPacketsReceived
 
+    // Wi-Fi Transport State
+    val isWifiActive: StateFlow<Boolean> = app.wifiEngine.isWifiActive
+    val wifiPeersCount: StateFlow<Int> = app.wifiEngine.connectedPeersCount
+    val localIpAddress: StateFlow<String?> = app.wifiEngine.localIpAddress
+    val connectedWifiPeers: StateFlow<Map<Long, String>> = app.wifiEngine.connectedWifiPeers
+
     fun getDirectMessagesForPeer(peerNodeId: Long): Flow<List<MessageEntity>> {
         return database.messageDao().getDirectMessagesForPeer(peerNodeId)
     }
@@ -98,8 +104,9 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         if (newAlias.isBlank()) return
         cryptoEngine.alias = newAlias.trim()
         _myAlias.value = cryptoEngine.alias
+        app.wifiEngine.updateAlias(cryptoEngine.alias)
         viewModelScope.launch {
-            router.announcePresence()
+            announcePresence()
         }
     }
 

@@ -49,8 +49,9 @@ class MeshForegroundService : Service() {
             try {
                 app.bleEngine.setLowLatencyMode(false) // Balanced power mode for background
                 app.bleEngine.start(app.cryptoEngine.nodeId)
+                app.wifiEngine.start(app.cryptoEngine.nodeId, app.cryptoEngine.alias)
             } catch (e: Exception) {
-                Log.e(tag, "Failed to start BLE engine in service: ${e.message}", e)
+                Log.e(tag, "Failed to start engines in service: ${e.message}", e)
             }
             startHeartbeatLoop()
         }
@@ -100,8 +101,9 @@ class MeshForegroundService : Service() {
         if (!isActivityInForeground) {
             try {
                 MeshApplication.instance.bleEngine.stop()
+                MeshApplication.instance.wifiEngine.stop()
             } catch (e: Exception) {
-                Log.e(tag, "Error stopping BLE engine on pause: ${e.message}")
+                Log.e(tag, "Error stopping engines on pause: ${e.message}")
             }
         } else {
             Log.d(tag, "pauseRelay: Activity in foreground — skipping bleEngine.stop() to preserve live connection.")
@@ -121,8 +123,9 @@ class MeshForegroundService : Service() {
         try {
             app.bleEngine.setLowLatencyMode(false) // Balanced power mode
             app.bleEngine.start(app.cryptoEngine.nodeId)
+            app.wifiEngine.start(app.cryptoEngine.nodeId, app.cryptoEngine.alias)
         } catch (e: Exception) {
-            Log.e(tag, "Error starting BLE engine on resume: ${e.message}")
+            Log.e(tag, "Error starting engines on resume: ${e.message}")
         }
         startHeartbeatLoop()
         updateNotification()

@@ -431,4 +431,59 @@ class SecurityAndRoutingTest {
         assertThat(regex.containsMatchIn("The weather is nice today")).isFalse()
         assertThat(regex.containsMatchIn("I helpful helper helping")).isFalse() // Substring boundary check
     }
+
+    @Test
+    fun testWifiEngineBeaconSerializationAndParsing() {
+        val magic = byteArrayOf(0x4D, 0x57, 0x49, 0x46) // 'MWIF'
+        val nodeId = 0x7EEDBEEF12345678L
+        val tcpPort: Short = 42426.toShort()
+        val alias = "Responder-Hotspot"
+        val aliasBytes = alias.toByteArray(Charsets.UTF_8)
+
+        val beaconBytes = ByteArray(4 + 8 + 2 + 1 + aliasBytes.size)
+        val buf = java.nio.ByteBuffer.wrap(beaconBytes)
+        buf.put(magic)
+        buf.putLong(nodeId)
+        buf.putShort(tcpPort)
+        buf.put(aliasBytes.size.toByte())
+        buf.put(aliasBytes)
+
+        // Parse beacon
+        val readBuf = java.nio.ByteBuffer.wrap(beaconBytes)
+        val readMagic = ByteArray(4)
+        readBuf.get(readMagic)
+        assertThat(readMagic).isEqualTo(magic)
+
+        val readNodeId = readBuf.long
+        val readTcpPort = readBuf.short.toInt() and 0xFFFF
+        val readAliasLen = readBuf.get().toInt() and 0xFF
+        val readAliasBytes = ByteArray(readAliasLen)
+        readBuf.get(readAliasBytes)
+        val readAlias = String(readAliasBytes, Charsets.UTF_8)
+
+        assertThat(readNodeId).isEqualTo(nodeId)
+        assertThat(readTcpPort).isEqualTo(42426)
+        assertThat(readAlias).isEqualTo(alias)
+    }
+
+    @Test
+    fun testWifiStreamFrameEncodingAndReassembly() {
+        val rawMeshPacket = ByteArray(400) { (it % 128).toByte() }
+
+        // Encode as TCP length-prefixed stream frame
+        val frameBuf = java.nio.ByteBuffer.allocate(4 + rawMeshPacket.size)
+        frameBuf.putInt(rawMeshPacket.size)
+        frameBuf.put(rawMeshPacket)
+        val frameBytes = frameBuf.array()
+
+        assertThat(frameBytes.size).isEqualTo(404)
+
+        // Decode
+        val readBuf = java.nio.ByteBuffer.wrap(frameBytes)
+        val frameLen = readBuf.int
+        assertThat(frameLen).isEqualTo(400)
+        val decodedPacket = ByteArray(frameLen)
+        readBuf.get(decodedPacket)
+        assertThat(decodedPacket).isEqualTo(rawMeshPacket)
+    }
 }

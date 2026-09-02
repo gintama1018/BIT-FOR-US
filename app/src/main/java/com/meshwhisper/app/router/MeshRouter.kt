@@ -26,6 +26,7 @@ import java.util.UUID
 class MeshRouter(
     private val context: Context,
     private val bleEngine: MeshBleEngine,
+    val wifiEngine: com.meshwhisper.app.wifi.MeshWifiEngine,
     private val cryptoEngine: CryptoEngine,
     private val database: MeshDatabase
 ) {
@@ -45,17 +46,22 @@ class MeshRouter(
     private val _totalPacketsReceived = MutableStateFlow(0)
     val totalPacketsReceived: StateFlow<Int> = _totalPacketsReceived.asStateFlow()
 
+    suspend fun broadcastPacket(rawBytes: ByteArray, ingressAddress: String? = null) {
+        bleEngine.broadcastPacket(rawBytes, ingressAddress)
+        wifiEngine.broadcastPacket(rawBytes, ingressAddress)
+    }
+
     val mediaTransferManager = com.meshwhisper.app.media.MediaTransferManager(
         context = context,
         database = database,
         cryptoEngine = cryptoEngine,
-        packetBroadcaster = { bleEngine.broadcastPacket(it) },
+        packetBroadcaster = { broadcastPacket(it) },
         ackSender = { recipientId, msgId ->
             scope.launch {
                 sendAck(recipientId, msgId)
             }
         },
-        isDirectPeer = { bleEngine.isDirectlyConnected(it) }
+        isDirectPeer = { bleEngine.isDirectlyConnected(it) || wifiEngine.isPeerConnected(it) }
     )
 
     private val lastDrainTimes = java.util.concurrent.ConcurrentHashMap<Long, Long>()
@@ -83,6 +89,16 @@ class MeshRouter(
                 if (directNodeId != null && directNodeId != 0L) {
                     database.peerDao().updateRssi(directNodeId, rssi)
                 }
+            }
+        }
+
+        wifiEngine.onPacketReceivedListener = { packetBytes, ingressAddress ->
+            handleIncomingPacket(packetBytes, ingressAddress)
+        }
+
+        wifiEngine.onPeerConnectedListener = { peerId, ip ->
+            scope.launch {
+                announcePresence()
             }
         }
     }
@@ -316,7 +332,7 @@ class MeshRouter(
         if (packet.ttl > 1 && packet.senderId != cryptoEngine.nodeId) {
             val relayedPacket = packet.decrementTtl()
             val relayedBytes = MeshPacket.serialize(relayedPacket)
-            bleEngine.broadcastPacket(relayedBytes, ingressAddress)
+            broadcastPacket(relayedBytes, ingressAddress)
             _relayedPacketsCount.value += 1
             logPacket("RELAY", relayedPacket, relayedBytes.size, "Relaying peer announce for ${packet.senderId}")
         }
@@ -367,7 +383,7 @@ class MeshRouter(
         if (packet.ttl > 1 && packet.senderId != cryptoEngine.nodeId) {
             val relayedPacket = packet.decrementTtl()
             val relayedBytes = MeshPacket.serialize(relayedPacket)
-            bleEngine.broadcastPacket(relayedBytes, ingressAddress)
+            broadcastPacket(relayedBytes, ingressAddress)
             _relayedPacketsCount.value += 1
             logPacket("RELAY", relayedPacket, relayedBytes.size, "Relaying broadcast msg")
         }
@@ -445,7 +461,7 @@ class MeshRouter(
             if (packet.ttl > 1) {
                 val relayedPacket = packet.decrementTtl()
                 val relayedBytes = MeshPacket.serialize(relayedPacket)
-                bleEngine.broadcastPacket(relayedBytes, ingressAddress)
+                broadcastPacket(relayedBytes, ingressAddress)
                 _relayedPacketsCount.value += 1
             }
         }
@@ -495,7 +511,7 @@ class MeshRouter(
             // Relay the ACK back towards sender
             val relayedPacket = packet.decrementTtl()
             val relayedBytes = MeshPacket.serialize(relayedPacket)
-            bleEngine.broadcastPacket(relayedBytes, ingressAddress)
+            broadcastPacket(relayedBytes, ingressAddress)
             _relayedPacketsCount.value += 1
             logPacket("RELAY", relayedPacket, relayedBytes.size, "Relaying ACK (ackId=${packet.messageId})")
         }
@@ -516,7 +532,7 @@ class MeshRouter(
         if (packet.ttl > 1 && (!isForMe || isBroadcast)) {
             val relayedPacket = packet.decrementTtl()
             val relayedBytes = MeshPacket.serialize(relayedPacket)
-            bleEngine.broadcastPacket(relayedBytes, ingressAddress)
+            broadcastPacket(relayedBytes, ingressAddress)
             _relayedPacketsCount.value += 1
             logPacket("RELAY", relayedPacket, relayedBytes.size, "Relaying MEDIA_INIT from ${packet.senderId}")
         }
@@ -535,7 +551,7 @@ class MeshRouter(
         if (packet.ttl > 1 && (!isForMe || isBroadcast)) {
             val relayedPacket = packet.decrementTtl()
             val relayedBytes = MeshPacket.serialize(relayedPacket)
-            bleEngine.broadcastPacket(relayedBytes, ingressAddress)
+            broadcastPacket(relayedBytes, ingressAddress)
             _relayedPacketsCount.value += 1
             logPacket("RELAY", relayedPacket, relayedBytes.size, "Relaying MEDIA_CHUNK from ${packet.senderId}")
         }
@@ -552,7 +568,7 @@ class MeshRouter(
         if (packet.ttl > 1 && !isForMe) {
             val relayedPacket = packet.decrementTtl()
             val relayedBytes = MeshPacket.serialize(relayedPacket)
-            bleEngine.broadcastPacket(relayedBytes, ingressAddress)
+            broadcastPacket(relayedBytes, ingressAddress)
             _relayedPacketsCount.value += 1
             logPacket("RELAY", relayedPacket, relayedBytes.size, "Relaying MEDIA_NACK for ${packet.recipientId}")
         }
@@ -569,7 +585,7 @@ class MeshRouter(
         if (packet.ttl > 1 && !isForMe) {
             val relayedPacket = packet.decrementTtl()
             val relayedBytes = MeshPacket.serialize(relayedPacket)
-            bleEngine.broadcastPacket(relayedBytes, ingressAddress)
+            broadcastPacket(relayedBytes, ingressAddress)
             _relayedPacketsCount.value += 1
             logPacket("RELAY", relayedPacket, relayedBytes.size, "Relaying MEDIA_ACK for ${packet.recipientId}")
         }
@@ -586,7 +602,7 @@ class MeshRouter(
         if (packet.ttl > 1 && !isForMe) {
             val relayedPacket = packet.decrementTtl()
             val relayedBytes = MeshPacket.serialize(relayedPacket)
-            bleEngine.broadcastPacket(relayedBytes, ingressAddress)
+            broadcastPacket(relayedBytes, ingressAddress)
             _relayedPacketsCount.value += 1
             logPacket("RELAY", relayedPacket, relayedBytes.size, "Relaying MEDIA_ABORT for ${packet.recipientId}")
         }
@@ -656,7 +672,7 @@ class MeshRouter(
         } catch (e: Exception) {
             Log.e(tag, "Failed to purge old records: ${e.message}")
         }
-        bleEngine.broadcastPacket(raw)
+        broadcastPacket(raw)
         logPacket("TX", packet, raw.size, "Broadcasted local peer announce (${directNeighbors.size} neighbors)")
 
         if (hasLocation) {
@@ -744,7 +760,7 @@ class MeshRouter(
         database.messageDao().insert(messageEntity)
 
         // Out-of-band immediate priority broadcast
-        bleEngine.broadcastPacket(raw)
+        broadcastPacket(raw)
         logPacket("TX", packet, raw.size, "PRIORITY_SOS_BROADCAST: Emergency SOS transmitted")
 
         if (hasLocation) {
@@ -840,7 +856,7 @@ class MeshRouter(
         if (packet.ttl > 1 && packet.senderId != cryptoEngine.nodeId) {
             val relayedPacket = packet.decrementTtl()
             val relayedBytes = MeshPacket.serialize(relayedPacket)
-            bleEngine.broadcastPacket(relayedBytes, ingressAddress)
+            broadcastPacket(relayedBytes, ingressAddress)
             _relayedPacketsCount.value += 1
             logPacket("RELAY", relayedPacket, relayedBytes.size, "PRIORITY_SOS_RELAY: Forwarded emergency SOS across mesh")
         }
@@ -899,7 +915,7 @@ class MeshRouter(
         database.processedPacketDao().markSeen(
             com.meshwhisper.app.data.model.ProcessedPacketEntity(dedupKey, timestamp)
         )
-        bleEngine.broadcastPacket(raw)
+        broadcastPacket(raw)
         logPacket("TX", packet, raw.size, "Sent broadcast msg (${text.length} chars)")
 
         return msgId.toString()
@@ -978,7 +994,11 @@ class MeshRouter(
         )
         database.storeForwardDao().insert(sf)
 
-        bleEngine.broadcastPacket(raw)
+        // Dual-Radio Dispatch: Send directly over Wi-Fi TCP if available, otherwise BLE broadcast
+        if (wifiEngine.isPeerConnected(recipientNodeId)) {
+            wifiEngine.sendDirectPacket(recipientNodeId, raw)
+        }
+        broadcastPacket(raw)
         logPacket("TX", packet, raw.size, "Sent direct DM to $recipientNodeId (${text.length} chars)")
 
         return msgId.toString()
@@ -1035,7 +1055,10 @@ class MeshRouter(
         database.processedPacketDao().markSeen(
             com.meshwhisper.app.data.model.ProcessedPacketEntity(dedupKey, timestamp)
         )
-        bleEngine.broadcastPacket(raw)
+        if (wifiEngine.isPeerConnected(recipientNodeId)) {
+            wifiEngine.sendDirectPacket(recipientNodeId, raw)
+        }
+        broadcastPacket(raw)
         logPacket("ACK_TX", ackPacket, raw.size, "Sent authenticated ACK for msg $originalMsgId to $recipientNodeId (ackId=$ackPacketId)")
     }
 
@@ -1050,7 +1073,7 @@ class MeshRouter(
 
         val pending = database.storeForwardDao().getPendingForRecipient(recipientNodeId, now)
         for (item in pending) {
-            bleEngine.broadcastPacket(item.packetData)
+            broadcastPacket(item.packetData)
             logPacket("SF_DRAIN", null, item.packetData.size, "Draining store-and-forward msg ${item.messageId} to $recipientNodeId")
         }
     }
@@ -1090,7 +1113,7 @@ class MeshRouter(
         )
 
         val raw = MeshPacket.serialize(packet)
-        bleEngine.broadcastPacket(raw)
+        broadcastPacket(raw)
         logPacket("TX", packet, raw.size, "Requested avatar from $peerNodeId")
     }
 
@@ -1131,7 +1154,7 @@ class MeshRouter(
         } else if (packet.ttl > 1) {
             val relayedPacket = packet.decrementTtl()
             val relayedBytes = MeshPacket.serialize(relayedPacket)
-            bleEngine.broadcastPacket(relayedBytes, ingressAddress)
+            broadcastPacket(relayedBytes, ingressAddress)
             _relayedPacketsCount.value += 1
             logPacket("RELAY", relayedPacket, relayedBytes.size, "Relaying avatar request for ${packet.recipientId}")
         }

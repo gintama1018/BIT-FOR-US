@@ -17,6 +17,7 @@ class MeshApplication : Application() {
     lateinit var cryptoEngine: CryptoEngine private set
     lateinit var database: MeshDatabase private set
     lateinit var bleEngine: MeshBleEngine private set
+    lateinit var wifiEngine: com.meshwhisper.app.wifi.MeshWifiEngine private set
     lateinit var router: MeshRouter private set
     lateinit var locationHelper: com.meshwhisper.app.location.LocationHelper private set
 
@@ -36,7 +37,8 @@ class MeshApplication : Application() {
         cryptoEngine = CryptoEngine.getInstance(this)
         database = MeshDatabase.getInstance(this)
         bleEngine = MeshBleEngine(this)
-        router = MeshRouter(this, bleEngine, cryptoEngine, database)
+        wifiEngine = com.meshwhisper.app.wifi.MeshWifiEngine(this)
+        router = MeshRouter(this, bleEngine, wifiEngine, cryptoEngine, database)
     }
 
     fun startMeshService() {
@@ -51,8 +53,9 @@ class MeshApplication : Application() {
             android.util.Log.e("MeshApplication", "startForegroundService failed: ${e.message}", e)
             try {
                 bleEngine.start(cryptoEngine.nodeId)
+                wifiEngine.start(cryptoEngine.nodeId, cryptoEngine.alias)
             } catch (ex: Exception) {
-                android.util.Log.e("MeshApplication", "In-process bleEngine start failed: ${ex.message}", ex)
+                android.util.Log.e("MeshApplication", "In-process engines start failed: ${ex.message}", ex)
             }
         }
     }

@@ -43,8 +43,8 @@ data class MeshPacket(
     companion object {
         const val BROADCAST_RECIPIENT_ID: Long = -1L // 0xFFFFFFFFFFFFFFFFL in unsigned
         const val DEFAULT_TTL: Int = 7
-        const val MEDIA_TTL: Int = 4 // Lower TTL to protect flood mesh bandwidth
-        const val MEDIA_DIRECT_TTL: Int = 1 // Single-hop point-to-point media transfers
+        const val MEDIA_TTL: Int = 4 // Broadcast media TTL
+        const val MEDIA_DIRECT_TTL: Int = 4 // Multi-hop direct media transfers (up to 4 hops)
         const val HEADER_SIZE: Int = 40
         const val AUTH_TAG_SIZE: Int = 16
         const val OVERHEAD_SIZE: Int = HEADER_SIZE + AUTH_TAG_SIZE // 56 bytes

@@ -98,8 +98,8 @@ class ReliableTransferTest {
     }
 
     @Test
-    fun testDirectMediaTtlIsStrictlySingleHop() {
-        assertThat(MeshPacket.MEDIA_DIRECT_TTL).isEqualTo(1)
+    fun testDirectMediaTtlIsMultiHopRelayCapable() {
+        assertThat(MeshPacket.MEDIA_DIRECT_TTL).isEqualTo(4)
     }
 
     @Test

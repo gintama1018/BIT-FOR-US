@@ -126,11 +126,17 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         if (text.isBlank()) return
         viewModelScope.launch {
             val loc = if (latitude != null && longitude != null) {
-                com.meshwhisper.app.location.LocationData(latitude, longitude, accuracyMeters)
+                com.meshwhisper.app.location.LocationData(latitude, longitude, accuracyMeters, timestamp = System.currentTimeMillis())
             } else {
-                app.locationHelper.getCurrentLocation(timeoutMs = 2500L) ?: app.locationHelper.getLastKnownLocation()
+                app.locationHelper.getCurrentLocation(timeoutMs = 3000L) ?: app.locationHelper.getLastKnownLocation()
             }
-            router.sendSosBroadcast(text.trim(), loc?.latitude, loc?.longitude, loc?.accuracy ?: 0f)
+            router.sendSosBroadcast(
+                text = text.trim(),
+                latitude = loc?.latitude,
+                longitude = loc?.longitude,
+                accuracyMeters = loc?.accuracy ?: 0f,
+                locationFixTimestamp = loc?.timestamp ?: System.currentTimeMillis()
+            )
         }
     }
 
@@ -518,13 +524,14 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         // Emergency SOS Broadcast Listener
-        router.onSosAlertReceivedListener = { senderId, senderAlias, text, lat, lon ->
+        router.onSosAlertReceivedListener = { senderId, senderAlias, text, lat, lon, fixTimestamp ->
             _activeSosAlert.value = SosAlertEvent(
                 senderId = senderId,
                 senderAlias = senderAlias,
                 text = text,
                 latitude = lat,
                 longitude = lon,
+                fixTimestamp = fixTimestamp,
                 timestamp = System.currentTimeMillis()
             )
         }
@@ -576,5 +583,9 @@ data class SosAlertEvent(
     val text: String,
     val latitude: Double? = null,
     val longitude: Double? = null,
+    val fixTimestamp: Long? = null,
     val timestamp: Long = System.currentTimeMillis()
-)
+) {
+    val isLocationStale: Boolean
+        get() = fixTimestamp != null && (System.currentTimeMillis() - fixTimestamp) > 10 * 60 * 1000L
+}

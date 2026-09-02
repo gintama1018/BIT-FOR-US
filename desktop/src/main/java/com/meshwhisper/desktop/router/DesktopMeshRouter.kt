@@ -283,13 +283,25 @@ class DesktopMeshRouter(
     }
 
     private fun handlePeerAnnounce(packet: MeshPacket) {
-        val payload = packet.payload
-        if (payload.size < 33) return
+        val publicChannelKey = PureCryptoEngine.derivePublicChannelKey()
+        val decryptedPayload = try {
+            PureCryptoEngine.decrypt(
+                ciphertext = packet.payload,
+                authTag = packet.authTag,
+                messageId = packet.messageId,
+                aesKey = publicChannelKey,
+                aad = packet.getAuthenticatedHeaderBytes()
+            )
+        } catch (_: Exception) {
+            packet.payload
+        }
+
+        if (decryptedPayload.size < 33) return
 
         // Verify Ed25519 signature if present (Fix P0-1)
-        if (payload.size >= 33 + 64) {
-            val unsigned = payload.copyOfRange(0, payload.size - 64)
-            val sig = payload.copyOfRange(payload.size - 64, payload.size)
+        if (decryptedPayload.size >= 33 + 64) {
+            val unsigned = decryptedPayload.copyOfRange(0, decryptedPayload.size - 64)
+            val sig = decryptedPayload.copyOfRange(decryptedPayload.size - 64, decryptedPayload.size)
             val tempBuf = ByteBuffer.wrap(unsigned)
             val aLen = tempBuf.get().toInt() and 0xFF
             if (tempBuf.remaining() >= aLen + 32) {
@@ -304,7 +316,7 @@ class DesktopMeshRouter(
             }
         }
 
-        val buffer = ByteBuffer.wrap(payload)
+        val buffer = ByteBuffer.wrap(decryptedPayload)
         val aliasLen = buffer.get().toInt() and 0xFF
         if (buffer.remaining() < aliasLen + 32) return
 
@@ -519,14 +531,34 @@ class DesktopMeshRouter(
         System.arraycopy(unsignedPayload, 0, signedPayload, 0, unsignedPayload.size)
         System.arraycopy(sig, 0, signedPayload, unsignedPayload.size, sig.size)
 
+        val msgId = UUID.randomUUID()
+        val timestamp = System.currentTimeMillis() / 1000L
+        val publicChannelKey = PureCryptoEngine.derivePublicChannelKey()
+
+        val aad = MeshPacket.computeAad(
+            type = PacketType.PEER_ANNOUNCE,
+            messageId = msgId,
+            senderId = myNodeId,
+            recipientId = MeshPacket.BROADCAST_RECIPIENT_ID,
+            timestamp = timestamp
+        )
+
+        val encResult = PureCryptoEngine.encrypt(
+            plaintext = signedPayload,
+            messageId = msgId,
+            aesKey = publicChannelKey,
+            aad = aad
+        )
+
         val packet = MeshPacket(
             type = PacketType.PEER_ANNOUNCE,
-            messageId = UUID.randomUUID(),
+            messageId = msgId,
             senderId = myNodeId,
             recipientId = MeshPacket.BROADCAST_RECIPIENT_ID,
             ttl = MeshPacket.DEFAULT_TTL,
-            timestamp = System.currentTimeMillis() / 1000L,
-            payload = signedPayload
+            timestamp = timestamp,
+            payload = encResult.ciphertext,
+            authTag = encResult.authTag
         )
 
         val raw = MeshPacket.serialize(packet)

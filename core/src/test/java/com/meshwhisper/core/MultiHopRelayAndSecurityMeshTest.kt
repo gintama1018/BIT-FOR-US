@@ -262,4 +262,58 @@ class MultiHopRelayAndSecurityMeshTest {
         val isFakeSigRejected = PureCryptoEngine.verifySignature(aliceSigningPub, announceData, forgedMallorySig)
         assertThat(isFakeSigRejected).isFalse()
     }
+
+    @Test
+    fun testPeerAnnounceAeadEncryptionAndSignature() {
+        val (alicePriv, alicePub) = PureCryptoEngine.generateX25519KeyPair()
+        val aliceSigningPub = PureCryptoEngine.deriveSigningPublicKey(alicePriv)
+        val aliceNodeId = PureCryptoEngine.deriveNodeId(alicePub)
+
+        val unsignedAnnounce = "ALIAS=AliceNode;PUB=${PureCryptoEngine.bytesToHex(alicePub)};GPS=12.9716,77.5946".toByteArray(Charsets.UTF_8)
+        val signature = PureCryptoEngine.sign(alicePriv, unsignedAnnounce)
+
+        val signedPayload = ByteArray(unsignedAnnounce.size + signature.size)
+        System.arraycopy(unsignedAnnounce, 0, signedPayload, 0, unsignedAnnounce.size)
+        System.arraycopy(signature, 0, signedPayload, unsignedAnnounce.size, signature.size)
+
+        val msgId = UUID.randomUUID()
+        val timestamp = 1720000000L
+        val publicChannelKey = PureCryptoEngine.derivePublicChannelKey()
+
+        val aad = MeshPacket.computeAad(
+            type = PacketType.PEER_ANNOUNCE,
+            messageId = msgId,
+            senderId = aliceNodeId,
+            recipientId = MeshPacket.BROADCAST_RECIPIENT_ID,
+            timestamp = timestamp
+        )
+
+        // 1. Encrypt signed payload with public channel key (P0-1 Fix)
+        val encResult = PureCryptoEngine.encrypt(
+            plaintext = signedPayload,
+            messageId = msgId,
+            aesKey = publicChannelKey,
+            aad = aad
+        )
+
+        // Passive BLE sniffer only sees ciphertext on air (no plaintext alias or GPS coordinates)
+        val wireCiphertext = encResult.ciphertext
+        assertThat(String(wireCiphertext, Charsets.ISO_8859_1)).doesNotContain("AliceNode")
+        assertThat(String(wireCiphertext, Charsets.ISO_8859_1)).doesNotContain("12.9716")
+
+        // 2. Legitimate mesh peer decrypts and verifies Ed25519 signature
+        val decrypted = PureCryptoEngine.decrypt(
+            ciphertext = encResult.ciphertext,
+            authTag = encResult.authTag,
+            messageId = msgId,
+            aesKey = publicChannelKey,
+            aad = aad
+        )
+        assertThat(decrypted).isEqualTo(signedPayload)
+
+        val recoveredUnsigned = decrypted.copyOfRange(0, decrypted.size - 64)
+        val recoveredSig = decrypted.copyOfRange(decrypted.size - 64, decrypted.size)
+        val isVerified = PureCryptoEngine.verifySignature(aliceSigningPub, recoveredUnsigned, recoveredSig)
+        assertThat(isVerified).isTrue()
+    }
 }

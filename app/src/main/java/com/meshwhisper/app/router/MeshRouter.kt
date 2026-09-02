@@ -71,7 +71,7 @@ class MeshRouter(
 
     var onTypingIndicatorListener: ((senderId: Long, isTyping: Boolean) -> Unit)? = null
     var onIncomingMessageListener: ((senderId: Long, senderAlias: String, text: String, isBroadcast: Boolean) -> Unit)? = null
-    var onSosAlertReceivedListener: ((senderId: Long, senderAlias: String, text: String, lat: Double?, lon: Double?) -> Unit)? = null
+    var onSosAlertReceivedListener: ((senderId: Long, senderAlias: String, text: String, lat: Double?, lon: Double?, fixTimestamp: Long?) -> Unit)? = null
 
     init {
         bleEngine.onPacketReceivedListener = { packetBytes, ingressAddress ->
@@ -222,12 +222,24 @@ class MeshRouter(
     // =========================================================================
 
     private suspend fun handlePeerAnnounce(packet: MeshPacket, ingressAddress: String?) {
-        if (packet.payload.size < 32) return
+        val decryptedPayload = try {
+            cryptoEngine.decrypt(
+                ciphertext = packet.payload,
+                authTag = packet.authTag,
+                messageId = packet.messageId,
+                aesKey = cryptoEngine.publicChannelKey,
+                aad = packet.getAuthenticatedHeaderBytes()
+            )
+        } catch (_: Exception) {
+            packet.payload
+        }
+
+        if (decryptedPayload.size < 32) return
 
         // Cryptographic Signature Verification for PEER_ANNOUNCE (Anti-Spoofing P0-1 Fix)
-        if (packet.payload.size >= 32 + 64) {
-            val unsignedData = packet.payload.copyOfRange(0, packet.payload.size - 64)
-            val signature = packet.payload.copyOfRange(packet.payload.size - 64, packet.payload.size)
+        if (decryptedPayload.size >= 32 + 64) {
+            val unsignedData = decryptedPayload.copyOfRange(0, decryptedPayload.size - 64)
+            val signature = decryptedPayload.copyOfRange(decryptedPayload.size - 64, decryptedPayload.size)
 
             val tempBuffer = ByteBuffer.wrap(unsignedData)
             val tempAliasLen = tempBuffer.get().toInt() and 0xFF
@@ -245,7 +257,7 @@ class MeshRouter(
             }
         }
 
-        val buffer = ByteBuffer.wrap(packet.payload)
+        val buffer = ByteBuffer.wrap(decryptedPayload)
         val aliasLen = buffer.get().toInt() and 0xFF
         if (buffer.remaining() < aliasLen + 32) return
 
@@ -710,14 +722,33 @@ class MeshRouter(
         System.arraycopy(unsignedPayload, 0, signedPayload, 0, unsignedPayload.size)
         System.arraycopy(signature, 0, signedPayload, unsignedPayload.size, signature.size)
 
+        val msgId = UUID.randomUUID()
+        val timestamp = System.currentTimeMillis() / 1000L
+
+        val aad = MeshPacket.computeAad(
+            type = PacketType.PEER_ANNOUNCE,
+            messageId = msgId,
+            senderId = cryptoEngine.nodeId,
+            recipientId = MeshPacket.BROADCAST_RECIPIENT_ID,
+            timestamp = timestamp
+        )
+
+        val encResult = cryptoEngine.encrypt(
+            plaintext = signedPayload,
+            messageId = msgId,
+            aesKey = cryptoEngine.publicChannelKey,
+            aad = aad
+        )
+
         val packet = MeshPacket(
             type = PacketType.PEER_ANNOUNCE,
-            messageId = UUID.randomUUID(),
+            messageId = msgId,
             senderId = cryptoEngine.nodeId,
             recipientId = MeshPacket.BROADCAST_RECIPIENT_ID,
             ttl = MeshPacket.DEFAULT_TTL,
-            timestamp = System.currentTimeMillis() / 1000L,
-            payload = signedPayload
+            timestamp = timestamp,
+            payload = encResult.ciphertext,
+            authTag = encResult.authTag
         )
 
         val raw = MeshPacket.serialize(packet)
@@ -751,13 +782,19 @@ class MeshRouter(
         }
     }
 
-    suspend fun sendSosBroadcast(text: String, latitude: Double? = null, longitude: Double? = null, accuracyMeters: Float = 0f): String {
+    suspend fun sendSosBroadcast(
+        text: String,
+        latitude: Double? = null,
+        longitude: Double? = null,
+        accuracyMeters: Float = 0f,
+        locationFixTimestamp: Long = System.currentTimeMillis()
+    ): String {
         val msgId = UUID.randomUUID()
         val textBytes = text.toByteArray(Charsets.UTF_8)
         val timestamp = System.currentTimeMillis() / 1000L
 
         val hasLocation = (latitude != null && longitude != null)
-        val locationSize = if (hasLocation) 8 + 8 + 4 else 0 // 20 bytes
+        val locationSize = if (hasLocation) 8 + 8 + 4 + 8 else 0 // 28 bytes
         val payloadBuf = ByteBuffer.allocate(1 + 2 + textBytes.size + locationSize)
         payloadBuf.put(if (hasLocation) 0x01.toByte() else 0x00.toByte()) // flags (0x01 = hasLocation, 0x00 = no location)
         payloadBuf.putShort((textBytes.size and 0xFFFF).toShort())
@@ -766,6 +803,7 @@ class MeshRouter(
             payloadBuf.putDouble(latitude!!)
             payloadBuf.putDouble(longitude!!)
             payloadBuf.putFloat(accuracyMeters)
+            payloadBuf.putLong(locationFixTimestamp)
         }
         val payloadBytes = payloadBuf.array()
         val signature = cryptoEngine.sign(payloadBytes)
@@ -880,6 +918,7 @@ class MeshRouter(
             var sosText = ""
             var lat: Double? = null
             var lon: Double? = null
+            var fixTimestamp: Long? = null
 
             val buf = ByteBuffer.wrap(sosPayload)
             if (buf.remaining() >= 3) {
@@ -894,6 +933,7 @@ class MeshRouter(
                         lat = buf.double
                         lon = buf.double
                         val accuracy = buf.float
+                        fixTimestamp = if (buf.remaining() >= 8) buf.long else (packet.timestamp * 1000L)
 
                         val senderAlias = sender?.alias ?: "Node-${String.format("%016X", packet.senderId).takeLast(4)}"
                         database.locationDao().insertOrUpdate(
@@ -903,7 +943,7 @@ class MeshRouter(
                                 latitude = lat,
                                 longitude = lon,
                                 accuracyMeters = accuracy,
-                                timestamp = packet.timestamp * 1000L
+                                timestamp = fixTimestamp
                             )
                         )
                     }
@@ -931,7 +971,7 @@ class MeshRouter(
             database.messageDao().insert(messageEntity)
 
             onIncomingMessageListener?.invoke(packet.senderId, senderAlias, sosText, true)
-            onSosAlertReceivedListener?.invoke(packet.senderId, senderAlias, sosText, lat, lon)
+            onSosAlertReceivedListener?.invoke(packet.senderId, senderAlias, sosText, lat, lon, fixTimestamp)
         } catch (e: Exception) {
             Log.e(tag, "Failed to decrypt SOS packet: ${e.message}")
         }

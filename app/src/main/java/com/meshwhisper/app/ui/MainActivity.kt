@@ -159,17 +159,24 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
             val alias = uri.getQueryParameter("alias") ?: "Unknown Node"
             val pubHex = uri.getQueryParameter("pub")
             if (!idHex.isNullOrBlank() && !pubHex.isNullOrBlank()) {
-                // Use parseUnsignedLong so nodeIds with the top bit set (> Long.MAX_VALUE) round-trip correctly.
                 val nodeId = try {
                     java.lang.Long.parseUnsignedLong(idHex, 16)
                 } catch (e: NumberFormatException) {
                     android.util.Log.w("MainActivity", "handleDeepLink: unparseable nodeId hex '$idHex'")
-                    android.widget.Toast.makeText(this, "Invalid QR code", android.widget.Toast.LENGTH_SHORT).show()
+                    android.widget.Toast.makeText(this, "Invalid contact link", android.widget.Toast.LENGTH_SHORT).show()
                     return
                 }
-                // registerScannedPeer performs the TOFU key-change check before writing to DB.
-                viewModel.registerScannedPeer(nodeId, alias, pubHex)
-                android.widget.Toast.makeText(this, "Discovered Peer: $alias", android.widget.Toast.LENGTH_SHORT).show()
+
+                // Security Confirmation Dialog for Deep Links (Fix P1-3: Prevent Remote Trust Injection)
+                android.app.AlertDialog.Builder(this)
+                    .setTitle("Trust New Peer?")
+                    .setMessage("Received contact link for '$alias' (Node ID: 0x${idHex.takeLast(8)}).\n\nDo you want to verify and add this peer to your trusted contacts?")
+                    .setPositiveButton("Trust & Add") { _, _ ->
+                        viewModel.registerScannedPeer(nodeId, alias, pubHex)
+                        android.widget.Toast.makeText(this, "Added Peer: $alias", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
             }
         }
     }

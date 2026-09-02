@@ -116,7 +116,7 @@ class PacketSerializationTest {
         val serNack = MeshPacket.serialize(nackPacket)
         val deserNack = MeshPacket.deserialize(serNack)
         assertThat(deserNack?.type).isEqualTo(PacketType.MEDIA_NACK)
-        assertThat(deserNack?.ttl).isEqualTo(1)
+        assertThat(deserNack?.ttl).isEqualTo(MeshPacket.MEDIA_DIRECT_TTL)
 
         val ackPacket = MeshPacket(
             type = PacketType.MEDIA_ACK,

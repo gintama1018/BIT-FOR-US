@@ -7,6 +7,7 @@ import com.meshwhisper.desktop.router.DesktopMeshRouter
 import com.meshwhisper.desktop.wifi.DesktopWifiEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import java.awt.*
@@ -49,7 +50,7 @@ class DesktopMainWindow(
         val FONT_SMALL = Font("Segoe UI", Font.PLAIN, 11)
     }
 
-    private val scope = CoroutineScope(Dispatchers.Main)
+    private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
 
     // UI Components

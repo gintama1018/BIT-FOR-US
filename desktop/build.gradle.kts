@@ -42,7 +42,11 @@ tasks.register<Exec>("packageWindowsExe") {
     doFirst {
         val targetAppDir = distDir.resolve("MeshWhisper")
         if (targetAppDir.exists()) {
-            targetAppDir.deleteRecursively()
+            targetAppDir.walkBottomUp().forEach { file ->
+                file.setWritable(true)
+                file.delete()
+            }
+            targetAppDir.delete()
         }
     }
 

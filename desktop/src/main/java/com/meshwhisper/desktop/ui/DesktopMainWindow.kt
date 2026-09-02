@@ -1,5 +1,7 @@
 package com.meshwhisper.desktop.ui
 
+import com.meshwhisper.core.crypto.PureCryptoEngine
+import com.meshwhisper.core.protocol.MeshPacket
 import com.meshwhisper.desktop.db.DesktopDatabase
 import com.meshwhisper.desktop.db.DesktopMessage
 import com.meshwhisper.desktop.db.DesktopPeer
@@ -13,15 +15,16 @@ import kotlinx.coroutines.launch
 import java.awt.*
 import java.awt.event.WindowAdapter
 import java.awt.event.WindowEvent
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
+import javax.imageio.ImageIO
 import javax.swing.*
 import javax.swing.border.EmptyBorder
 import javax.swing.border.LineBorder
 
 /**
- * Modern Sahara-Themed Desktop Graphical User Interface (GUI) for MeshWhisper.
- * Provides a rich multi-tab experience (Public Mesh, Direct Chats, Mesh Radar, Inspector, Settings).
+ * Modern High-Grade Dark/Tactical GUI for MeshWhisper Desktop Station.
  */
 class DesktopMainWindow(
     private val router: DesktopMeshRouter,
@@ -29,112 +32,103 @@ class DesktopMainWindow(
     private val wifiEngine: DesktopWifiEngine
 ) : JFrame("MeshWhisper — Offline Hybrid Mesh Station") {
 
-    companion object {
-        val COLOR_BG = Color(0xFA, 0xF5, 0xEE)
-        val COLOR_SURFACE = Color(0xF3, 0xEC, 0xE0)
-        val COLOR_CARD = Color(0xFF, 0xFF, 0xFF)
-        val COLOR_PRIMARY = Color(0xC2, 0x65, 0x2A)
-        val COLOR_PRIMARY_HOVER = Color(0xA9, 0x54, 0x1E)
-        val COLOR_ACCENT = Color(0xD9, 0x77, 0x24)
-        val COLOR_TEXT_PRIMARY = Color(0x2B, 0x24, 0x1E)
-        val COLOR_TEXT_MUTED = Color(0x76, 0x6B, 0x61)
-        val COLOR_SOS = Color(0xDC, 0x26, 0x26)
-        val COLOR_SUCCESS = Color(0x16, 0xA3, 0x4A)
-        val COLOR_BORDER = Color(0xE5, 0xDC, 0xCE)
-
-        val FONT_TITLE = Font("Segoe UI", Font.BOLD, 18)
-        val FONT_HEADER = Font("Segoe UI", Font.BOLD, 14)
-        val FONT_BODY = Font("Segoe UI", Font.PLAIN, 13)
-        val FONT_BODY_BOLD = Font("Segoe UI", Font.BOLD, 13)
-        val FONT_MONO = Font("Consolas", Font.PLAIN, 12)
-        val FONT_SMALL = Font("Segoe UI", Font.PLAIN, 11)
-    }
-
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
-    private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+    private val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
 
-    // UI Components
+    // UI State
     private val statusBadgeLabel = JLabel("⚡ 0 LAN PEERS • OFFLINE MESH READY")
+    private val cardLayout = CardLayout()
+    private val contentDeck = JPanel(cardLayout)
+
+    // Navigation state
+    private val navButtons = mutableListOf<JButton>()
+
+    // Public Mesh Tab
     private val publicMessagesPanel = JPanel().apply {
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
-        background = COLOR_BG
+        background = ModernTheme.BG_MAIN
     }
     private val publicScrollPane: JScrollPane
-    private val publicInputField = JTextField()
+    private val publicInputField = ModernTextField("Broadcast message to all nearby nodes...")
 
-    // Direct Chats UI
+    // Direct Chats Tab
     private val peerListModel = DefaultListModel<DesktopPeer>()
     private val peerJList = JList(peerListModel)
     private var selectedPeer: DesktopPeer? = null
     private val dmChatTitleLabel = JLabel("Select a peer to start encrypted chat")
     private val dmMessagesPanel = JPanel().apply {
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
-        background = COLOR_BG
+        background = ModernTheme.BG_MAIN
     }
     private val dmScrollPane: JScrollPane
-    private val dmInputField = JTextField()
-
-    // Inspector Logs UI
-    private val logsTextArea = JTextArea().apply {
-        isEditable = false
-        font = FONT_MONO
-        background = Color(0x1E, 0x1E, 0x1E)
-        foreground = Color(0xD4, 0xD4, 0xD4)
-    }
+    private val dmInputField = ModernTextField("Type an encrypted private message...")
 
     // Radar Canvas
-    private val radarCanvas = TopologyRadarCanvas(database, router.myNodeId)
+    private val radarCanvas = AnimatedRadarCanvas(database, router.myNodeId)
+
+    // Inspector Logs
+    private val logsTextArea = JTextArea().apply {
+        isEditable = false
+        font = ModernTheme.FONT_MONO
+        background = Color(0x0C, 0x0E, 0x12)
+        foreground = Color(0x34, 0xD3, 0x99)
+        border = EmptyBorder(12, 12, 12, 12)
+    }
 
     init {
         defaultCloseOperation = EXIT_ON_CLOSE
-        setSize(1100, 750)
-        minimumSize = Dimension(900, 600)
+        setSize(1180, 780)
+        minimumSize = Dimension(960, 620)
         setLocationRelativeTo(null)
-        contentPane.background = COLOR_BG
+        contentPane.background = ModernTheme.BG_MAIN
         contentPane.layout = BorderLayout()
 
-        // 1. Build Header Bar
-        val headerPanel = createHeaderPanel()
+        // 1. Top Header
+        val headerPanel = buildHeaderPanel()
         contentPane.add(headerPanel, BorderLayout.NORTH)
 
-        // 2. Build Tabbed Center Pane
-        val tabbedPane = JTabbedPane().apply {
-            font = FONT_HEADER
-            background = COLOR_SURFACE
-            foreground = COLOR_TEXT_PRIMARY
+        // 2. Main Body (Left Sidebar Nav + Center Deck)
+        val bodyPanel = JPanel(BorderLayout()).apply {
+            background = ModernTheme.BG_MAIN
         }
 
+        val sidebarNav = buildSidebarNav()
+        bodyPanel.add(sidebarNav, BorderLayout.WEST)
+
+        // ScrollPanes with custom UI
         publicScrollPane = JScrollPane(publicMessagesPanel).apply {
             border = null
+            verticalScrollBar.ui = ModernScrollBarUI()
             verticalScrollBar.unitIncrement = 16
+            background = ModernTheme.BG_MAIN
+            viewport.background = ModernTheme.BG_MAIN
         }
-        val publicTab = createPublicMeshTab()
-        tabbedPane.addTab("  💬 Public Mesh  ", publicTab)
 
         dmScrollPane = JScrollPane(dmMessagesPanel).apply {
             border = null
+            verticalScrollBar.ui = ModernScrollBarUI()
             verticalScrollBar.unitIncrement = 16
+            background = ModernTheme.BG_MAIN
+            viewport.background = ModernTheme.BG_MAIN
         }
-        val dmTab = createDirectChatsTab()
-        tabbedPane.addTab("  🔒 Direct Chats  ", dmTab)
 
-        val radarTab = createRadarTab()
-        tabbedPane.addTab("  📡 Mesh Radar  ", radarTab)
+        // Add Deck Tabs
+        contentDeck.background = ModernTheme.BG_MAIN
+        contentDeck.add(buildPublicMeshTab(), "PUBLIC")
+        contentDeck.add(buildDirectChatsTab(), "DM")
+        contentDeck.add(buildRadarTab(), "RADAR")
+        contentDeck.add(buildInspectorTab(), "INSPECTOR")
+        contentDeck.add(buildSettingsTab(), "SETTINGS")
 
-        val inspectorTab = createInspectorTab()
-        tabbedPane.addTab("  📋 Packet Inspector  ", inspectorTab)
-
-        val settingsTab = createSettingsTab()
-        tabbedPane.addTab("  ⚙️ Settings & Identity  ", settingsTab)
-
-        contentPane.add(tabbedPane, BorderLayout.CENTER)
+        bodyPanel.add(contentDeck, BorderLayout.CENTER)
+        contentPane.add(bodyPanel, BorderLayout.CENTER)
 
         // Initial Data Load
         refreshPublicMessages()
         refreshPeersList()
         refreshLogs()
 
-        // Background Listeners
+        // Start Background Listeners
         startBackgroundListeners()
 
         addWindowListener(object : WindowAdapter() {
@@ -144,61 +138,53 @@ class DesktopMainWindow(
         })
     }
 
-    private fun createHeaderPanel(): JPanel {
+    private fun buildHeaderPanel(): JPanel {
         val panel = JPanel(BorderLayout()).apply {
-            background = COLOR_SURFACE
-            border = EmptyBorder(12, 16, 12, 16)
+            background = ModernTheme.BG_SIDEBAR
+            border = BorderFactory.createCompoundBorder(
+                BorderFactory.createMatteBorder(0, 0, 1, 0, ModernTheme.BORDER_COLOR),
+                EmptyBorder(12, 20, 12, 20)
+            )
         }
 
-        val leftBox = JPanel(FlowLayout(FlowLayout.LEFT, 12, 0)).apply {
-            isOpaque = false
-        }
-
-        val logoIcon = JLabel("🛡️").apply {
+        val leftBox = JPanel(FlowLayout(FlowLayout.LEFT, 12, 0)).apply { isOpaque = false }
+        val logoLabel = JLabel("🛡️").apply {
             font = Font("Segoe UI Emoji", Font.PLAIN, 24)
         }
-        leftBox.add(logoIcon)
-
-        val titleBox = JPanel().apply {
-            layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            isOpaque = false
+        val appTitle = JLabel("MeshWhisper").apply {
+            font = ModernTheme.FONT_APP_TITLE
+            foreground = ModernTheme.TEXT_MAIN
         }
-        val appTitle = JLabel("MeshWhisper Desktop Station").apply {
-            font = FONT_TITLE
-            foreground = COLOR_TEXT_PRIMARY
+        val stationBadge = JLabel("0x${router.myNodeIdHex.takeLast(4)} • ${router.myAlias}").apply {
+            font = ModernTheme.FONT_SMALL
+            foreground = ModernTheme.TEXT_MUTED
+            border = BorderFactory.createCompoundBorder(
+                LineBorder(ModernTheme.BORDER_COLOR, 1, true),
+                EmptyBorder(2, 8, 2, 8)
+            )
         }
-        val subTitle = JLabel("Node: 0x${router.myNodeIdHex} (${router.myAlias})").apply {
-            font = FONT_SMALL
-            foreground = COLOR_TEXT_MUTED
-        }
-        titleBox.add(appTitle)
-        titleBox.add(subTitle)
-        leftBox.add(titleBox)
-
+        leftBox.add(logoLabel)
+        leftBox.add(appTitle)
+        leftBox.add(stationBadge)
         panel.add(leftBox, BorderLayout.WEST)
 
-        val rightBox = JPanel(FlowLayout(FlowLayout.RIGHT, 12, 0)).apply {
-            isOpaque = false
-        }
-
+        val rightBox = JPanel(FlowLayout(FlowLayout.RIGHT, 12, 0)).apply { isOpaque = false }
         statusBadgeLabel.apply {
-            font = FONT_BODY_BOLD
-            foreground = COLOR_PRIMARY
-            border = LineBorder(COLOR_PRIMARY, 1, true)
+            font = ModernTheme.FONT_BODY_BOLD
+            foreground = ModernTheme.ONLINE
             border = BorderFactory.createCompoundBorder(
-                border,
-                EmptyBorder(4, 10, 4, 10)
+                LineBorder(Color(0x10, 0xB9, 0x81, 100), 1, true),
+                EmptyBorder(5, 12, 5, 12)
             )
         }
         rightBox.add(statusBadgeLabel)
 
-        val sosButton = JButton("🚨 SEND SOS").apply {
-            font = FONT_BODY_BOLD
-            foreground = Color.WHITE
-            background = COLOR_SOS
-            isFocusPainted = false
-            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-            border = EmptyBorder(8, 16, 8, 16)
+        val sosBtn = ModernButton(
+            text = "🚨 SEND SOS",
+            bgColor = ModernTheme.SOS,
+            hoverColor = Color(0xDC, 0x26, 0x26),
+            cornerRadius = 8
+        ).apply {
             addActionListener {
                 val emergencyText = JOptionPane.showInputDialog(
                     this@DesktopMainWindow,
@@ -212,62 +198,102 @@ class DesktopMainWindow(
                 }
             }
         }
-        rightBox.add(sosButton)
+        rightBox.add(sosBtn)
 
         panel.add(rightBox, BorderLayout.EAST)
         return panel
     }
 
-    private fun createPublicMeshTab(): JPanel {
+    private fun buildSidebarNav(): JPanel {
+        val sidebar = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            preferredSize = Dimension(220, 0)
+            background = ModernTheme.BG_SIDEBAR
+            border = BorderFactory.createCompoundBorder(
+                BorderFactory.createMatteBorder(0, 0, 0, 1, ModernTheme.BORDER_COLOR),
+                EmptyBorder(16, 12, 16, 12)
+            )
+        }
+
+        fun createNavBtn(title: String, icon: String, tabKey: String): JButton {
+            val btn = JButton("$icon  $title").apply {
+                font = ModernTheme.FONT_BODY_BOLD
+                foreground = ModernTheme.TEXT_MUTED
+                background = ModernTheme.BG_SIDEBAR
+                isContentAreaFilled = false
+                isFocusPainted = false
+                horizontalAlignment = SwingConstants.LEFT
+                cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+                border = EmptyBorder(10, 14, 10, 14)
+                maximumSize = Dimension(196, 42)
+                alignmentX = Component.LEFT_ALIGNMENT
+
+                addActionListener {
+                    cardLayout.show(contentDeck, tabKey)
+                    for (b in navButtons) {
+                        b.foreground = ModernTheme.TEXT_MUTED
+                        b.isOpaque = false
+                    }
+                    foreground = ModernTheme.TEXT_MAIN
+                    repaint()
+                }
+            }
+            navButtons.add(btn)
+            return btn
+        }
+
+        val btnPublic = createNavBtn("Public Mesh", "💬", "PUBLIC").apply {
+            foreground = ModernTheme.TEXT_MAIN
+        }
+        val btnDm = createNavBtn("Direct Chats", "🔒", "DM")
+        val btnRadar = createNavBtn("Mesh Radar", "📡", "RADAR")
+        val btnInspector = createNavBtn("Packet Stream", "📋", "INSPECTOR")
+        val btnSettings = createNavBtn("Station Vault", "⚙️", "SETTINGS")
+
+        sidebar.add(btnPublic)
+        sidebar.add(Box.createVerticalStrut(6))
+        sidebar.add(btnDm)
+        sidebar.add(Box.createVerticalStrut(6))
+        sidebar.add(btnRadar)
+        sidebar.add(Box.createVerticalStrut(6))
+        sidebar.add(btnInspector)
+        sidebar.add(Box.createVerticalStrut(6))
+        sidebar.add(btnSettings)
+        sidebar.add(Box.createVerticalGlue())
+
+        return sidebar
+    }
+
+    private fun buildPublicMeshTab(): JPanel {
         val tab = JPanel(BorderLayout()).apply {
-            background = COLOR_BG
-            border = EmptyBorder(12, 16, 12, 16)
+            background = ModernTheme.BG_MAIN
+            border = EmptyBorder(14, 20, 14, 20)
         }
 
         tab.add(publicScrollPane, BorderLayout.CENTER)
 
         val bottomBox = JPanel(BorderLayout(10, 0)).apply {
-            background = COLOR_BG
-            border = EmptyBorder(10, 0, 0, 0)
+            background = ModernTheme.BG_MAIN
+            border = EmptyBorder(12, 0, 0, 0)
         }
 
-        publicInputField.apply {
-            font = FONT_BODY
-            border = BorderFactory.createCompoundBorder(
-                LineBorder(COLOR_BORDER, 1, true),
-                EmptyBorder(10, 12, 10, 12)
-            )
-            addActionListener { sendPublicChat() }
-        }
-        val attachBtn = JButton("📎 Attach").apply {
-            font = FONT_BODY
-            foreground = COLOR_TEXT_PRIMARY
-            background = COLOR_SURFACE
-            isFocusPainted = false
-            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-            border = BorderFactory.createCompoundBorder(
-                LineBorder(COLOR_BORDER, 1, true),
-                EmptyBorder(10, 14, 10, 14)
-            )
+        val attachBtn = ModernButton("📎 Attach", ModernTheme.BG_CARD, ModernTheme.BG_CARD_HOVER, ModernTheme.TEXT_MAIN, 10).apply {
             addActionListener {
                 val chooser = JFileChooser()
                 if (chooser.showOpenDialog(this@DesktopMainWindow) == JFileChooser.APPROVE_OPTION) {
                     val file = chooser.selectedFile
                     val type = if (file.name.endsWith(".jpg", true) || file.name.endsWith(".png", true)) "IMAGE" else "FILE"
-                    router.mediaManager.sendMediaFile(com.meshwhisper.core.protocol.MeshPacket.BROADCAST_RECIPIENT_ID, file, type, "")
+                    router.mediaManager.sendMediaFile(MeshPacket.BROADCAST_RECIPIENT_ID, file, type, "")
                     refreshPublicMessages()
                 }
             }
         }
         bottomBox.add(attachBtn, BorderLayout.WEST)
 
-        val sendBtn = JButton("Broadcast").apply {
-            font = FONT_BODY_BOLD
-            foreground = Color.WHITE
-            background = COLOR_PRIMARY
-            isFocusPainted = false
-            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-            border = EmptyBorder(10, 20, 10, 20)
+        publicInputField.addActionListener { sendPublicChat() }
+        bottomBox.add(publicInputField, BorderLayout.CENTER)
+
+        val sendBtn = ModernButton("Broadcast 🚀", ModernTheme.PRIMARY, ModernTheme.PRIMARY_HOVER, Color.WHITE, 10).apply {
             addActionListener { sendPublicChat() }
         }
         bottomBox.add(sendBtn, BorderLayout.EAST)
@@ -285,43 +311,49 @@ class DesktopMainWindow(
         }
     }
 
-    private fun createDirectChatsTab(): JPanel {
+    private fun buildDirectChatsTab(): JPanel {
         val tab = JPanel(BorderLayout(16, 0)).apply {
-            background = COLOR_BG
-            border = EmptyBorder(12, 16, 12, 16)
+            background = ModernTheme.BG_MAIN
+            border = EmptyBorder(14, 20, 14, 20)
         }
 
-        // Left Peer Sidebar
+        // Left Peer List Panel
         val leftPanel = JPanel(BorderLayout()).apply {
             preferredSize = Dimension(280, 0)
-            background = COLOR_SURFACE
-            border = LineBorder(COLOR_BORDER, 1, true)
+            background = ModernTheme.BG_SIDEBAR
+            border = BorderFactory.createCompoundBorder(
+                LineBorder(ModernTheme.BORDER_COLOR, 1, true),
+                EmptyBorder(8, 8, 8, 8)
+            )
         }
 
-        val peerListHeader = JLabel("  Peers on Mesh").apply {
-            font = FONT_HEADER
-            foreground = COLOR_TEXT_PRIMARY
-            border = EmptyBorder(10, 10, 10, 10)
+        val header = JLabel("  Discovered Peers").apply {
+            font = ModernTheme.FONT_TITLE
+            foreground = ModernTheme.TEXT_MAIN
+            border = EmptyBorder(8, 8, 8, 8)
         }
-        leftPanel.add(peerListHeader, BorderLayout.NORTH)
+        leftPanel.add(header, BorderLayout.NORTH)
 
         peerJList.apply {
-            background = COLOR_CARD
+            background = ModernTheme.BG_SIDEBAR
             selectionMode = ListSelectionModel.SINGLE_SELECTION
             setCellRenderer { _, value, _, isSelected, _ ->
-                JPanel(BorderLayout()).apply {
-                    background = if (isSelected) COLOR_SURFACE else COLOR_CARD
-                    border = EmptyBorder(8, 10, 8, 10)
+                JPanel(BorderLayout(8, 0)).apply {
+                    background = if (isSelected) ModernTheme.BG_CARD_HOVER else ModernTheme.BG_SIDEBAR
+                    border = BorderFactory.createCompoundBorder(
+                        EmptyBorder(4, 4, 4, 4),
+                        EmptyBorder(8, 10, 8, 10)
+                    )
 
                     val isConnected = wifiEngine.isPeerConnected(value.nodeId)
-                    val statusDot = if (isConnected) "⚡ " else "📡 "
+                    val statusDot = if (isConnected) "🟢 " else "📡 "
                     val title = JLabel("$statusDot${value.alias}").apply {
-                        font = FONT_BODY_BOLD
-                        foreground = COLOR_TEXT_PRIMARY
+                        font = ModernTheme.FONT_BODY_BOLD
+                        foreground = ModernTheme.TEXT_MAIN
                     }
                     val sub = JLabel("0x${String.format("%016X", value.nodeId).takeLast(6)} • ${value.hops} hop(s)").apply {
-                        font = FONT_SMALL
-                        foreground = COLOR_TEXT_MUTED
+                        font = ModernTheme.FONT_SMALL
+                        foreground = ModernTheme.TEXT_MUTED
                     }
                     add(title, BorderLayout.NORTH)
                     add(sub, BorderLayout.SOUTH)
@@ -333,44 +365,32 @@ class DesktopMainWindow(
                 refreshDmMessages()
             }
         }
-        leftPanel.add(JScrollPane(peerJList).apply { border = null }, BorderLayout.CENTER)
+        leftPanel.add(JScrollPane(peerJList).apply {
+            border = null
+            verticalScrollBar.ui = ModernScrollBarUI()
+            viewport.background = ModernTheme.BG_SIDEBAR
+        }, BorderLayout.CENTER)
         tab.add(leftPanel, BorderLayout.WEST)
 
-        // Right Chat Pane
+        // Right Conversation Panel
         val rightPanel = JPanel(BorderLayout()).apply {
-            background = COLOR_BG
+            background = ModernTheme.BG_MAIN
         }
 
         dmChatTitleLabel.apply {
-            font = FONT_HEADER
-            foreground = COLOR_TEXT_PRIMARY
-            border = EmptyBorder(0, 0, 10, 0)
+            font = ModernTheme.FONT_TITLE
+            foreground = ModernTheme.TEXT_MAIN
+            border = EmptyBorder(0, 0, 12, 0)
         }
         rightPanel.add(dmChatTitleLabel, BorderLayout.NORTH)
         rightPanel.add(dmScrollPane, BorderLayout.CENTER)
 
         val dmBottomBox = JPanel(BorderLayout(10, 0)).apply {
-            background = COLOR_BG
-            border = EmptyBorder(10, 0, 0, 0)
+            background = ModernTheme.BG_MAIN
+            border = EmptyBorder(12, 0, 0, 0)
         }
-        dmInputField.apply {
-            font = FONT_BODY
-            border = BorderFactory.createCompoundBorder(
-                LineBorder(COLOR_BORDER, 1, true),
-                EmptyBorder(10, 12, 10, 12)
-            )
-            addActionListener { sendDirectChat() }
-        }
-        val dmAttachBtn = JButton("📎 Attach").apply {
-            font = FONT_BODY
-            foreground = COLOR_TEXT_PRIMARY
-            background = COLOR_SURFACE
-            isFocusPainted = false
-            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-            border = BorderFactory.createCompoundBorder(
-                LineBorder(COLOR_BORDER, 1, true),
-                EmptyBorder(10, 14, 10, 14)
-            )
+
+        val dmAttachBtn = ModernButton("📎 Attach", ModernTheme.BG_CARD, ModernTheme.BG_CARD_HOVER, ModernTheme.TEXT_MAIN, 10).apply {
             addActionListener {
                 val peer = selectedPeer ?: return@addActionListener
                 val chooser = JFileChooser()
@@ -384,13 +404,10 @@ class DesktopMainWindow(
         }
         dmBottomBox.add(dmAttachBtn, BorderLayout.WEST)
 
-        val dmSendBtn = JButton("Send Encrypted DM").apply {
-            font = FONT_BODY_BOLD
-            foreground = Color.WHITE
-            background = COLOR_PRIMARY
-            isFocusPainted = false
-            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-            border = EmptyBorder(10, 20, 10, 20)
+        dmInputField.addActionListener { sendDirectChat() }
+        dmBottomBox.add(dmInputField, BorderLayout.CENTER)
+
+        val dmSendBtn = ModernButton("Send DM 🔒", ModernTheme.PRIMARY, ModernTheme.PRIMARY_HOVER, Color.WHITE, 10).apply {
             addActionListener { sendDirectChat() }
         }
         dmBottomBox.add(dmSendBtn, BorderLayout.EAST)
@@ -403,8 +420,9 @@ class DesktopMainWindow(
     private fun updateDmChatHeader() {
         val peer = selectedPeer
         if (peer != null) {
-            val status = if (wifiEngine.isPeerConnected(peer.nodeId)) "Active on LAN (Direct TCP)" else "Mesh Relay (${peer.hops} hops)"
-            dmChatTitleLabel.text = "🔒 Chat with ${peer.alias} (0x${String.format("%016X", peer.nodeId)}) — $status"
+            val isLan = wifiEngine.isPeerConnected(peer.nodeId)
+            val status = if (isLan) "🟢 Active LAN Socket (TCP Direct)" else "📡 Mesh Relay (${peer.hops} hops)"
+            dmChatTitleLabel.text = "🔒 Encrypted Chat with ${peer.alias} (0x${String.format("%016X", peer.nodeId).takeLast(6)}) — $status"
         } else {
             dmChatTitleLabel.text = "Select a peer to start encrypted chat"
         }
@@ -420,102 +438,100 @@ class DesktopMainWindow(
         }
     }
 
-    private fun createRadarTab(): JPanel {
-        val tab = JPanel(BorderLayout(0, 10)).apply {
-            background = COLOR_BG
-            border = EmptyBorder(12, 16, 12, 16)
+    private fun buildRadarTab(): JPanel {
+        val tab = JPanel(BorderLayout(0, 12)).apply {
+            background = ModernTheme.BG_MAIN
+            border = EmptyBorder(14, 20, 14, 20)
         }
 
-        val topInfo = JLabel("Live Mesh Topology Radar (Auto-updating force-directed network graph)").apply {
-            font = FONT_HEADER
-            foreground = COLOR_TEXT_PRIMARY
+        val topInfo = JLabel("📡 Dynamic Topology Radar • Real-time Multi-hop Force-Directed Network Graph").apply {
+            font = ModernTheme.FONT_TITLE
+            foreground = ModernTheme.TEXT_MAIN
         }
         tab.add(topInfo, BorderLayout.NORTH)
         tab.add(radarCanvas, BorderLayout.CENTER)
         return tab
     }
 
-    private fun createInspectorTab(): JPanel {
-        val tab = JPanel(BorderLayout(0, 10)).apply {
-            background = COLOR_BG
-            border = EmptyBorder(12, 16, 12, 16)
+    private fun buildInspectorTab(): JPanel {
+        val tab = JPanel(BorderLayout(0, 12)).apply {
+            background = ModernTheme.BG_MAIN
+            border = EmptyBorder(14, 20, 14, 20)
         }
 
-        val topBar = JPanel(BorderLayout()).apply {
-            background = COLOR_BG
+        val topBar = JPanel(BorderLayout()).apply { background = ModernTheme.BG_MAIN }
+        val title = JLabel("📋 Live Binary Datagram Stream & Diagnostic Inspector").apply {
+            font = ModernTheme.FONT_TITLE
+            foreground = ModernTheme.TEXT_MAIN
         }
-        val title = JLabel("Live Binary Packet Stream & Diagnostic Inspector").apply {
-            font = FONT_HEADER
-            foreground = COLOR_TEXT_PRIMARY
-        }
-        val refreshBtn = JButton("Refresh Logs").apply {
-            font = FONT_SMALL
+        val refreshBtn = ModernButton("Refresh Stream", ModernTheme.BG_CARD, ModernTheme.BG_CARD_HOVER, ModernTheme.TEXT_MAIN, 8).apply {
             addActionListener { refreshLogs() }
         }
         topBar.add(title, BorderLayout.WEST)
         topBar.add(refreshBtn, BorderLayout.EAST)
         tab.add(topBar, BorderLayout.NORTH)
 
-        tab.add(JScrollPane(logsTextArea).apply { border = LineBorder(COLOR_BORDER, 1) }, BorderLayout.CENTER)
+        tab.add(JScrollPane(logsTextArea).apply {
+            border = LineBorder(ModernTheme.BORDER_COLOR, 1, true)
+            verticalScrollBar.ui = ModernScrollBarUI()
+        }, BorderLayout.CENTER)
         return tab
     }
 
-    private fun createSettingsTab(): JPanel {
+    private fun buildSettingsTab(): JPanel {
         val tab = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            background = COLOR_BG
+            background = ModernTheme.BG_MAIN
             border = EmptyBorder(24, 32, 24, 32)
         }
 
-        fun createSection(title: String, content: JComponent): JPanel {
-            return JPanel(BorderLayout(0, 8)).apply {
-                background = COLOR_CARD
+        fun createCard(title: String, content: JComponent): JPanel {
+            return JPanel(BorderLayout(0, 12)).apply {
+                background = ModernTheme.BG_CARD
                 border = BorderFactory.createCompoundBorder(
-                    LineBorder(COLOR_BORDER, 1, true),
-                    EmptyBorder(16, 16, 16, 16)
+                    LineBorder(ModernTheme.BORDER_COLOR, 1, true),
+                    EmptyBorder(18, 20, 18, 20)
                 )
                 val lbl = JLabel(title).apply {
-                    font = FONT_HEADER
-                    foreground = COLOR_PRIMARY
+                    font = ModernTheme.FONT_TITLE
+                    foreground = ModernTheme.PRIMARY_HOVER
                 }
                 add(lbl, BorderLayout.NORTH)
                 add(content, BorderLayout.CENTER)
-                maximumSize = Dimension(700, 140)
+                maximumSize = Dimension(720, 160)
                 alignmentX = Component.LEFT_ALIGNMENT
             }
         }
 
-        // 1. Node Identity Card
-        val identityBox = JPanel(GridLayout(3, 2, 8, 8)).apply { isOpaque = false }
-        identityBox.add(JLabel("Node ID (64-bit Hex):").apply { font = FONT_BODY_BOLD })
-        identityBox.add(JLabel("0x${router.myNodeIdHex}").apply { font = FONT_MONO })
-        identityBox.add(JLabel("Public Key Fingerprint:").apply { font = FONT_BODY_BOLD })
-        identityBox.add(JLabel(com.meshwhisper.core.crypto.PureCryptoEngine.generateFingerprint(router.myPublicKey)).apply { font = FONT_MONO })
-        identityBox.add(JLabel("Key Storage Vault:").apply { font = FONT_BODY_BOLD })
-        identityBox.add(JLabel("~/.meshwhisper/identity.vault (PBKDF2-HMAC-SHA256)").apply { font = FONT_MONO })
+        val identityBox = JPanel(GridLayout(3, 2, 10, 10)).apply { isOpaque = false }
+        identityBox.add(JLabel("Node ID (64-bit Hex):").apply { font = ModernTheme.FONT_BODY_BOLD; foreground = ModernTheme.TEXT_MAIN })
+        identityBox.add(JLabel("0x${router.myNodeIdHex}").apply { font = ModernTheme.FONT_MONO; foreground = ModernTheme.TEXT_MUTED })
+        identityBox.add(JLabel("Public Key Fingerprint:").apply { font = ModernTheme.FONT_BODY_BOLD; foreground = ModernTheme.TEXT_MAIN })
+        identityBox.add(JLabel(PureCryptoEngine.generateFingerprint(router.myPublicKey)).apply { font = ModernTheme.FONT_MONO; foreground = ModernTheme.TEXT_MUTED })
+        identityBox.add(JLabel("Key Storage Vault:").apply { font = ModernTheme.FONT_BODY_BOLD; foreground = ModernTheme.TEXT_MAIN })
+        identityBox.add(JLabel("~/.meshwhisper/identity.vault (PBKDF2-HMAC-SHA256)").apply { font = ModernTheme.FONT_MONO; foreground = ModernTheme.TEXT_MUTED })
 
-        tab.add(createSection("Cryptographic Identity", identityBox))
-        tab.add(Box.createVerticalStrut(16))
+        tab.add(createCard("🔐 Cryptographic Identity & Hardware Vault", identityBox))
+        tab.add(Box.createVerticalStrut(18))
 
-        // 2. Alias Editor Card
-        val aliasBox = JPanel(FlowLayout(FlowLayout.LEFT, 10, 0)).apply { isOpaque = false }
-        val aliasField = JTextField(router.myAlias, 20).apply { font = FONT_BODY }
-        val saveAliasBtn = JButton("Save New Alias").apply {
-            font = FONT_BODY_BOLD
-            foreground = Color.WHITE
-            background = COLOR_PRIMARY
+        val aliasBox = JPanel(FlowLayout(FlowLayout.LEFT, 12, 0)).apply { isOpaque = false }
+        val aliasField = ModernTextField(router.myAlias, 10).apply {
+            text = router.myAlias
+            preferredSize = Dimension(280, 38)
+        }
+        val saveAliasBtn = ModernButton("Save Alias", ModernTheme.PRIMARY, ModernTheme.PRIMARY_HOVER, Color.WHITE, 10).apply {
             addActionListener {
                 val newAlias = aliasField.text.trim()
                 if (newAlias.isNotEmpty()) {
                     router.updateAlias(newAlias)
-                    JOptionPane.showMessageDialog(this@DesktopMainWindow, "Alias updated to: $newAlias")
+                    JOptionPane.showMessageDialog(this@DesktopMainWindow, "Station alias updated to: $newAlias")
                 }
             }
         }
         aliasBox.add(aliasField)
         aliasBox.add(saveAliasBtn)
 
-        tab.add(createSection("Station Alias", aliasBox))
+        tab.add(createCard("🏷️ Station Display Name", aliasBox))
         return tab
     }
 
@@ -537,7 +553,7 @@ class DesktopMainWindow(
                 SwingUtilities.invokeLater {
                     JOptionPane.showMessageDialog(
                         this@DesktopMainWindow,
-                        "🚨 EMERGENCY SOS FROM 0x${String.format("%016X", sosMsg.senderNodeId)}:\n\n${sosMsg.text}",
+                        "🚨 EMERGENCY SOS ALERT FROM 0x${String.format("%016X", sosMsg.senderNodeId)}:\n\n${sosMsg.text}",
                         "🚨 CRITICAL MESH ALERT",
                         JOptionPane.ERROR_MESSAGE
                     )
@@ -546,7 +562,7 @@ class DesktopMainWindow(
         }
 
         // Periodic Status and Peer Refresh
-        javax.swing.Timer(2000) {
+        javax.swing.Timer(1500) {
             val count = wifiEngine.connectedPeersCount.value
             statusBadgeLabel.text = "⚡ $count LAN PEER(S) • DUAL-RADIO READY"
             refreshPeersList()
@@ -561,13 +577,12 @@ class DesktopMainWindow(
         for (msg in messages) {
             val bubble = createMessageBubble(msg)
             publicMessagesPanel.add(bubble)
-            publicMessagesPanel.add(Box.createVerticalStrut(8))
+            publicMessagesPanel.add(Box.createVerticalStrut(10))
         }
 
         publicMessagesPanel.revalidate()
         publicMessagesPanel.repaint()
 
-        // Auto-scroll to bottom
         SwingUtilities.invokeLater {
             val vertical = publicScrollPane.verticalScrollBar
             vertical.value = vertical.maximum
@@ -582,7 +597,7 @@ class DesktopMainWindow(
         for (msg in messages) {
             val bubble = createMessageBubble(msg)
             dmMessagesPanel.add(bubble)
-            dmMessagesPanel.add(Box.createVerticalStrut(8))
+            dmMessagesPanel.add(Box.createVerticalStrut(10))
         }
 
         dmMessagesPanel.revalidate()
@@ -598,18 +613,18 @@ class DesktopMainWindow(
         val isMe = !msg.isIncoming
         val panel = JPanel(BorderLayout()).apply {
             isOpaque = false
-            maximumSize = Dimension(Short.MAX_VALUE.toInt(), 75)
+            maximumSize = Dimension(Short.MAX_VALUE.toInt(), 340)
         }
 
-        val card = JPanel(BorderLayout(0, 4)).apply {
+        val card = JPanel(BorderLayout(0, 6)).apply {
             background = when {
-                msg.isEmergencySos -> Color(0xFF, 0xEB, 0xEB)
-                isMe -> Color(0xE8, 0xF5, 0xE9)
-                else -> COLOR_CARD
+                msg.isEmergencySos -> ModernTheme.SOS_BG
+                isMe -> ModernTheme.BUBBLE_ME
+                else -> ModernTheme.BUBBLE_PEER
             }
             border = BorderFactory.createCompoundBorder(
-                LineBorder(if (msg.isEmergencySos) COLOR_SOS else COLOR_BORDER, if (msg.isEmergencySos) 2 else 1, true),
-                EmptyBorder(8, 12, 8, 12)
+                LineBorder(if (msg.isEmergencySos) ModernTheme.SOS else ModernTheme.BORDER_COLOR, if (msg.isEmergencySos) 2 else 1, true),
+                EmptyBorder(10, 14, 10, 14)
             )
         }
 
@@ -620,19 +635,20 @@ class DesktopMainWindow(
         }
 
         val headerLabel = JLabel("$senderName  •  ${timeFormat.format(Date(msg.timestamp * 1000L))}").apply {
-            font = FONT_SMALL
-            foreground = if (msg.isEmergencySos) COLOR_SOS else COLOR_TEXT_MUTED
+            font = ModernTheme.FONT_SMALL
+            foreground = if (msg.isEmergencySos) ModernTheme.SOS else ModernTheme.TEXT_MUTED
         }
-        val textLabel = JLabel("<html><body style='width: 450px;'>${msg.text}</body></html>").apply {
-            font = FONT_BODY
-            foreground = COLOR_TEXT_PRIMARY
+        val textLabel = JLabel("<html><body style='width: 420px;'>${msg.text}</body></html>").apply {
+            font = ModernTheme.FONT_BODY
+            foreground = ModernTheme.TEXT_MAIN
         }
 
         card.add(headerLabel, BorderLayout.NORTH)
         card.add(textLabel, BorderLayout.CENTER)
 
+        // Render Media Attachment / Image Preview / Voice Note
         if (!msg.mediaUri.isNullOrBlank()) {
-            val mediaFile = java.io.File(msg.mediaUri)
+            val mediaFile = File(msg.mediaUri)
             if (mediaFile.exists()) {
                 val mediaPanel = JPanel().apply {
                     layout = BoxLayout(this, BoxLayout.Y_AXIS)
@@ -642,7 +658,7 @@ class DesktopMainWindow(
 
                 if (msg.mediaType == "IMAGE") {
                     try {
-                        val origImg = javax.imageio.ImageIO.read(mediaFile)
+                        val origImg = ImageIO.read(mediaFile)
                         if (origImg != null) {
                             val maxW = 320
                             val maxH = 220
@@ -652,7 +668,7 @@ class DesktopMainWindow(
                             val scaledImg = origImg.getScaledInstance(scaledW, scaledH, Image.SCALE_SMOOTH)
                             val imgLabel = JLabel(ImageIcon(scaledImg)).apply {
                                 cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-                                border = LineBorder(COLOR_BORDER, 1, true)
+                                border = LineBorder(ModernTheme.BORDER_COLOR, 1, true)
                                 addMouseListener(object : java.awt.event.MouseAdapter() {
                                     override fun mouseClicked(e: java.awt.event.MouseEvent?) {
                                         try { Desktop.getDesktop().open(mediaFile) } catch (_: Exception) {}
@@ -671,11 +687,8 @@ class DesktopMainWindow(
                     else -> "📂 Open Received File (${mediaFile.name})"
                 }
 
-                val openBtn = JButton(actionLabel).apply {
-                    font = FONT_SMALL
-                    isFocusPainted = false
-                    background = COLOR_SURFACE
-                    cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+                val openBtn = ModernButton(actionLabel, ModernTheme.BG_CARD, ModernTheme.BG_CARD_HOVER, ModernTheme.TEXT_MAIN, 6).apply {
+                    font = ModernTheme.FONT_SMALL
                     addActionListener {
                         try {
                             if (Desktop.isDesktopSupported()) {
@@ -720,16 +733,28 @@ class DesktopMainWindow(
 }
 
 /**
- * Custom Radar Canvas for drawing dynamic force-directed mesh network links.
+ * Animated Tactical Radar with Sweep Beam and Glowing Node Constellation.
  */
-class TopologyRadarCanvas(
+class AnimatedRadarCanvas(
     private val database: DesktopDatabase,
     private val myNodeId: Long
 ) : JPanel() {
 
+    private var sweepAngle = 0.0
+
     init {
-        background = DesktopMainWindow.COLOR_CARD
-        border = LineBorder(DesktopMainWindow.COLOR_BORDER, 1, true)
+        background = Color(0x0E, 0x11, 0x16)
+        border = LineBorder(ModernTheme.BORDER_COLOR, 1, true)
+
+        // 60 FPS Sweep Animation
+        val timer = javax.swing.Timer(25) {
+            sweepAngle += 0.04
+            if (sweepAngle > Math.PI * 2) {
+                sweepAngle = 0.0
+            }
+            repaint()
+        }
+        timer.start()
     }
 
     override fun paintComponent(g: Graphics) {
@@ -742,48 +767,65 @@ class TopologyRadarCanvas(
         val centerX = w / 2
         val centerY = h / 2
 
-        // Draw Radar concentric range circles
-        g2.color = Color(0xF3, 0xEC, 0xE0)
-        g2.drawOval(centerX - 100, centerY - 100, 200, 200)
-        g2.drawOval(centerX - 200, centerY - 200, 400, 400)
-        g2.drawOval(centerX - 300, centerY - 300, 600, 600)
+        // 1. Draw Radar Range Rings
+        g2.color = Color(0x1F, 0x27, 0x33)
+        g2.drawOval(centerX - 90, centerY - 90, 180, 180)
+        g2.drawOval(centerX - 180, centerY - 180, 360, 360)
+        g2.drawOval(centerX - 270, centerY - 270, 540, 540)
 
-        // Draw My Node (Center)
-        g2.color = DesktopMainWindow.COLOR_PRIMARY
-        g2.fillOval(centerX - 14, centerY - 14, 28, 28)
-        g2.color = DesktopMainWindow.COLOR_TEXT_PRIMARY
-        g2.font = DesktopMainWindow.FONT_BODY_BOLD
-        g2.drawString("Me (Host Station)", centerX - 50, centerY - 20)
+        // 2. Draw Crosshairs
+        g2.color = Color(0x18, 0x20, 0x2C)
+        g2.drawLine(centerX, centerY - 280, centerX, centerY + 280)
+        g2.drawLine(centerX - 280, centerY, centerX + 280, centerY)
+
+        // 3. Draw Radar Sweep Beam
+        val sweepRadius = 280.0
+        val sweepX = centerX + (Math.cos(sweepAngle) * sweepRadius).toInt()
+        val sweepY = centerY + (Math.sin(sweepAngle) * sweepRadius).toInt()
+        g2.color = Color(0x10, 0xB9, 0x81, 100)
+        g2.stroke = BasicStroke(2.0f)
+        g2.drawLine(centerX, centerY, sweepX, sweepY)
+
+        // 4. Draw Center Node (Me / Host Station)
+        g2.color = Color(0xC2, 0x65, 0x2A, 100)
+        g2.fillOval(centerX - 18, centerY - 18, 36, 36)
+        g2.color = ModernTheme.PRIMARY_HOVER
+        g2.fillOval(centerX - 10, centerY - 10, 20, 20)
+        g2.color = ModernTheme.TEXT_MAIN
+        g2.font = ModernTheme.FONT_BODY_BOLD
+        g2.drawString("Me (Host Station)", centerX - 55, centerY - 24)
 
         val peers = database.getAllPeers()
         if (peers.isEmpty()) {
-            g2.color = DesktopMainWindow.COLOR_TEXT_MUTED
-            g2.font = DesktopMainWindow.FONT_BODY
-            g2.drawString("No remote mesh nodes in range yet. Listening for UDP discovery...", centerX - 180, centerY + 80)
+            g2.color = ModernTheme.TEXT_MUTED
+            g2.font = ModernTheme.FONT_BODY
+            g2.drawString("Listening for remote Wi-Fi / BLE mesh nodes...", centerX - 140, centerY + 70)
             return
         }
 
-        // Draw Peer Nodes in circular constellation
+        // 5. Draw Orbiting Peer Nodes & Edges
         val angleStep = (2 * Math.PI) / peers.size
         for ((idx, peer) in peers.withIndex()) {
             val angle = idx * angleStep
-            val radius = 160.0 + (peer.hops * 40.0)
+            val radius = 150.0 + (peer.hops * 45.0)
             val px = (centerX + Math.cos(angle) * radius).toInt()
             val py = (centerY + Math.sin(angle) * radius).toInt()
 
-            // Draw Edge Link
-            g2.color = Color(0xC2, 0x65, 0x2A, 120)
+            // Edge Link
+            g2.color = Color(0x10, 0xB9, 0x81, 140)
             g2.stroke = BasicStroke(2.0f)
             g2.drawLine(centerX, centerY, px, py)
 
-            // Draw Node Circle
-            g2.color = DesktopMainWindow.COLOR_ACCENT
-            g2.fillOval(px - 10, py - 10, 20, 20)
+            // Node Glow & Pin
+            g2.color = Color(0x10, 0xB9, 0x81, 60)
+            g2.fillOval(px - 14, py - 14, 28, 28)
+            g2.color = ModernTheme.ONLINE
+            g2.fillOval(px - 7, py - 7, 14, 14)
 
             // Label
-            g2.color = DesktopMainWindow.COLOR_TEXT_PRIMARY
-            g2.font = DesktopMainWindow.FONT_BODY
-            g2.drawString("${peer.alias} (0x${String.format("%016X", peer.nodeId).takeLast(4)})", px + 14, py + 5)
+            g2.color = ModernTheme.TEXT_MAIN
+            g2.font = ModernTheme.FONT_BODY_BOLD
+            g2.drawString("${peer.alias} (0x${String.format("%016X", peer.nodeId).takeLast(4)})", px + 16, py + 5)
         }
     }
 }

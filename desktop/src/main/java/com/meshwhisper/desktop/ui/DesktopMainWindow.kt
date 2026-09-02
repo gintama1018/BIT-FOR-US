@@ -634,7 +634,44 @@ class DesktopMainWindow(
         if (!msg.mediaUri.isNullOrBlank()) {
             val mediaFile = java.io.File(msg.mediaUri)
             if (mediaFile.exists()) {
-                val openBtn = JButton("📂 Open Received ${msg.mediaType ?: "File"} (${mediaFile.name})").apply {
+                val mediaPanel = JPanel().apply {
+                    layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                    isOpaque = false
+                    border = EmptyBorder(6, 0, 0, 0)
+                }
+
+                if (msg.mediaType == "IMAGE") {
+                    try {
+                        val origImg = javax.imageio.ImageIO.read(mediaFile)
+                        if (origImg != null) {
+                            val maxW = 320
+                            val maxH = 220
+                            val scale = minOf(maxW.toDouble() / origImg.width, maxH.toDouble() / origImg.height, 1.0)
+                            val scaledW = (origImg.width * scale).toInt()
+                            val scaledH = (origImg.height * scale).toInt()
+                            val scaledImg = origImg.getScaledInstance(scaledW, scaledH, Image.SCALE_SMOOTH)
+                            val imgLabel = JLabel(ImageIcon(scaledImg)).apply {
+                                cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+                                border = LineBorder(COLOR_BORDER, 1, true)
+                                addMouseListener(object : java.awt.event.MouseAdapter() {
+                                    override fun mouseClicked(e: java.awt.event.MouseEvent?) {
+                                        try { Desktop.getDesktop().open(mediaFile) } catch (_: Exception) {}
+                                    }
+                                })
+                            }
+                            mediaPanel.add(imgLabel)
+                            mediaPanel.add(Box.createVerticalStrut(6))
+                        }
+                    } catch (_: Exception) {}
+                }
+
+                val actionLabel = when (msg.mediaType) {
+                    "IMAGE" -> "🔍 View Full Image (${mediaFile.name})"
+                    "VOICE" -> "▶️ Play Voice Recording (${mediaFile.name})"
+                    else -> "📂 Open Received File (${mediaFile.name})"
+                }
+
+                val openBtn = JButton(actionLabel).apply {
                     font = FONT_SMALL
                     isFocusPainted = false
                     background = COLOR_SURFACE
@@ -649,7 +686,8 @@ class DesktopMainWindow(
                         }
                     }
                 }
-                card.add(openBtn, BorderLayout.SOUTH)
+                mediaPanel.add(openBtn)
+                card.add(mediaPanel, BorderLayout.SOUTH)
             }
         }
 

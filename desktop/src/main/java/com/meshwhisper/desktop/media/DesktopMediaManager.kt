@@ -33,13 +33,19 @@ data class InboundMediaSession(
     val originalFileName: String,
     val caption: String,
     val sha256: ByteArray,
+    val previewBytes: ByteArray = ByteArray(0),
+    val gridCols: Int = 1,
+    val gridRows: Int = 1,
+    val imageWidthPx: Int = 0,
+    val imageHeightPx: Int = 0,
+    val paddedTileByteLengths: List<Int> = emptyList(),
     val chunks: MutableMap<Int, ByteArray> = ConcurrentHashMap(),
     var lastActivityMs: Long = System.currentTimeMillis()
 )
 
 /**
  * Desktop Media Transfer Engine.
- * Handles receiving, chunk reassembly, disk persistence, and sending of Images, Voice Notes, and Files across the Mesh.
+ * Handles receiving, progressive 8x8/NxN chunk reassembly, disk persistence, and sending of Images, Voice Notes, and Files across the Mesh.
  */
 class DesktopMediaManager(
     private val myNodeId: Long,
@@ -113,9 +119,11 @@ class DesktopMediaManager(
         } else ""
 
         val previewLen = buffer.getShort().toInt() and 0xFFFF
-        if (previewLen > 0 && buffer.remaining() >= previewLen) {
-            buffer.position(buffer.position() + previewLen)
-        }
+        val previewBytes = if (previewLen > 0 && buffer.remaining() >= previewLen) {
+            val pb = ByteArray(previewLen)
+            buffer.get(pb)
+            pb
+        } else ByteArray(0)
 
         val captionLen = buffer.get().toInt() and 0xFF
         val caption = if (captionLen > 0 && buffer.remaining() >= captionLen) {
@@ -123,6 +131,30 @@ class DesktopMediaManager(
             buffer.get(cBytes)
             String(cBytes, Charsets.UTF_8)
         } else ""
+
+        // Parse 8x8 progressive tile metadata
+        var gridCols = 1
+        var gridRows = 1
+        var imageWidthPx = 0
+        var imageHeightPx = 0
+        val paddedTileByteLengths = mutableListOf<Int>()
+
+        if (buffer.remaining() >= 7) {
+            val gCols = buffer.get().toInt() and 0xFF
+            val gRows = buffer.get().toInt() and 0xFF
+            val wPx = buffer.getShort().toInt() and 0xFFFF
+            val hPx = buffer.getShort().toInt() and 0xFFFF
+            val tCount = buffer.get().toInt() and 0xFF
+            if (gCols > 1 && gRows > 1 && tCount > 0 && buffer.remaining() >= tCount * 4) {
+                gridCols = gCols
+                gridRows = gRows
+                imageWidthPx = wPx
+                imageHeightPx = hPx
+                for (i in 0 until tCount) {
+                    paddedTileByteLengths.add(buffer.getInt())
+                }
+            }
+        }
 
         val sessionKey = "${packet.senderId}_$mediaId"
         val session = InboundMediaSession(
@@ -136,17 +168,23 @@ class DesktopMediaManager(
             durationMs = durationMs,
             originalFileName = originalFileName,
             caption = caption,
-            sha256 = sha256
+            sha256 = sha256,
+            previewBytes = previewBytes,
+            gridCols = gridCols,
+            gridRows = gridRows,
+            imageWidthPx = imageWidthPx,
+            imageHeightPx = imageHeightPx,
+            paddedTileByteLengths = paddedTileByteLengths
         )
         inboundSessions[sessionKey] = session
 
-        logger.i(TAG, "📥 Incoming $typeName transfer: $mediaId ($totalChunks chunks, $totalSizeBytes bytes) from 0x${String.format("%016X", packet.senderId)}")
+        logger.i(TAG, "📥 Incoming $typeName transfer: $mediaId ($totalChunks chunks, $totalSizeBytes bytes, Grid=${gridCols}x${gridRows}) from 0x${String.format("%016X", packet.senderId)}")
 
         val textLabel = when (typeName) {
-            "IMAGE" -> "📷 Image Transfer (0/$totalChunks)"
-            "VOICE" -> "🎙️ Voice Note (${durationMs / 1000}s) (0/$totalChunks)"
-            "FILE" -> "📁 File: $originalFileName (0/$totalChunks)"
-            else -> "📦 Media: $originalFileName (0/$totalChunks)"
+            "IMAGE" -> "📷 Image Incoming (${gridCols}x${gridRows} Tiles) [0/$totalChunks]"
+            "VOICE" -> "🎙️ Voice Note Incoming (${durationMs / 1000}s) [0/$totalChunks]"
+            "FILE" -> "📁 File: $originalFileName [0/$totalChunks]"
+            else -> "📦 Media: $originalFileName [0/$totalChunks]"
         }
 
         val msg = DesktopMessage(
@@ -204,7 +242,7 @@ class DesktopMediaManager(
         }
 
         if (received >= session.totalChunks) {
-            // Reassemble complete media file
+            // Reassemble complete media file with tile stitching if tiled image
             assembleAndSaveMedia(session, isBroadcast)
             inboundSessions.remove(sessionKey)
         }
@@ -227,17 +265,25 @@ class DesktopMediaManager(
 
         val targetFile = File(mediaStorageDir, safeName)
         try {
-            FileOutputStream(targetFile).use { fos ->
-                for (i in 0 until session.totalChunks) {
-                    val data = session.chunks[i]
-                    if (data != null) {
-                        fos.write(data)
-                    }
-                }
+            // Concatenate all chunks
+            val totalBytesSize = session.chunks.values.sumOf { it.size }
+            val fullConcatenated = ByteArray(totalBytesSize)
+            var offset = 0
+            for (i in 0 until session.totalChunks) {
+                val chunk = session.chunks[i] ?: continue
+                System.arraycopy(chunk, 0, fullConcatenated, offset, chunk.size)
+                offset += chunk.size
+            }
+
+            // Check if Progressive 8x8 Tiled Image
+            if (session.gridCols > 1 && session.gridRows > 1 && session.paddedTileByteLengths.isNotEmpty() && session.imageWidthPx > 0 && session.imageHeightPx > 0) {
+                stitchTiledImageToDisk(fullConcatenated, session, targetFile)
+            } else {
+                FileOutputStream(targetFile).use { it.write(fullConcatenated) }
             }
 
             val label = when (session.mediaTypeName) {
-                "IMAGE" -> "📷 Image Received (${session.totalSizeBytes / 1024} KB)" + if (session.caption.isNotBlank()) ": ${session.caption}" else ""
+                "IMAGE" -> "📷 Image Received (${session.gridCols}x${session.gridRows} Tiled)" + if (session.caption.isNotBlank()) ": ${session.caption}" else ""
                 "VOICE" -> "🎙️ Voice Note Received (${session.durationMs / 1000}s)"
                 "FILE" -> "📁 File Received: $safeName (${session.totalSizeBytes / 1024} KB)"
                 else -> "📦 Media: $safeName"
@@ -256,15 +302,56 @@ class DesktopMediaManager(
                 channelName = if (isBroadcast) "public" else null,
                 mediaType = session.mediaTypeName,
                 mediaUri = targetFile.absolutePath,
-                mediaSizeBytes = session.totalSizeBytes.toLong()
+                mediaSizeBytes = targetFile.length()
             )
             database.insertMessage(updatedMsg)
             _mediaTransfersUpdated.tryEmit(updatedMsg)
 
-            logger.i(TAG, "✅ Reassembled & Saved ${session.mediaTypeName} -> ${targetFile.absolutePath}")
+            logger.i(TAG, "✅ Reassembled & Saved ${session.mediaTypeName} -> ${targetFile.absolutePath} (${targetFile.length() / 1024} KB)")
         } catch (e: Exception) {
             logger.e(TAG, "Failed to save reassembled media: ${e.message}")
         }
+    }
+
+    private fun stitchTiledImageToDisk(
+        concatenatedBytes: ByteArray,
+        session: InboundMediaSession,
+        targetFile: File
+    ) {
+        val imgW = session.imageWidthPx
+        val imgH = session.imageHeightPx
+        val cols = session.gridCols
+        val rows = session.gridRows
+        val composite = java.awt.image.BufferedImage(imgW, imgH, java.awt.image.BufferedImage.TYPE_INT_RGB)
+        val g2 = composite.createGraphics()
+
+        val baseTileW = imgW / cols
+        val baseTileH = imgH / rows
+
+        var byteOffset = 0
+        var tileIdx = 0
+
+        for (r in 0 until rows) {
+            val y = r * baseTileH
+            for (c in 0 until cols) {
+                if (tileIdx >= session.paddedTileByteLengths.size) break
+                val pLen = session.paddedTileByteLengths[tileIdx]
+                if (byteOffset + pLen <= concatenatedBytes.size) {
+                    val tileBytes = concatenatedBytes.copyOfRange(byteOffset, byteOffset + pLen)
+                    try {
+                        val tileImg = javax.imageio.ImageIO.read(java.io.ByteArrayInputStream(tileBytes))
+                        if (tileImg != null) {
+                            val x = c * baseTileW
+                            g2.drawImage(tileImg, x, y, null)
+                        }
+                    } catch (_: Exception) {}
+                }
+                byteOffset += pLen
+                tileIdx++
+            }
+        }
+        g2.dispose()
+        javax.imageio.ImageIO.write(composite, "jpg", targetFile)
     }
 
     fun sendMediaFile(

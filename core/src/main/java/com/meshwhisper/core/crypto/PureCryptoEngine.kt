@@ -103,9 +103,14 @@ object PureCryptoEngine {
         peerPublicKeyBytes: ByteArray,
         timestampSec: Long = System.currentTimeMillis() / 1000L
     ): ByteArray {
+        val myPubKey = derivePublicKey(myPrivateKey)
+        val myNodeId = deriveNodeId(myPubKey)
         val peerNodeId = deriveNodeId(peerPublicKeyBytes)
         val epoch = getEpochForTimestamp(timestampSec)
-        val cacheKey = "$peerNodeId:$epoch"
+        
+        val id1 = minOf(myNodeId, peerNodeId)
+        val id2 = maxOf(myNodeId, peerNodeId)
+        val cacheKey = "$id1:$id2:$epoch"
 
         return sessionKeyEpochCache.getOrPut(cacheKey) {
             val privParams = X25519PrivateKeyParameters(myPrivateKey, 0)
@@ -139,8 +144,11 @@ object PureCryptoEngine {
     }
 
     fun invalidateSessionKey(peerNodeId: Long) {
-        val prefix = "$peerNodeId:"
-        val keysToRemove = sessionKeyEpochCache.keys.filter { it.startsWith(prefix) }
+        val target = peerNodeId.toString()
+        val keysToRemove = sessionKeyEpochCache.keys.filter { key ->
+            val parts = key.split(":")
+            parts.size >= 2 && (parts[0] == target || parts[1] == target)
+        }
         for (k in keysToRemove) {
             sessionKeyEpochCache.remove(k)
         }

@@ -55,6 +55,7 @@ class DesktopMainWindow(
     private val peerListModel = DefaultListModel<DesktopPeer>()
     private val peerJList = JList(peerListModel)
     private var selectedPeer: DesktopPeer? = null
+    private var selectedPeerId: Long? = null
     private val dmChatTitleLabel = JLabel("Select a peer to start encrypted chat")
     private val dmMessagesPanel = JPanel().apply {
         layout = BoxLayout(this, BoxLayout.Y_AXIS)
@@ -359,10 +360,16 @@ class DesktopMainWindow(
                     add(sub, BorderLayout.SOUTH)
                 }
             }
-            addListSelectionListener {
-                selectedPeer = selectedValue
-                updateDmChatHeader()
-                refreshDmMessages()
+            addListSelectionListener { e ->
+                if (!e.valueIsAdjusting) {
+                    val chosen = selectedValue
+                    if (chosen != null) {
+                        selectedPeer = chosen
+                        selectedPeerId = chosen.nodeId
+                        updateDmChatHeader()
+                        refreshDmMessages()
+                    }
+                }
             }
         }
         leftPanel.add(JScrollPane(peerJList).apply {
@@ -392,7 +399,11 @@ class DesktopMainWindow(
 
         val dmAttachBtn = ModernButton("📎 Attach", ModernTheme.BG_CARD, ModernTheme.BG_CARD_HOVER, ModernTheme.TEXT_MAIN, 10).apply {
             addActionListener {
-                val peer = selectedPeer ?: return@addActionListener
+                val peer = selectedPeer ?: (if (peerListModel.isEmpty) null else peerListModel.get(0))
+                if (peer == null) {
+                    JOptionPane.showMessageDialog(this@DesktopMainWindow, "Please select a peer from the left sidebar first!", "No Peer Selected", JOptionPane.INFORMATION_MESSAGE)
+                    return@addActionListener
+                }
                 val chooser = JFileChooser()
                 if (chooser.showOpenDialog(this@DesktopMainWindow) == JFileChooser.APPROVE_OPTION) {
                     val file = chooser.selectedFile
@@ -429,7 +440,11 @@ class DesktopMainWindow(
     }
 
     private fun sendDirectChat() {
-        val peer = selectedPeer ?: return
+        val peer = selectedPeer ?: (if (peerListModel.isEmpty) null else peerListModel.get(0))
+        if (peer == null) {
+            JOptionPane.showMessageDialog(this, "Please select a peer from the left sidebar first!", "No Peer Selected", JOptionPane.INFORMATION_MESSAGE)
+            return
+        }
         val text = dmInputField.text.trim()
         if (text.isNotEmpty()) {
             router.sendDirectMessage(peer.nodeId, text)
@@ -715,9 +730,31 @@ class DesktopMainWindow(
 
     private fun refreshPeersList() {
         val peers = database.getAllPeers()
-        peerListModel.clear()
-        for (p in peers) {
-            peerListModel.addElement(p)
+        val currentId = selectedPeer?.nodeId ?: selectedPeerId
+
+        val existingIds = (0 until peerListModel.size()).map { peerListModel.get(it).nodeId }
+        val newIds = peers.map { it.nodeId }
+        if (existingIds != newIds) {
+            peerListModel.clear()
+            for (p in peers) {
+                peerListModel.addElement(p)
+            }
+        }
+
+        if (currentId != null) {
+            val peerToSelect = peers.firstOrNull { it.nodeId == currentId }
+            if (peerToSelect != null) {
+                selectedPeer = peerToSelect
+                if (peerJList.selectedValue?.nodeId != currentId) {
+                    peerJList.setSelectedValue(peerToSelect, true)
+                }
+            }
+        } else if (peers.isNotEmpty() && selectedPeer == null) {
+            selectedPeer = peers.first()
+            selectedPeerId = selectedPeer?.nodeId
+            peerJList.selectedIndex = 0
+            updateDmChatHeader()
+            refreshDmMessages()
         }
     }
 

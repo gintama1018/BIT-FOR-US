@@ -446,14 +446,31 @@ class MeshRouter(
             Log.e(tag, "Failed to decrypt or authenticate broadcast packet (AEAD header mismatch / corrupt): ${e.message}")
         }
 
-        // Flood relay if hops remain
+        // Flood relay if hops remain (with Software CSMA Jitter)
         if (packet.ttl > 1 && packet.senderId != cryptoEngine.nodeId) {
             val relayedPacket = packet.decrementTtl()
-            val relayedBytes = MeshPacket.serialize(relayedPacket)
-            broadcastPacket(relayedBytes, ingressAddress)
-            _relayedPacketsCount.value += 1
-            logPacket("RELAY", relayedPacket, relayedBytes.size, "Relaying broadcast msg")
+            relayPacketWithJitter(relayedPacket, ingressAddress, "Relaying broadcast msg")
         }
+    }
+
+    private suspend fun relayPacketWithJitter(
+        relayedPacket: MeshPacket,
+        ingressAddress: String?,
+        logDescription: String,
+        isPrioritySos: Boolean = false
+    ) {
+        // Software CSMA / Collision Avoidance Jitter (15ms - 75ms for normal, 5ms - 20ms for SOS)
+        val jitterMs = if (isPrioritySos) {
+            java.util.concurrent.ThreadLocalRandom.current().nextLong(5L, 20L)
+        } else {
+            java.util.concurrent.ThreadLocalRandom.current().nextLong(15L, 75L)
+        }
+        delay(jitterMs)
+
+        val relayedBytes = MeshPacket.serialize(relayedPacket)
+        broadcastPacket(relayedBytes, ingressAddress)
+        _relayedPacketsCount.value += 1
+        logPacket("RELAY", relayedPacket, relayedBytes.size, logDescription)
     }
 
     private suspend fun handleDirectMessage(
@@ -524,12 +541,10 @@ class MeshRouter(
             )
             database.storeForwardDao().insert(sfEntity)
 
-            // Flood relay forward
+            // Flood relay forward (with Software CSMA Jitter)
             if (packet.ttl > 1) {
                 val relayedPacket = packet.decrementTtl()
-                val relayedBytes = MeshPacket.serialize(relayedPacket)
-                broadcastPacket(relayedBytes, ingressAddress)
-                _relayedPacketsCount.value += 1
+                relayPacketWithJitter(relayedPacket, ingressAddress, "Relaying private DM for ${packet.recipientId}")
             }
         }
     }
@@ -575,12 +590,8 @@ class MeshRouter(
                 Log.w(tag, "Rejected forged ACK: auth tag mismatch from ${packet.senderId}")
             }
         } else if (packet.ttl > 1) {
-            // Relay the ACK back towards sender
             val relayedPacket = packet.decrementTtl()
-            val relayedBytes = MeshPacket.serialize(relayedPacket)
-            broadcastPacket(relayedBytes, ingressAddress)
-            _relayedPacketsCount.value += 1
-            logPacket("RELAY", relayedPacket, relayedBytes.size, "Relaying ACK (ackId=${packet.messageId})")
+            relayPacketWithJitter(relayedPacket, ingressAddress, "Relaying ACK (ackId=${packet.messageId})")
         }
     }
 
@@ -598,10 +609,7 @@ class MeshRouter(
         // Live flood relay (EXCLUDED from StoreForwardDao to protect DB footprint)
         if (packet.ttl > 1 && (!isForMe || isBroadcast)) {
             val relayedPacket = packet.decrementTtl()
-            val relayedBytes = MeshPacket.serialize(relayedPacket)
-            broadcastPacket(relayedBytes, ingressAddress)
-            _relayedPacketsCount.value += 1
-            logPacket("RELAY", relayedPacket, relayedBytes.size, "Relaying MEDIA_INIT from ${packet.senderId}")
+            relayPacketWithJitter(relayedPacket, ingressAddress, "Relaying MEDIA_INIT from ${packet.senderId}")
         }
     }
 
@@ -617,10 +625,7 @@ class MeshRouter(
         // Live flood relay (EXCLUDED from StoreForwardDao to protect DB footprint)
         if (packet.ttl > 1 && (!isForMe || isBroadcast)) {
             val relayedPacket = packet.decrementTtl()
-            val relayedBytes = MeshPacket.serialize(relayedPacket)
-            broadcastPacket(relayedBytes, ingressAddress)
-            _relayedPacketsCount.value += 1
-            logPacket("RELAY", relayedPacket, relayedBytes.size, "Relaying MEDIA_CHUNK from ${packet.senderId}")
+            relayPacketWithJitter(relayedPacket, ingressAddress, "Relaying MEDIA_CHUNK from ${packet.senderId}")
         }
     }
 
@@ -634,10 +639,7 @@ class MeshRouter(
         // Relay NACK along mesh path towards sender
         if (packet.ttl > 1 && !isForMe) {
             val relayedPacket = packet.decrementTtl()
-            val relayedBytes = MeshPacket.serialize(relayedPacket)
-            broadcastPacket(relayedBytes, ingressAddress)
-            _relayedPacketsCount.value += 1
-            logPacket("RELAY", relayedPacket, relayedBytes.size, "Relaying MEDIA_NACK for ${packet.recipientId}")
+            relayPacketWithJitter(relayedPacket, ingressAddress, "Relaying MEDIA_NACK for ${packet.recipientId}")
         }
     }
 
@@ -651,10 +653,7 @@ class MeshRouter(
         // Relay ACK back towards sender
         if (packet.ttl > 1 && !isForMe) {
             val relayedPacket = packet.decrementTtl()
-            val relayedBytes = MeshPacket.serialize(relayedPacket)
-            broadcastPacket(relayedBytes, ingressAddress)
-            _relayedPacketsCount.value += 1
-            logPacket("RELAY", relayedPacket, relayedBytes.size, "Relaying MEDIA_ACK for ${packet.recipientId}")
+            relayPacketWithJitter(relayedPacket, ingressAddress, "Relaying MEDIA_ACK for ${packet.recipientId}")
         }
     }
 
@@ -668,10 +667,7 @@ class MeshRouter(
         // Relay ABORT along mesh path
         if (packet.ttl > 1 && !isForMe) {
             val relayedPacket = packet.decrementTtl()
-            val relayedBytes = MeshPacket.serialize(relayedPacket)
-            broadcastPacket(relayedBytes, ingressAddress)
-            _relayedPacketsCount.value += 1
-            logPacket("RELAY", relayedPacket, relayedBytes.size, "Relaying MEDIA_ABORT for ${packet.recipientId}")
+            relayPacketWithJitter(relayedPacket, ingressAddress, "Relaying MEDIA_ABORT for ${packet.recipientId}")
         }
     }
 
@@ -976,13 +972,10 @@ class MeshRouter(
             Log.e(tag, "Failed to decrypt SOS packet: ${e.message}")
         }
 
-        // Out-of-band Priority flood relay: bypass normal queues & rebroadcast immediately
+        // Out-of-band Priority flood relay: bypass normal queues & rebroadcast immediately (with minimal SOS jitter)
         if (packet.ttl > 1 && packet.senderId != cryptoEngine.nodeId) {
             val relayedPacket = packet.decrementTtl()
-            val relayedBytes = MeshPacket.serialize(relayedPacket)
-            broadcastPacket(relayedBytes, ingressAddress)
-            _relayedPacketsCount.value += 1
-            logPacket("RELAY", relayedPacket, relayedBytes.size, "PRIORITY_SOS_RELAY: Forwarded emergency SOS across mesh")
+            relayPacketWithJitter(relayedPacket, ingressAddress, "PRIORITY_SOS_RELAY: Forwarded emergency SOS across mesh", isPrioritySos = true)
         }
     }
 

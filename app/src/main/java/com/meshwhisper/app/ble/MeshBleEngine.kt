@@ -428,6 +428,14 @@ class MeshBleEngine(private val context: Context) {
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 Log.d(tag, "Central connected to our GATT server: $address")
                 connectedCentrals[address] = device
+
+                // Connection Symmetry Resolution: Abort redundant outbound central connection if present
+                val clientConn = activeGattClients.remove(address)
+                if (clientConn != null) {
+                    Log.d(tag, "Aborting redundant outbound Central connection to $address; established incoming Peripheral link takes precedence.")
+                    try { clientConn.gatt.close() } catch (_: Exception) {}
+                }
+
                 updatePeerCount()
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 Log.d(tag, "Central disconnected from GATT server: $address")
@@ -562,8 +570,16 @@ class MeshBleEngine(private val context: Context) {
             if (hasMeshService || result.scanRecord?.serviceData?.containsKey(ParcelUuid(BleConstants.MESH_SERVICE_UUID)) == true) {
                 onPeerDiscoveredListener?.invoke(address, rssi)
 
-                // Auto-connect if not already connected or connecting (Capped at 5 concurrent links to prevent hardware limits)
+                // Auto-connect with Deterministic Symmetry Resolution (Tie-Breaking)
                 if (!activeGattClients.containsKey(address) && !connectedCentrals.containsKey(address)) {
+                    val localAddress = try { bluetoothAdapter?.address } catch (_: Exception) { null }
+                    if (localAddress != null && localAddress.isNotBlank() && !localAddress.equals("02:00:00:00:00:00", ignoreCase = true)) {
+                        // Deterministic tie-breaker: Lower MAC address waits as peripheral, higher initiates as central
+                        if (localAddress.compareTo(address, ignoreCase = true) < 0) {
+                            return
+                        }
+                    }
+
                     val currentConnections = activeGattClients.size + connectedCentrals.size
                     if (currentConnections < MAX_CONCURRENT_GATT_CONNECTIONS) {
                         connectToPeer(device, rssi)

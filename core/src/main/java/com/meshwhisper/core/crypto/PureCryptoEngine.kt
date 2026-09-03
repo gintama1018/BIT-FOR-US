@@ -49,7 +49,12 @@ object PureCryptoEngine {
     val HKDF_DM_SALT = "MESHWHISPER_DM_SALT_1F2E3D4C5B6A".toByteArray(Charsets.UTF_8)
 
     private val secureRandom = SecureRandom()
-    private val sessionKeyEpochCache = ConcurrentHashMap<String, ByteArray>()
+    private const val MAX_SESSION_KEY_CACHE_SIZE = 256
+    private val sessionKeyEpochCache = object : java.util.LinkedHashMap<String, ByteArray>(128, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ByteArray>?): Boolean {
+            return size > MAX_SESSION_KEY_CACHE_SIZE
+        }
+    }
 
     /**
      * Generates a new random X25519 keypair (Pair(privateKeyBytes, publicKeyBytes)).
@@ -163,29 +168,35 @@ object PureCryptoEngine {
         val id1 = minOf(myNodeId, peerNodeId)
         val id2 = maxOf(myNodeId, peerNodeId)
         val cacheKey = "$id1:$id2:$epoch"
-
-        return sessionKeyEpochCache.getOrPut(cacheKey) {
-            val privParams = X25519PrivateKeyParameters(myPrivateKey, 0)
-            val pubParams = X25519PublicKeyParameters(peerPublicKeyBytes, 0)
-
-            val agreement = X25519Agreement()
-            agreement.init(privParams)
-            val sharedSecret = ByteArray(agreement.agreementSize)
-            agreement.calculateAgreement(pubParams, sharedSecret, 0)
-
-            // HKDF-SHA256 expansion to 32 bytes with epoch-bound info string
-            val hkdf = HKDFBytesGenerator(SHA256Digest())
-            val info = "MESHWHISPER_SESSION_KEY_V1_EPOCH_$epoch".toByteArray(Charsets.UTF_8)
-            val params = HKDFParameters(
-                sharedSecret,
-                HKDF_DM_SALT,
-                info
-            )
-            hkdf.init(params)
-            val sessionKey = ByteArray(32)
-            hkdf.generateBytes(sessionKey, 0, 32)
-            sessionKey
+        synchronized(sessionKeyEpochCache) {
+            val cached = sessionKeyEpochCache[cacheKey]
+            if (cached != null) return cached
         }
+
+        val privParams = X25519PrivateKeyParameters(myPrivateKey, 0)
+        val pubParams = X25519PublicKeyParameters(peerPublicKeyBytes, 0)
+
+        val agreement = X25519Agreement()
+        agreement.init(privParams)
+        val sharedSecret = ByteArray(agreement.agreementSize)
+        agreement.calculateAgreement(pubParams, sharedSecret, 0)
+
+        // HKDF-SHA256 expansion to 32 bytes with epoch-bound info string
+        val hkdf = HKDFBytesGenerator(SHA256Digest())
+        val info = "MESHWHISPER_SESSION_KEY_V1_EPOCH_$epoch".toByteArray(Charsets.UTF_8)
+        val params = HKDFParameters(
+            sharedSecret,
+            HKDF_DM_SALT,
+            info
+        )
+        hkdf.init(params)
+        val sessionKey = ByteArray(32)
+        hkdf.generateBytes(sessionKey, 0, 32)
+
+        synchronized(sessionKeyEpochCache) {
+            sessionKeyEpochCache[cacheKey] = sessionKey
+        }
+        return sessionKey
     }
 
     /**
@@ -197,30 +208,37 @@ object PureCryptoEngine {
 
     fun invalidateSessionKey(peerNodeId: Long) {
         val target = peerNodeId.toString()
-        val keysToRemove = sessionKeyEpochCache.keys.filter { key ->
-            val parts = key.split(":")
-            parts.size >= 2 && (parts[0] == target || parts[1] == target)
-        }
-        for (k in keysToRemove) {
-            sessionKeyEpochCache.remove(k)
+        synchronized(sessionKeyEpochCache) {
+            val keysToRemove = sessionKeyEpochCache.keys.filter { key ->
+                val parts = key.split(":")
+                parts.size >= 2 && (parts[0] == target || parts[1] == target)
+            }
+            for (k in keysToRemove) {
+                sessionKeyEpochCache.remove(k)
+            }
         }
     }
 
     fun clearAllSessionKeys() {
-        sessionKeyEpochCache.clear()
+        synchronized(sessionKeyEpochCache) {
+            sessionKeyEpochCache.clear()
+        }
     }
 
     /**
-     * Encrypts plaintext using AES-256-GCM with IV derived deterministically from messageId UUID.
+     * Encrypts plaintext using AES-256-GCM with a fresh CSPRNG 96-bit nonce (NIST SP 800-38D RBG Construction).
+     * Nonce is prepended to ciphertext: [12-byte CSPRNG IV][raw ciphertext].
      * Binds Additional Authenticated Data (AAD) into authentication tag.
      */
     fun encrypt(
         plaintext: ByteArray,
         messageId: UUID,
         aesKey: ByteArray,
-        aad: ByteArray? = null
+        aad: ByteArray? = null,
+        explicitIv: ByteArray? = null
     ): EncryptedResult {
-        val iv = extractIvFromUuid(messageId)
+        // Generate an independent 12-byte cryptographically secure random nonce or use explicit
+        val iv = explicitIv ?: ByteArray(12).also { secureRandom.nextBytes(it) }
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         val keySpec = SecretKeySpec(aesKey, "AES")
         val gcmSpec = GCMParameterSpec(128, iv)
@@ -232,18 +250,23 @@ object PureCryptoEngine {
         val encryptedWithTag = cipher.doFinal(plaintext)
 
         val tagSize = MeshPacket.AUTH_TAG_SIZE
-        val ciphertextSize = encryptedWithTag.size - tagSize
-        val ciphertext = ByteArray(ciphertextSize)
+        val rawCiphertextSize = encryptedWithTag.size - tagSize
+        
+        // Output wire ciphertext = [12-byte CSPRNG IV] + [raw ciphertext]
+        val outputCiphertext = ByteArray(12 + rawCiphertextSize)
+        System.arraycopy(iv, 0, outputCiphertext, 0, 12)
+        System.arraycopy(encryptedWithTag, 0, outputCiphertext, 12, rawCiphertextSize)
+
         val authTag = ByteArray(tagSize)
+        System.arraycopy(encryptedWithTag, rawCiphertextSize, authTag, 0, tagSize)
 
-        System.arraycopy(encryptedWithTag, 0, ciphertext, 0, ciphertextSize)
-        System.arraycopy(encryptedWithTag, ciphertextSize, authTag, 0, tagSize)
-
-        return EncryptedResult(ciphertext, authTag)
+        return EncryptedResult(outputCiphertext, authTag)
     }
 
     /**
      * Decrypts ciphertext and verifies 128-bit AEAD tag + AAD header binding.
+     * Dual-Mode: Parses fresh 12-byte CSPRNG IV from ciphertext prefix, with automatic fallback
+     * to legacy UUID-derived IV for backward-compatibility with older packets and tests.
      */
     fun decrypt(
         ciphertext: ByteArray,
@@ -252,15 +275,37 @@ object PureCryptoEngine {
         aesKey: ByteArray,
         aad: ByteArray? = null
     ): ByteArray {
-        val iv = extractIvFromUuid(messageId)
+        val keySpec = SecretKeySpec(aesKey, "AES")
+
+        // 1. Primary: Extract prepended 12-byte CSPRNG IV (NIST SP 800-38D)
+        if (ciphertext.size >= 12) {
+            try {
+                val iv = ciphertext.copyOfRange(0, 12)
+                val rawCiphertext = ciphertext.copyOfRange(12, ciphertext.size)
+                val combined = ByteArray(rawCiphertext.size + authTag.size)
+                System.arraycopy(rawCiphertext, 0, combined, 0, rawCiphertext.size)
+                System.arraycopy(authTag, 0, combined, rawCiphertext.size, authTag.size)
+
+                val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+                val gcmSpec = GCMParameterSpec(128, iv)
+                cipher.init(Cipher.DECRYPT_MODE, keySpec, gcmSpec)
+                if (aad != null) {
+                    cipher.updateAAD(aad)
+                }
+                return cipher.doFinal(combined)
+            } catch (_: Exception) {
+                // Fallback to legacy UUID-derived IV below
+            }
+        }
+
+        // 2. Legacy Fallback: Extract IV deterministically from UUID
+        val legacyIv = extractIvFromUuid(messageId)
         val combined = ByteArray(ciphertext.size + authTag.size)
         System.arraycopy(ciphertext, 0, combined, 0, ciphertext.size)
         System.arraycopy(authTag, 0, combined, ciphertext.size, authTag.size)
 
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        val keySpec = SecretKeySpec(aesKey, "AES")
-        val gcmSpec = GCMParameterSpec(128, iv)
-
+        val gcmSpec = GCMParameterSpec(128, legacyIv)
         cipher.init(Cipher.DECRYPT_MODE, keySpec, gcmSpec)
         if (aad != null) {
             cipher.updateAAD(aad)

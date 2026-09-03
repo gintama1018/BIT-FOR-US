@@ -63,7 +63,7 @@ class CoreProtocolAndCryptoTest {
         val aad = MeshPacket.computeAad(PacketType.DIRECT_MESSAGE, msgId, aliceNodeId, bobNodeId, ts)
 
         val encResult = PureCryptoEngine.encrypt(plaintext, msgId, aliceSessionKey, aad)
-        assertThat(encResult.ciphertext.size).isEqualTo(plaintext.size)
+        assertThat(encResult.ciphertext.size).isEqualTo(12 + plaintext.size) // 12-byte CSPRNG IV prefix + ciphertext
         assertThat(encResult.authTag.size).isEqualTo(16)
 
         val decrypted = PureCryptoEngine.decrypt(encResult.ciphertext, encResult.authTag, msgId, bobSessionKey, aad)

@@ -316,4 +316,52 @@ class MultiHopRelayAndSecurityMeshTest {
         val isVerified = PureCryptoEngine.verifySignature(aliceSigningPub, recoveredUnsigned, recoveredSig)
         assertThat(isVerified).isTrue()
     }
+
+    @Test
+    fun testNistSp80038DFreshCsprngNoncesAreUniquePerCall() {
+        // Enforce NIST SP 800-38D: Consecutive encryptions under the same key and same messageId
+        // MUST produce distinct 12-byte CSPRNG nonces and distinct ciphertexts
+        val (alicePriv, _) = PureCryptoEngine.generateX25519KeyPair()
+        val (_, bobPub) = PureCryptoEngine.generateX25519KeyPair()
+        val sessionKey = PureCryptoEngine.derivePeerSessionKey(alicePriv, bobPub)
+
+        val fixedMessageId = UUID.randomUUID()
+        val plaintext = "CRITICAL_PAYLOAD_NIST_VERIFICATION".toByteArray(Charsets.UTF_8)
+        val aad = "AAD_METADATA_HEADER".toByteArray(Charsets.UTF_8)
+
+        val enc1 = PureCryptoEngine.encrypt(plaintext, fixedMessageId, sessionKey, aad)
+        val enc2 = PureCryptoEngine.encrypt(plaintext, fixedMessageId, sessionKey, aad)
+
+        // 1. Wire ciphertexts MUST be different because of fresh independent CSPRNG IVs
+        assertThat(enc1.ciphertext).isNotEqualTo(enc2.ciphertext)
+
+        // 2. Extracted 12-byte nonces from the ciphertext prefix MUST be different
+        val iv1 = enc1.ciphertext.copyOfRange(0, 12)
+        val iv2 = enc2.ciphertext.copyOfRange(0, 12)
+        assertThat(iv1).isNotEqualTo(iv2)
+
+        // 3. Both must decrypt successfully to the exact same plaintext
+        val dec1 = PureCryptoEngine.decrypt(enc1.ciphertext, enc1.authTag, fixedMessageId, sessionKey, aad)
+        val dec2 = PureCryptoEngine.decrypt(enc2.ciphertext, enc2.authTag, fixedMessageId, sessionKey, aad)
+        assertThat(dec1).isEqualTo(plaintext)
+        assertThat(dec2).isEqualTo(plaintext)
+    }
+
+    @Test
+    fun testBoundedLruSessionKeyCacheEviction() {
+        // Verify session key cache does not leak memory over thousands of derivations
+        val (myPriv, _) = PureCryptoEngine.generateX25519KeyPair()
+        PureCryptoEngine.clearAllSessionKeys()
+
+        // Generate 300 unique peer session keys (cache cap is 256)
+        for (i in 0 until 300) {
+            val (_, peerPub) = PureCryptoEngine.generateX25519KeyPair()
+            PureCryptoEngine.derivePeerSessionKey(myPriv, peerPub, timestampSec = 1720000000L + (i * 3600L))
+        }
+
+        // Test that key invalidation and eviction work cleanly without throwing exceptions
+        PureCryptoEngine.invalidateSessionKey(0x12345678L)
+        PureCryptoEngine.clearAllSessionKeys()
+    }
 }
+

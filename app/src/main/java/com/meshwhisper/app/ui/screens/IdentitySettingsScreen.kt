@@ -55,6 +55,8 @@ fun IdentitySettingsScreen(
     var isEditingAlias by remember { mutableStateOf(false) }
     var aliasInput by remember { mutableStateOf(myAlias) }
     var showQrDialog by remember { mutableStateOf(false) }
+    var showImportContactDialog by remember { mutableStateOf(false) }
+    var importContactInput by remember { mutableStateOf("") }
     var showPanicDialog by remember { mutableStateOf(false) }
 
     val avatarPickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
@@ -502,6 +504,15 @@ fun IdentitySettingsScreen(
                     Text("Close", color = SaharaPrimary, fontWeight = FontWeight.Bold)
                 }
             },
+            dismissButton = {
+                TextButton(onClick = {
+                    showQrDialog = false
+                    importContactInput = ""
+                    showImportContactDialog = true
+                }) {
+                    Text("Import Peer Link", color = SaharaOnSurfaceVariant)
+                }
+            },
             title = {
                 Text(
                     text = "Out-of-Band Key Verification",
@@ -536,6 +547,81 @@ fun IdentitySettingsScreen(
                         textAlign = TextAlign.Center,
                         lineHeight = 17.sp
                     )
+                }
+            },
+            containerColor = SaharaSurfaceContainerLowest,
+            shape = RoundedCornerShape(16.dp)
+        )
+    }
+
+    // Import / Verify Contact Code Dialog (Closes the Trust Loop)
+    if (showImportContactDialog) {
+        AlertDialog(
+            onDismissRequest = { showImportContactDialog = false },
+            title = {
+                Text(
+                    text = "Verify Peer Contact Link",
+                    color = SaharaPrimary,
+                    fontFamily = EBGaramondFamily,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "Paste a contact URI (meshwhisper://node?id=...&alias=...&pub=...) scanned or shared from another device to establish an authenticated, verified peer link.",
+                        color = SaharaOnSurfaceVariant,
+                        fontSize = 12.sp,
+                        fontFamily = ManropeFamily
+                    )
+                    OutlinedTextField(
+                        value = importContactInput,
+                        onValueChange = { importContactInput = it },
+                        placeholder = { Text("meshwhisper://node?id=...", color = SaharaOutline) },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = false,
+                        maxLines = 3,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = SaharaPrimary,
+                            unfocusedBorderColor = SaharaOutlineVariant
+                        )
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val uriString = importContactInput.trim()
+                        val uri = try { android.net.Uri.parse(uriString) } catch (_: Exception) { null }
+                        if (uri != null && uri.scheme == "meshwhisper" && uri.host == "node") {
+                            val idHex = uri.getQueryParameter("id")
+                            val alias = uri.getQueryParameter("alias") ?: "Verified Peer"
+                            val pubHex = uri.getQueryParameter("pub")
+                            if (!idHex.isNullOrBlank() && !pubHex.isNullOrBlank()) {
+                                try {
+                                    val nodeId = java.lang.Long.parseUnsignedLong(idHex, 16)
+                                    viewModel.registerScannedPeer(nodeId, alias, pubHex)
+                                    Toast.makeText(context, "Verified Contact Added: $alias", Toast.LENGTH_SHORT).show()
+                                    showImportContactDialog = false
+                                } catch (_: Exception) {
+                                    Toast.makeText(context, "Invalid node ID format", Toast.LENGTH_SHORT).show()
+                                }
+                            } else {
+                                Toast.makeText(context, "Incomplete contact link parameters", Toast.LENGTH_SHORT).show()
+                            }
+                        } else {
+                            Toast.makeText(context, "Invalid MeshWhisper URI", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = SaharaPrimary)
+                ) {
+                    Text("Verify & Save")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showImportContactDialog = false }) {
+                    Text("Cancel", color = SaharaOnSurfaceVariant)
                 }
             },
             containerColor = SaharaSurfaceContainerLowest,

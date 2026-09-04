@@ -51,9 +51,104 @@ fun DirectChatDetailScreen(
     val connectedNodeIds by viewModel.connectedNodeIds.collectAsState()
     val peer = peers.firstOrNull { it.nodeId == peerNodeId }
     val isDirect = connectedNodeIds.contains(peerNodeId)
+    val isVerified = peer?.isVerified == true
 
     var textInput by remember { mutableStateOf("") }
+    var showSafetyNumberDialog by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
+
+    // Safety Number Verification Dialog (Cryptographic MITM Defense)
+    if (showSafetyNumberDialog) {
+        val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
+        val safetyNumber = peer?.fingerprint ?: "Awaiting Key Exchange"
+        AlertDialog(
+            onDismissRequest = { showSafetyNumberDialog = false },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(
+                        imageVector = if (isVerified) Icons.Default.Verified else Icons.Default.Shield,
+                        contentDescription = null,
+                        tint = if (isVerified) Color(0xFF4CAF50) else SaharaPrimary
+                    )
+                    Text(
+                        text = if (isVerified) "Verified Safety Number" else "Verify Safety Number",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        text = "Compare this safety number with the number on ${peer?.alias ?: "peer"}'s screen to verify end-to-end encryption integrity and prevent man-in-the-middle attacks.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = SaharaOnSurfaceVariant
+                    )
+                    Surface(
+                        color = SaharaSurfaceContainerLowest,
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = safetyNumber.chunked(4).joinToString(" "),
+                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                            color = SaharaPrimary,
+                            modifier = Modifier.padding(12.dp)
+                        )
+                    }
+                    if (isVerified) {
+                        Surface(
+                            color = Color(0xFF1B5E20).copy(alpha = 0.2f),
+                            shape = RoundedCornerShape(6.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(Icons.Default.CheckCircle, null, tint = Color(0xFF4CAF50), modifier = Modifier.size(16.dp))
+                                Text(
+                                    text = "Marked as Verified Contact",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color(0xFF4CAF50),
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.togglePeerVerification(peerNodeId, !isVerified)
+                        showSafetyNumberDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isVerified) SaharaOutline else Color(0xFF2E7D32)
+                    )
+                ) {
+                    Text(if (isVerified) "Clear Verification" else "Mark as Verified")
+                }
+            },
+            dismissButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = {
+                        clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(safetyNumber))
+                        android.widget.Toast.makeText(context, "Safety number copied", android.widget.Toast.LENGTH_SHORT).show()
+                    }) {
+                        Text("Copy")
+                    }
+                    TextButton(onClick = { showSafetyNumberDialog = false }) {
+                        Text("Close")
+                    }
+                }
+            }
+        )
+    }
 
     // Photo picker for DM
     val photoPickerLauncher = rememberLauncherForActivityResult(
@@ -122,14 +217,27 @@ fun DirectChatDetailScreen(
                 Spacer(modifier = Modifier.width(12.dp))
 
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = peer?.alias?.ifBlank { "Peer 0x${String.format("%016X", peerNodeId).takeLast(4)}" } ?: "Peer",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = SaharaOnSurface,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = peer?.alias?.ifBlank { "Peer 0x${String.format("%016X", peerNodeId).takeLast(4)}" } ?: "Peer",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = SaharaOnSurface,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (isVerified) {
+                            Icon(
+                                imageVector = Icons.Default.Verified,
+                                contentDescription = "Verified Contact",
+                                tint = Color(0xFF4CAF50),
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
 
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -142,19 +250,19 @@ fun DirectChatDetailScreen(
                                 .background(if (isDirect) SaharaOnline else SaharaPrimary)
                         )
                         Text(
-                            text = if (isDirect) "Direct Socket • Verified E2EE" else "Mesh Relay (${peer?.hopCount ?: 1} hops)",
+                            text = if (isVerified) "Verified Safety Number • E2EE" else if (isDirect) "Direct Socket • E2EE" else "Mesh Relay (${peer?.hopCount ?: 1} hops)",
                             style = MaterialTheme.typography.labelSmall,
-                            color = SaharaOnSurfaceVariant,
+                            color = if (isVerified) Color(0xFF4CAF50) else SaharaOnSurfaceVariant,
                             fontSize = 11.sp
                         )
                     }
                 }
 
-                IconButton(onClick = { }) {
+                IconButton(onClick = { showSafetyNumberDialog = true }) {
                     Icon(
-                        imageVector = Icons.Default.Lock,
-                        contentDescription = "Security",
-                        tint = SaharaPrimary,
+                        imageVector = if (isVerified) Icons.Default.VerifiedUser else Icons.Default.Shield,
+                        contentDescription = "Verify Safety Number",
+                        tint = if (isVerified) Color(0xFF4CAF50) else SaharaPrimary,
                         modifier = Modifier.size(20.dp)
                     )
                 }

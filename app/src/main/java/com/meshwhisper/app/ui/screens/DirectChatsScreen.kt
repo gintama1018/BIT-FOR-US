@@ -316,15 +316,28 @@ private fun SaharaInboxPeerRow(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = peer.alias.ifBlank { "Peer 0x${String.format("%016X", peer.nodeId).takeLast(4)}" },
-                    style = MaterialTheme.typography.titleMedium,
-                    color = SaharaOnSurface,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                     modifier = Modifier.weight(1f, fill = false)
-                )
+                ) {
+                    Text(
+                        text = peer.alias.ifBlank { "Peer 0x${String.format("%016X", peer.nodeId).takeLast(4)}" },
+                        style = MaterialTheme.typography.titleMedium,
+                        color = SaharaOnSurface,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (peer.isVerified) {
+                        Icon(
+                            imageVector = Icons.Default.Verified,
+                            contentDescription = "Verified Contact",
+                            tint = Color(0xFF4CAF50),
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
 
                 Text(
                     text = formattedTime,

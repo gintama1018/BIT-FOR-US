@@ -342,7 +342,7 @@ class MeshBleEngine(private val context: Context) {
     fun setLowLatencyMode(isForeground: Boolean) {
         if (isLowLatencyMode == isForeground) return
         isLowLatencyMode = isForeground
-        Log.i(tag, "Switching BLE radio duty-cycle: isForeground=$isForeground (Mode: ${if (isForeground) "LOW_LATENCY" else "BALANCED"})")
+        Log.i(tag, "Switching BLE radio duty-cycle: isForeground=$isForeground (Mode: ${if (isForeground) "LOW_LATENCY (High Responsiveness)" else "LOW_POWER (Battery Preserving Duty-Cycle)"})")
 
         if (isScanning.value && isEngineRunning) {
             stopScanning()
@@ -366,12 +366,12 @@ class MeshBleEngine(private val context: Context) {
         val advMode = if (isLowLatencyMode) {
             AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY
         } else {
-            AdvertiseSettings.ADVERTISE_MODE_BALANCED
+            AdvertiseSettings.ADVERTISE_MODE_LOW_POWER // Low-power battery-preserving interval in background
         }
         val txPower = if (isLowLatencyMode) {
             AdvertiseSettings.ADVERTISE_TX_POWER_HIGH
         } else {
-            AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM
+            AdvertiseSettings.ADVERTISE_TX_POWER_LOW // Lower RF transmit power in background
         }
 
         val settings = AdvertiseSettings.Builder()
@@ -531,7 +531,7 @@ class MeshBleEngine(private val context: Context) {
         val scanMode = if (isLowLatencyMode) {
             ScanSettings.SCAN_MODE_LOW_LATENCY
         } else {
-            ScanSettings.SCAN_MODE_BALANCED
+            ScanSettings.SCAN_MODE_LOW_POWER // Hardware duty-cycled (~0.5-1s active per 5s window) to save battery
         }
 
         val settings = ScanSettings.Builder()

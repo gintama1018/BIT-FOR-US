@@ -18,7 +18,8 @@ data class PeerEntity(
     val previousFingerprint: String? = null,
     val avatarUri: String? = null,
     val avatarHash: Byte = 0,
-    val isMuted: Boolean = false
+    val isMuted: Boolean = false,
+    val isVerified: Boolean = false
 ) {
     val nodeIdHex: String
         get() = String.format("%016X", nodeId)

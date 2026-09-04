@@ -232,9 +232,16 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
                 // reset user customizations that were already established for this peer.
                 avatarUri = existing?.avatarUri,
                 avatarHash = existing?.avatarHash ?: 0,
-                isMuted = existing?.isMuted ?: false
+                isMuted = existing?.isMuted ?: false,
+                isVerified = true // Explicitly verified via out-of-band QR / Contact link
             )
             database.peerDao().insertOrUpdate(entity)
+        }
+    }
+
+    fun togglePeerVerification(peerNodeId: Long, isVerified: Boolean) {
+        viewModelScope.launch {
+            database.peerDao().setPeerVerified(peerNodeId, isVerified)
         }
     }
 

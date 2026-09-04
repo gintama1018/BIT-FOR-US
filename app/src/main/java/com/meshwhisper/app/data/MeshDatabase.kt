@@ -41,7 +41,7 @@ import javax.crypto.spec.SecretKeySpec
         TopologyEdgeEntity::class,
         LastKnownLocationEntity::class
     ],
-    version = 9,
+    version = 10,
     exportSchema = false
 )
 abstract class MeshDatabase : RoomDatabase() {
@@ -115,6 +115,12 @@ abstract class MeshDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_9_10 = object : androidx.room.migration.Migration(9, 10) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE peers ADD COLUMN isVerified INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         @Volatile
         private var INSTANCE: MeshDatabase? = null
 
@@ -139,7 +145,7 @@ abstract class MeshDatabase : RoomDatabase() {
                 "meshwhisper_encrypted_db"
             )
                 .openHelperFactory(supportFactory)
-                .addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
+                .addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
                 .fallbackToDestructiveMigration()
                 .build()
         }

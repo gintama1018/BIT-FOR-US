@@ -363,7 +363,8 @@ class MeshRouter(
             previousFingerprint = prevFp,
             avatarUri = existingPeer?.avatarUri,
             avatarHash = if (peerAvatarHash != 0.toByte()) peerAvatarHash else (existingPeer?.avatarHash ?: 0),
-            isMuted = existingPeer?.isMuted ?: false
+            isMuted = existingPeer?.isMuted ?: false,
+            isVerified = if (hasKeyChanged) false else (existingPeer?.isVerified ?: false)
         )
         database.peerDao().insertOrUpdate(peer)
 

@@ -109,7 +109,7 @@ class CryptoEngine private constructor(private val context: Context) : SecureKey
             .putString(PREF_PRIVATE_KEY_ENC, PureCryptoEngine.bytesToHex(encBytes))
             .putString(PREF_PRIVATE_KEY_IV, PureCryptoEngine.bytesToHex(iv))
             .putString(PREF_PUBLIC_KEY, PureCryptoEngine.bytesToHex(pubBytes))
-            .apply()
+            .commit() // Synchronous disk flush
     }
 
     private fun isAndroidKeyStoreAvailable(): Boolean {
@@ -150,12 +150,7 @@ class CryptoEngine private constructor(private val context: Context) : SecureKey
 
     private fun encryptWithKeystore(plaintext: ByteArray): Pair<ByteArray, ByteArray> {
         if (!isAndroidKeyStoreAvailable()) {
-            val fallbackKey = PureCryptoEngine.deriveKeyFromMasterSalt("SOFTWARE_FALLBACK_KEY".toByteArray(), "AT_REST".toByteArray())
-            val iv = ByteArray(12).also { secureRandom.nextBytes(it) }
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(fallbackKey, "AES"), GCMParameterSpec(128, iv))
-            val ciphertext = cipher.doFinal(plaintext)
-            return Pair(ciphertext, iv)
+            throw SecurityException("Hardware AndroidKeyStore is not available on this device; unauthenticated identity key storage is prohibited")
         }
 
         val secretKey = getOrCreateMasterSecretKey()
@@ -167,10 +162,7 @@ class CryptoEngine private constructor(private val context: Context) : SecureKey
 
     private fun decryptWithKeystore(ciphertext: ByteArray, iv: ByteArray): ByteArray {
         if (!isAndroidKeyStoreAvailable()) {
-            val fallbackKey = PureCryptoEngine.deriveKeyFromMasterSalt("SOFTWARE_FALLBACK_KEY".toByteArray(), "AT_REST".toByteArray())
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(fallbackKey, "AES"), GCMParameterSpec(128, iv))
-            return cipher.doFinal(ciphertext)
+            throw SecurityException("Hardware AndroidKeyStore is not available on this device; unauthenticated identity key storage is prohibited")
         }
 
         val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE)
@@ -235,7 +227,7 @@ class CryptoEngine private constructor(private val context: Context) : SecureKey
             .remove(PREF_PRIVATE_KEY_IV)
             .remove(PREF_PUBLIC_KEY)
             .remove(PREF_LEGACY_PRIVATE_KEY)
-            .apply()
+            .commit() // Synchronous flush to prevent race before killProcess
     }
 
     val signingPublicKey: ByteArray by lazy {

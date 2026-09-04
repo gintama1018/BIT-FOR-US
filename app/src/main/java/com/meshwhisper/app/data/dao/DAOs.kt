@@ -42,6 +42,9 @@ interface PeerDao {
     @Query("UPDATE peers SET isMuted = :isMuted WHERE nodeId = :nodeId")
     suspend fun setPeerMuted(nodeId: Long, isMuted: Boolean)
 
+    @Query("UPDATE peers SET isVerified = :isVerified WHERE nodeId = :nodeId")
+    suspend fun setPeerVerified(nodeId: Long, isVerified: Boolean)
+
     @Query("DELETE FROM peers WHERE nodeId = :nodeId")
     suspend fun deletePeer(nodeId: Long)
 

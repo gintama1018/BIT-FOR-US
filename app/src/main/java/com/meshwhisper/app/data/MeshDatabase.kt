@@ -13,6 +13,7 @@ import com.meshwhisper.app.data.dao.MessageDao
 import com.meshwhisper.app.data.dao.PacketLogDao
 import com.meshwhisper.app.data.dao.PeerDao
 import com.meshwhisper.app.data.dao.ProcessedPacketDao
+import com.meshwhisper.app.data.dao.ProfileDao
 import com.meshwhisper.app.data.dao.StoreForwardDao
 import com.meshwhisper.app.data.dao.TopologyEdgeDao
 import com.meshwhisper.app.data.model.LastKnownLocationEntity
@@ -20,6 +21,7 @@ import com.meshwhisper.app.data.model.MessageEntity
 import com.meshwhisper.app.data.model.PacketLogEntity
 import com.meshwhisper.app.data.model.PeerEntity
 import com.meshwhisper.app.data.model.ProcessedPacketEntity
+import com.meshwhisper.app.data.model.ProfileEntity
 import com.meshwhisper.app.data.model.StoreForwardEntity
 import com.meshwhisper.app.data.model.TopologyEdgeEntity
 import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
@@ -39,14 +41,16 @@ import javax.crypto.spec.SecretKeySpec
         PacketLogEntity::class,
         ProcessedPacketEntity::class,
         TopologyEdgeEntity::class,
-        LastKnownLocationEntity::class
+        LastKnownLocationEntity::class,
+        ProfileEntity::class
     ],
-    version = 10,
+    version = 11,
     exportSchema = false
 )
 abstract class MeshDatabase : RoomDatabase() {
 
     abstract fun peerDao(): PeerDao
+    abstract fun profileDao(): ProfileDao
     abstract fun messageDao(): MessageDao
     abstract fun storeForwardDao(): StoreForwardDao
     abstract fun packetLogDao(): PacketLogDao
@@ -121,6 +125,28 @@ abstract class MeshDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_10_11 = object : androidx.room.migration.Migration(10, 11) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS profiles (
+                        nodeId INTEGER NOT NULL PRIMARY KEY,
+                        displayName TEXT NOT NULL,
+                        bio TEXT NOT NULL DEFAULT '',
+                        avatarHashHex TEXT NOT NULL DEFAULT '',
+                        avatarUri TEXT DEFAULT NULL,
+                        version INTEGER NOT NULL DEFAULT 1,
+                        signature BLOB DEFAULT NULL,
+                        updatedAt INTEGER NOT NULL DEFAULT 0
+                    )
+                """.trimIndent())
+                // Seed initial profiles from legacy peers table without data loss
+                db.execSQL("""
+                    INSERT OR IGNORE INTO profiles (nodeId, displayName, bio, avatarHashHex, avatarUri, version, updatedAt)
+                    SELECT nodeId, alias, '', '', avatarUri, 1, lastSeen FROM peers
+                """.trimIndent())
+            }
+        }
+
         @Volatile
         private var INSTANCE: MeshDatabase? = null
 
@@ -145,7 +171,7 @@ abstract class MeshDatabase : RoomDatabase() {
                 "meshwhisper_encrypted_db"
             )
                 .openHelperFactory(supportFactory)
-                .addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
+                .addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11)
                 .fallbackToDestructiveMigration()
                 .build()
         }

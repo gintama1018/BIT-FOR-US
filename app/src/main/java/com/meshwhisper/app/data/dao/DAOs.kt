@@ -184,4 +184,28 @@ interface LocationDao {
     suspend fun deleteAll()
 }
 
+@Dao
+interface ProfileDao {
+    @Query("SELECT * FROM profiles WHERE nodeId = :nodeId LIMIT 1")
+    fun getProfileFlow(nodeId: Long): Flow<com.meshwhisper.app.data.model.ProfileEntity?>
+
+    @Query("SELECT * FROM profiles WHERE nodeId = :nodeId LIMIT 1")
+    suspend fun getProfile(nodeId: Long): com.meshwhisper.app.data.model.ProfileEntity?
+
+    @Query("SELECT * FROM profiles ORDER BY updatedAt DESC")
+    fun getAllProfiles(): Flow<List<com.meshwhisper.app.data.model.ProfileEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertProfile(profile: com.meshwhisper.app.data.model.ProfileEntity)
+
+    @Query("UPDATE profiles SET avatarUri = :uri, avatarHashHex = :hashHex, updatedAt = :timestamp WHERE nodeId = :nodeId")
+    suspend fun updateAvatar(nodeId: Long, uri: String, hashHex: String, timestamp: Long = System.currentTimeMillis())
+
+    @Query("DELETE FROM profiles WHERE nodeId = :nodeId")
+    suspend fun deleteProfile(nodeId: Long)
+
+    @Query("DELETE FROM profiles")
+    suspend fun deleteAll()
+}
+
 

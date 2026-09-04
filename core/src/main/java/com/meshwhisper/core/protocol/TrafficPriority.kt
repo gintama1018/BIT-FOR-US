@@ -36,7 +36,9 @@ enum class TrafficPriority(val level: Int) {
             PacketType.TYPING_INDICATOR -> HIGH_INTERACTIVE
             PacketType.DIRECT_MESSAGE,
             PacketType.BROADCAST_MESSAGE,
-            PacketType.PEER_ANNOUNCE -> STANDARD_MESSAGING
+            PacketType.PEER_ANNOUNCE,
+            PacketType.PROFILE_UPDATE,
+            PacketType.PROFILE_REQUEST -> STANDARD_MESSAGING
             PacketType.MEDIA_INIT,
             PacketType.MEDIA_CHUNK,
             PacketType.AVATAR_REQUEST,

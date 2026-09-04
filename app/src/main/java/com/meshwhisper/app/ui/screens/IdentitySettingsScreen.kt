@@ -52,6 +52,8 @@ fun IdentitySettingsScreen(
 
     val myAlias by viewModel.myAlias.collectAsState()
     val myAvatarUri by viewModel.myAvatarUri.collectAsState()
+    val myBio by viewModel.myBio.collectAsState()
+    val myProfileVersion by viewModel.myProfileVersion.collectAsState()
     val isNotificationsEnabled by viewModel.isNotificationsEnabled.collectAsState()
     val showNotificationPreviews by viewModel.showNotificationPreviews.collectAsState()
     val supportsPeripheral by viewModel.supportsPeripheral.collectAsState()
@@ -59,6 +61,8 @@ fun IdentitySettingsScreen(
 
     var isEditingAlias by remember { mutableStateOf(false) }
     var aliasInput by remember { mutableStateOf(myAlias) }
+    var isEditingBio by remember { mutableStateOf(false) }
+    var bioInput by remember { mutableStateOf(myBio) }
     var showQrDialog by remember { mutableStateOf(false) }
     var showImportContactDialog by remember { mutableStateOf(false) }
     var showCameraScanner by remember { mutableStateOf(false) }
@@ -242,6 +246,7 @@ fun IdentitySettingsScreen(
                                 OutlinedTextField(
                                     value = aliasInput,
                                     onValueChange = { aliasInput = it },
+                                    label = { Text("Display Name", fontSize = 11.sp) },
                                     colors = OutlinedTextFieldDefaults.colors(
                                         focusedBorderColor = SaharaPrimary,
                                         unfocusedBorderColor = SaharaOutlineVariant,
@@ -258,7 +263,7 @@ fun IdentitySettingsScreen(
                                 Spacer(modifier = Modifier.width(8.dp))
                                 IconButton(
                                     onClick = {
-                                        viewModel.updateAlias(aliasInput)
+                                        viewModel.updateMyProfile(aliasInput, myBio)
                                         isEditingAlias = false
                                     }
                                 ) {
@@ -271,13 +276,22 @@ fun IdentitySettingsScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(
-                                    text = myAlias,
-                                    color = SaharaOnSurface,
-                                    fontSize = 18.sp,
-                                    fontFamily = EBGaramondFamily,
-                                    fontWeight = FontWeight.Bold
-                                )
+                                Column {
+                                    Text(
+                                        text = myAlias,
+                                        color = SaharaOnSurface,
+                                        fontSize = 18.sp,
+                                        fontFamily = EBGaramondFamily,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = "Profile Revision #$myProfileVersion (Ed25519 Signed)",
+                                        color = SaharaPrimary,
+                                        fontSize = 10.sp,
+                                        fontFamily = ManropeFamily,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
                                 IconButton(
                                     onClick = {
                                         aliasInput = myAlias
@@ -285,6 +299,65 @@ fun IdentitySettingsScreen(
                                     }
                                 ) {
                                     Icon(imageVector = Icons.Default.Edit, contentDescription = "Edit Alias", tint = SaharaOnSurfaceVariant, modifier = Modifier.size(18.dp))
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        // Bio / Status Editor
+                        if (isEditingBio) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                OutlinedTextField(
+                                    value = bioInput,
+                                    onValueChange = { if (it.length <= 120) bioInput = it },
+                                    label = { Text("Tactical Bio / Status (Max 120 chars)", fontSize = 11.sp) },
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedBorderColor = SaharaPrimary,
+                                        unfocusedBorderColor = SaharaOutlineVariant,
+                                        focusedTextColor = SaharaOnSurface,
+                                        unfocusedTextColor = SaharaOnSurface,
+                                        cursorColor = SaharaPrimary,
+                                        focusedContainerColor = SaharaSurfaceContainerLowest,
+                                        unfocusedContainerColor = SaharaSurfaceContainerLowest
+                                    ),
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier.weight(1f),
+                                    maxLines = 2
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                IconButton(
+                                    onClick = {
+                                        viewModel.updateMyProfile(myAlias, bioInput)
+                                        isEditingBio = false
+                                    }
+                                ) {
+                                    Icon(imageVector = Icons.Default.Check, contentDescription = "Save Bio", tint = SaharaPrimary)
+                                }
+                            }
+                        } else {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = if (myBio.isNotBlank()) myBio else "No bio set (tap edit to set status)",
+                                    color = if (myBio.isNotBlank()) SaharaOnSurfaceVariant else SaharaOutlineVariant,
+                                    fontSize = 12.sp,
+                                    fontFamily = ManropeFamily,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                IconButton(
+                                    onClick = {
+                                        bioInput = myBio
+                                        isEditingBio = true
+                                    }
+                                ) {
+                                    Icon(imageVector = Icons.Default.Edit, contentDescription = "Edit Bio", tint = SaharaOnSurfaceVariant, modifier = Modifier.size(16.dp))
                                 }
                             }
                         }

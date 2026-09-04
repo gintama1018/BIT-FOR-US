@@ -356,6 +356,7 @@ private fun SaharaInboxPeerRow(
                 nodeId = peer.nodeId,
                 alias = peer.alias,
                 size = 48.dp,
+                avatarUri = peer.avatarUri,
                 isDirect = peer.isDirect
             )
             if (peer.isDirect) {

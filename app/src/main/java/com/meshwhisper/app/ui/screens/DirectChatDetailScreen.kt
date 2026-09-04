@@ -55,6 +55,7 @@ fun DirectChatDetailScreen(
     val peer = peers.firstOrNull { it.nodeId == peerNodeId }
     val isDirect = connectedNodeIds.contains(peerNodeId)
     val isVerified = peer?.isVerified == true
+    val peerProfile by viewModel.getPeerProfileFlow(peerNodeId).collectAsState(initial = null)
 
     var textInput by remember { mutableStateOf("") }
     var showSafetyNumberDialog by remember { mutableStateOf(false) }
@@ -263,6 +264,7 @@ fun DirectChatDetailScreen(
                     nodeId = peerNodeId,
                     alias = peer?.alias ?: "",
                     size = 38.dp,
+                    avatarUri = peerProfile?.avatarUri ?: peer?.avatarUri,
                     isDirect = isDirect
                 )
 
@@ -274,7 +276,7 @@ fun DirectChatDetailScreen(
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         Text(
-                            text = peer?.alias?.ifBlank { "Peer 0x${String.format("%016X", peerNodeId).takeLast(4)}" } ?: "Peer",
+                            text = peerProfile?.displayName?.ifBlank { null } ?: peer?.alias?.ifBlank { "Peer 0x${String.format("%016X", peerNodeId).takeLast(4)}" } ?: "Peer",
                             style = MaterialTheme.typography.titleMedium,
                             color = SaharaOnSurface,
                             fontWeight = FontWeight.Bold,
@@ -289,6 +291,17 @@ fun DirectChatDetailScreen(
                                 modifier = Modifier.size(16.dp)
                             )
                         }
+                    }
+
+                    if (!peerProfile?.bio.isNullOrBlank()) {
+                        Text(
+                            text = peerProfile!!.bio,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = SaharaPrimary,
+                            fontSize = 10.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
 
                     Row(

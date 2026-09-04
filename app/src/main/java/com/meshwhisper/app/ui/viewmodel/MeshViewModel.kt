@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -338,11 +339,34 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         _isAppLockEnabled.value = enabled
     }
 
-    // Avatar Management
+    // Avatar & Profile Management
     private val _myAvatarUri = MutableStateFlow<String?>(
         java.io.File(application.filesDir, "avatars/my_avatar.jpg").let { if (it.exists()) it.absolutePath else null }
     )
     val myAvatarUri: StateFlow<String?> = _myAvatarUri.asStateFlow()
+
+    val myProfileFlow: StateFlow<com.meshwhisper.app.data.model.ProfileEntity?> = database.profileDao().getProfileFlow(cryptoEngine.nodeId)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    val myBio: StateFlow<String> = myProfileFlow.map { it?.bio ?: "" }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, "")
+
+    val myProfileVersion: StateFlow<Long> = myProfileFlow.map { it?.version ?: 1L }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, 1L)
+
+    fun updateMyProfile(displayName: String, bio: String) {
+        viewModelScope.launch {
+            val cleanName = displayName.trim().ifEmpty { "Node-${myNodeIdHex.takeLast(4)}" }
+            val cleanBio = bio.trim()
+            cryptoEngine.alias = cleanName
+            _myAlias.value = cleanName
+            router.broadcastProfileUpdate(cleanName, cleanBio)
+        }
+    }
+
+    fun getPeerProfileFlow(nodeId: Long): Flow<com.meshwhisper.app.data.model.ProfileEntity?> {
+        return database.profileDao().getProfileFlow(nodeId)
+    }
 
     fun updateMyAvatar(context: android.content.Context, uri: android.net.Uri) {
         viewModelScope.launch {
@@ -352,6 +376,8 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
                 val avatarFile = java.io.File(avatarDir, "my_avatar.jpg")
                 avatarFile.writeBytes(bytes)
                 _myAvatarUri.value = avatarFile.absolutePath
+                val currentBio = myBio.value
+                router.broadcastProfileUpdate(myAlias.value, currentBio, bytes)
                 router.announcePresence()
             }
         }
@@ -362,6 +388,8 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
             val avatarFile = java.io.File(app.filesDir, "avatars/my_avatar.jpg")
             if (avatarFile.exists()) avatarFile.delete()
             _myAvatarUri.value = null
+            val currentBio = myBio.value
+            router.broadcastProfileUpdate(myAlias.value, currentBio, ByteArray(0))
             router.announcePresence()
         }
     }

@@ -1051,7 +1051,9 @@ class MediaTransferManager(
             if (isAvatar) {
                 val avatarHash = (reassembledBytes.fold(0) { acc, b -> (acc * 31 + b.toInt()) } and 0xFF).toByte()
                 database.peerDao().updateAvatar(session.senderId, destFile.absolutePath, avatarHash)
-                Log.i(tag, "Verified peer ${session.senderId} avatar: ${destFile.absolutePath} (hash=$avatarHash)")
+                val sha256Hex = CryptoEngine.bytesToHex(MediaCompressor.computeSha256(reassembledBytes))
+                database.profileDao().updateAvatar(session.senderId, destFile.absolutePath, sha256Hex)
+                Log.i(tag, "Verified peer ${session.senderId} avatar: ${destFile.absolutePath} (hash=$avatarHash, sha256=$sha256Hex)")
             } else {
                 database.messageDao().updateMediaTransfer(
                     messageId = mediaId.toString(),

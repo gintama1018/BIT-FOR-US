@@ -25,7 +25,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.UUID
+import com.meshwhisper.core.protocol.ProfilePayload
 
 class MeshRouter(
     private val context: Context,
@@ -240,6 +242,12 @@ class MeshRouter(
                 PacketType.SOS_MESSAGE -> {
                     handleSosMessage(packet, rawBytes, ingressAddress)
                 }
+                PacketType.PROFILE_UPDATE -> {
+                    handleProfileUpdate(packet, rawBytes, ingressAddress)
+                }
+                PacketType.PROFILE_REQUEST -> {
+                    handleProfileRequest(packet, rawBytes, ingressAddress)
+                }
             }
         }
     }
@@ -404,6 +412,13 @@ class MeshRouter(
 
         // Drain store-and-forward queue for this newly available peer
         drainStoreAndForwardQueueForPeer(packet.senderId)
+
+        // Request profile if not yet known locally
+        if (database.profileDao().getProfile(packet.senderId) == null) {
+            scope.launch {
+                requestProfile(packet.senderId)
+            }
+        }
 
         // Multi-hop flood relay for peer discovery
         if (packet.ttl > 1 && packet.senderId != cryptoEngine.nodeId) {
@@ -1292,7 +1307,11 @@ class MeshRouter(
         )
 
         val raw = MeshPacket.serialize(packet)
-        broadcastPacket(raw)
+        if (isPeerDirectlyConnected(peerNodeId)) {
+            sendDirectToNode(peerNodeId, raw)
+        } else {
+            broadcastPacket(raw)
+        }
         logPacket("TX", packet, raw.size, "Requested avatar from $peerNodeId")
     }
 
@@ -1422,6 +1441,203 @@ class MeshRouter(
             imageHeightPx = imageHeightPx,
             paddedTileByteLengths = paddedTileByteLengths
         )
+    }
+
+    suspend fun requestProfile(peerNodeId: Long) {
+        val msgId = UUID.randomUUID()
+        val timestamp = System.currentTimeMillis() / 1000L
+        val buffer = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN)
+        buffer.putLong(peerNodeId)
+
+        val packet = MeshPacket(
+            type = PacketType.PROFILE_REQUEST,
+            messageId = msgId,
+            senderId = cryptoEngine.nodeId,
+            recipientId = peerNodeId,
+            ttl = MeshPacket.DEFAULT_TTL,
+            timestamp = timestamp,
+            payload = buffer.array()
+        )
+        val raw = MeshPacket.serialize(packet)
+        if (isPeerDirectlyConnected(peerNodeId)) {
+            sendDirectToNode(peerNodeId, raw)
+        } else {
+            broadcastPacket(raw)
+        }
+        logPacket("TX", packet, raw.size, "Requested profile from $peerNodeId")
+    }
+
+    private suspend fun handleProfileUpdate(packet: MeshPacket, rawBytes: ByteArray, ingressAddress: String?) {
+        val payload = ProfilePayload.deserialize(packet.payload)
+        if (payload == null) {
+            logPacket("DROP", packet, rawBytes.size, "REJECTED: Malformed ProfilePayload from ${packet.senderId}")
+            return
+        }
+
+        // Strict Key-to-Identity Binding
+        if (payload.nodeId != packet.senderId) {
+            logPacket("DROP", packet, rawBytes.size, "SECURITY ALERT: Dropped forged profile - sender ${packet.senderId} claimed node ${payload.nodeId}")
+            Log.w(tag, "SECURITY ALERT: Profile senderId ${packet.senderId} does not match payload nodeId ${payload.nodeId}")
+            return
+        }
+
+        // Cryptographic Ed25519 Signature Verification
+        if (!payload.verifySignature()) {
+            logPacket("DROP", packet, rawBytes.size, "SECURITY ALERT: Invalid Ed25519 signature in profile from ${packet.senderId}")
+            Log.w(tag, "SECURITY ALERT: Dropped profile from ${packet.senderId} (Ed25519 signature invalid)")
+            return
+        }
+
+        // Anti-Rollback & Conflict Resolution (Strict Monotonicity: version > cached.version)
+        val existing = database.profileDao().getProfile(payload.nodeId)
+        if (existing != null && payload.version <= existing.version) {
+            logPacket("DROP", packet, rawBytes.size, "REJECTED: Stale/duplicate profile version ${payload.version} <= ${existing.version} from ${payload.nodeId}")
+            Log.d(tag, "Dropped stale/duplicate profile v${payload.version} from ${payload.nodeId} (cached v${existing.version})")
+            return
+        }
+
+        val avatarHashHex = CryptoEngine.bytesToHex(payload.avatarHash)
+        val hasAvatar = payload.avatarHash.any { it != 0.toByte() }
+        val isNewAvatar = hasAvatar && avatarHashHex != existing?.avatarHashHex
+
+        val newProfile = com.meshwhisper.app.data.model.ProfileEntity(
+            nodeId = payload.nodeId,
+            displayName = payload.displayName,
+            bio = payload.bio,
+            avatarHashHex = avatarHashHex,
+            avatarUri = if (isNewAvatar) null else existing?.avatarUri,
+            version = payload.version,
+            signature = payload.signature,
+            updatedAt = System.currentTimeMillis()
+        )
+        database.profileDao().upsertProfile(newProfile)
+        logPacket("RX", packet, rawBytes.size, "Applied verified profile v${payload.version} for '${payload.displayName}' (${payload.nodeId})")
+
+        // Keep legacy PeerEntity alias in sync for backward compatibility
+        val existingPeer = database.peerDao().getPeerById(payload.nodeId)
+        if (existingPeer != null && payload.displayName.isNotBlank() && existingPeer.alias != payload.displayName) {
+            database.peerDao().insertOrUpdate(existingPeer.copy(alias = payload.displayName))
+        }
+
+        // If new avatar hash announced, request targeted unicast avatar sync
+        if (isNewAvatar) {
+            scope.launch {
+                requestAvatar(payload.nodeId)
+            }
+        }
+
+        // Multi-hop flood relay for profile discovery
+        if (packet.ttl > 1 && packet.senderId != cryptoEngine.nodeId && packet.recipientId == MeshPacket.BROADCAST_RECIPIENT_ID) {
+            val relayedPacket = packet.decrementTtl()
+            val relayedBytes = MeshPacket.serialize(relayedPacket)
+            broadcastPacket(relayedBytes, ingressAddress)
+            _relayedPacketsCount.value += 1
+            logPacket("RELAY", relayedPacket, relayedBytes.size, "Relaying profile update for ${packet.senderId} (v${payload.version})")
+        }
+    }
+
+    private suspend fun handleProfileRequest(packet: MeshPacket, rawBytes: ByteArray, ingressAddress: String?) {
+        if (packet.recipientId == cryptoEngine.nodeId) {
+            val myProfile = database.profileDao().getProfile(cryptoEngine.nodeId)
+            if (myProfile != null) {
+                val avatarHashBytes = if (myProfile.avatarHashHex.isNotEmpty()) {
+                    CryptoEngine.hexToBytes(myProfile.avatarHashHex)
+                } else {
+                    ProfilePayload.EMPTY_AVATAR_HASH
+                }
+                val payload = ProfilePayload(
+                    nodeId = myProfile.nodeId,
+                    version = myProfile.version,
+                    displayName = myProfile.displayName,
+                    bio = myProfile.bio,
+                    avatarHash = avatarHashBytes,
+                    signingPublicKey = cryptoEngine.signingPublicKey,
+                    signature = myProfile.signature ?: ByteArray(64)
+                )
+                val responsePacket = MeshPacket(
+                    type = PacketType.PROFILE_UPDATE,
+                    messageId = UUID.randomUUID(),
+                    senderId = cryptoEngine.nodeId,
+                    recipientId = packet.senderId,
+                    ttl = MeshPacket.DEFAULT_TTL,
+                    timestamp = System.currentTimeMillis() / 1000L,
+                    payload = payload.serialize()
+                )
+                val responseRaw = MeshPacket.serialize(responsePacket)
+                if (isPeerDirectlyConnected(packet.senderId)) {
+                    sendDirectToNode(packet.senderId, responseRaw)
+                } else {
+                    broadcastPacket(responseRaw)
+                }
+                logPacket("TX", responsePacket, responseRaw.size, "Sent direct profile response to ${packet.senderId} (v${myProfile.version})")
+            }
+        } else if (packet.ttl > 1) {
+            val relayedPacket = packet.decrementTtl()
+            val relayedBytes = MeshPacket.serialize(relayedPacket)
+            broadcastPacket(relayedBytes, ingressAddress)
+            _relayedPacketsCount.value += 1
+            logPacket("RELAY", relayedPacket, relayedBytes.size, "Relaying profile request for ${packet.recipientId}")
+        }
+    }
+
+    suspend fun broadcastProfileUpdate(displayName: String, bio: String, avatarBytes: ByteArray? = null): Long {
+        val current = database.profileDao().getProfile(cryptoEngine.nodeId)
+        val nextVersion = (current?.version ?: 0L) + 1L
+
+        val avatarFile = java.io.File(context.filesDir, "avatars/my_avatar.jpg")
+        val finalAvatarBytes = avatarBytes ?: if (avatarFile.exists()) avatarFile.readBytes() else null
+        val avatarHash = if (finalAvatarBytes != null && finalAvatarBytes.isNotEmpty()) {
+            com.meshwhisper.app.media.MediaCompressor.computeSha256(finalAvatarBytes)
+        } else {
+            ProfilePayload.EMPTY_AVATAR_HASH
+        }
+
+        val signingPub = cryptoEngine.signingPublicKey
+        val canonical = ProfilePayload.computeCanonicalBytes(
+            nodeId = cryptoEngine.nodeId,
+            version = nextVersion,
+            displayName = displayName,
+            bio = bio,
+            avatarHash = avatarHash,
+            signingPublicKey = signingPub
+        )
+        val signature = cryptoEngine.sign(canonical)
+
+        val payload = ProfilePayload(
+            nodeId = cryptoEngine.nodeId,
+            version = nextVersion,
+            displayName = displayName,
+            bio = bio,
+            avatarHash = avatarHash,
+            signingPublicKey = signingPub,
+            signature = signature
+        )
+
+        val profileEntity = com.meshwhisper.app.data.model.ProfileEntity(
+            nodeId = cryptoEngine.nodeId,
+            displayName = displayName,
+            bio = bio,
+            avatarHashHex = CryptoEngine.bytesToHex(avatarHash),
+            avatarUri = if (avatarFile.exists()) avatarFile.absolutePath else null,
+            version = nextVersion,
+            signature = signature,
+            updatedAt = System.currentTimeMillis()
+        )
+        database.profileDao().upsertProfile(profileEntity)
+
+        val packet = MeshPacket(
+            type = PacketType.PROFILE_UPDATE,
+            messageId = UUID.randomUUID(),
+            senderId = cryptoEngine.nodeId,
+            recipientId = MeshPacket.BROADCAST_RECIPIENT_ID,
+            ttl = MeshPacket.DEFAULT_TTL,
+            timestamp = System.currentTimeMillis() / 1000L,
+            payload = payload.serialize()
+        )
+        val raw = MeshPacket.serialize(packet)
+        broadcastPacket(raw)
+        logPacket("TX", packet, raw.size, "Broadcasted profile update v$nextVersion ('$displayName')")
+        return nextVersion
     }
 
     private fun logPacket(direction: String, packet: MeshPacket?, size: Int, details: String) {

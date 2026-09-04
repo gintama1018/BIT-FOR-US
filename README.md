@@ -71,18 +71,26 @@ MeshWhisper/
 
 ### Dual-Radio Cross-Platform Mesh Architecture
 
-```
-  ┌─────────────────────────────────┐        ┌─────────────────────────────────┐
-  │      Android Mobile Node        │        │   Windows / macOS Station Node  │
-  │   (BLE Central + Peripheral)    │        │   (High-Throughput Wi-Fi Host)  │
-  └─────────┬──────────────┬────────┘        └────────────────┬────────────────┘
-            │              │                                  │
-    (BLE: 30-50m)    (Local Wi-Fi)                      (Local Wi-Fi)
-            │              │                                  │
-            ▼              └──────────────────┬───────────────┘
-     Nearby BLE Nodes                         ▼
-                                100% Offline Wi-Fi LAN / Hotspot
-                             (UDP 42425 Discovery | TCP 42426 Stream)
+```mermaid
+flowchart TD
+    subgraph Mobile["Android Mobile Node"]
+        direction TB
+        BLE_Node["BLE Central + Peripheral\n(Range: 30-50m)"]
+        WIFI_Mobile["Offline Wi-Fi Client\n(LAN / Portable Hotspot)"]
+    end
+
+    subgraph Station["Windows / macOS Station Node"]
+        WIFI_Station["High-Throughput Wi-Fi Host\n(TCP Stream Port 42426)"]
+    end
+
+    subgraph Shared_Net["100% Offline Local Wi-Fi Network"]
+        UDP_Disc["UDP 42425 Discovery Beacon"]
+        TCP_Stream["TCP 42426 High-Throughput Stream"]
+    end
+
+    BLE_Node -->|"BLE GATT Link"| NearbyPeers["Nearby BLE Peer Nodes"]
+    WIFI_Mobile --> Shared_Net
+    WIFI_Station --> Shared_Net
 ```
 
 ### Send → Relay → Receive Sequence Flow
@@ -90,23 +98,25 @@ MeshWhisper/
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Alice as Sender (Alice)
+    actor Alice as Sender (Alice)
     participant Relay as Intermediate Relay
-    participant Bob as Recipient (Bob)
+    actor Bob as Recipient (Bob)
 
-    Note over Alice: 1. Plaintext & Routing Header<br/>40B Header: Sender, Recipient, MsgID, TTL=7, Time
-    Alice->>Alice: Derive Epoch Session Key (X25519 ECDH + HKDF)<br/>Generate fresh 12B CSPRNG Nonce (NIST SP 800-38D)<br/>Encrypt via AES-256-GCM with Header as AAD
-    Alice->>Alice: Fragment / Frame Packet (BLE MTU or Wi-Fi Stream Frame)
+    Note over Alice: 1. Plaintext & Routing Header (40B Header)
+    Alice->>Alice: Derive Epoch Session Key via X25519 ECDH + HKDF
+    Alice->>Alice: Generate Fresh 12B CSPRNG Nonce (NIST SP 800-38D)
+    Alice->>Alice: Encrypt via AES-256-GCM with Header as AAD
+    Alice->>Alice: Frame Packet (BLE MTU or Wi-Fi Stream Frame)
     Alice->>Relay: Broadcast dual-radio (BLE GATT + Wi-Fi Subnet Sockets)
 
-    Note over Relay: 2. Reassemble & Deduplicate<br/>Check RAM LRU (4000) & SQLite Seen Table
+    Note over Relay: 2. Reassemble & Deduplicate (Check RAM LRU 4000 & SQLite Seen Table)
     Relay->>Relay: Record in Dedup Cache (Drop if already seen)
-    Relay->>Relay: Recipient != Me & TTL > 1 → Decrement TTL (7 → 6)
-    Relay->>Relay: Apply CSMA Random Jitter (15ms - 75ms)
-    Relay->>Relay: Cache in Store-and-Forward Table (24h expiry)
+    Relay->>Relay: If Recipient is not Self and TTL > 1: Decrement TTL (7 to 6)
+    Relay->>Relay: Apply CSMA Random Jitter (15ms to 75ms)
+    Relay->>Relay: Cache in Store-and-Forward Table (Max 50/peer, 24h expiry)
     Relay->>Bob: Rebroadcast across Dual-Radio Mesh
 
-    Note over Bob: 3. Reassemble & Verify<br/>Header matches Bob's Node ID
+    Note over Bob: 3. Reassemble & Verify (Header matches Bob's Node ID)
     Bob->>Bob: Verify AEAD Auth Tag & Header AAD Binding
     Bob->>Bob: Decrypt Payload using Epoch Session Key & extracted Nonce
     Bob->>Bob: Write to Encrypted SQLCipher Database
@@ -181,8 +191,11 @@ MeshWhisper eliminates hardcoded broadcast secrets (`"MASTER_ROOT_KEY_MATERIAL"`
    - Integrity and authenticity are guaranteed via **Ed25519 sender identity digital signatures** on every packet.
 2. **Private Team & Tactical Channels (Confidential Comms)**:
    - Responders, medical teams, and tactical squads can configure custom channels (e.g. `TEAM_ALPHA`, `TRIAGE_NORTH`).
-   - The 256-bit AES-GCM channel key is derived dynamically via:
-     $$\text{ChannelKey} = \text{PBKDF2-HMAC-SHA256}(\text{Passphrase}, \text{Salt} = \text{SHA256}(\text{"MESHWHISPER\_TACTICAL\_CHANNEL\_SALT\_V1:"} \parallel \text{ChannelName})[0..15], 100\,000, 256)$$
+   - The 256-bit AES-GCM channel key is derived dynamically via PBKDF2-HMAC-SHA256 (100,000 iterations):
+      ```text
+      Salt = SHA256("MESHWHISPER_TACTICAL_CHANNEL_SALT_V1:" + ChannelName)[0..15]
+      ChannelKey = PBKDF2-HMAC-SHA256(Passphrase, Salt, iterations = 100000, keyLength = 256)
+      ```
    - Nodes on the mesh without the passphrase cannot read, decrypt, or forge team communications.
    - Active channel credentials are encrypted and stored in the device's hardware **AndroidKeyStore**.
    - Responders can share their private channel via on-screen QR codes or scan nearby teammates' codes to join the confidential channel in seconds.

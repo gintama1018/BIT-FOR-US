@@ -15,7 +15,7 @@ MeshWhisper is engineered around five fundamental tenets:
 
 ---
 
-## 2. Modular Codebase Structure
+## 2. Modular Codebase Structure & System Architecture
 
 The project is structured into three clean Gradle modules:
 
@@ -31,8 +31,10 @@ MeshWhisper/
 ├── app/                                # Android Application Module (Dual-Radio Engine + UI)
 │   ├── ble/MeshBleEngine.kt            # Dual-Role Central/Peripheral GATT manager & symmetry resolution
 │   ├── ble/BleFrameFramer.kt           # Dynamic frame fragmentation & reassembly for BLE MTUs
+│   ├── ble/GattWriteRateLimiter.kt     # Ingress rate limiter (50 writes/sec) for server and client roles
 │   ├── wifi/MeshWifiEngine.kt          # Offline Wi-Fi LAN/Hotspot UDP discovery (42425) & TCP socket streaming (42426)
 │   ├── router/MeshRouter.kt            # Dual-radio multiplexer, CSMA jitter backoff & packet dispatcher
+│   ├── media/MediaTransferManager.kt   # Bounded chunked media transfer manager (4/peer, 16 global sessions)
 │   ├── crypto/CryptoEngine.kt          # AndroidKeyStore hardware TEE integration & SharedPreferences vault
 │   ├── data/MeshDatabase.kt            # SQLCipher-encrypted Room database (Migration 9 → 10)
 │   ├── location/LocationHelper.kt      # Standalone Android LocationManager satellite acquisition
@@ -53,6 +55,54 @@ MeshWhisper/
     └── Main.kt                         # Interactive CLI console & desktop mesh monitor
 ```
 
+### High-Level System Architecture
+
+```mermaid
+flowchart TB
+    subgraph UI_Layer["User Interface Layer (Jetpack Compose)"]
+        UI_Screens["Compose Screens\n(PublicMesh, DirectChats, Radar, QR Scanner)"]
+        VM["MeshViewModel\n(StateFlow, UI Events)"]
+        UI_Screens --> VM
+    end
+
+    subgraph Service_Layer["Android Service & Lifecycle Layer"]
+        FGS["MeshForegroundService\n(Adaptive Heartbeat, Low-Power Duty Cycle)"]
+    end
+
+    subgraph Core_Routing["Core Routing & Multiplexing Layer"]
+        MR["MeshRouter\n(Dual-Radio Multiplexer, CSMA Backoff 15-75ms)"]
+        DEDUP["LruDedupCache\n(Pure-Kotlin LRU, 4000 capacity)"]
+        SF_QUEUE["Store-and-Forward Engine\n(Max 50 per recipient, Max 500 total)"]
+        MTM["MediaTransferManager\n(Chunked Streaming, Max 4 per peer, Max 16 total)"]
+        MR --> DEDUP
+        MR --> SF_QUEUE
+        MR --> MTM
+    end
+
+    subgraph Transport_Layer["Dual-Radio Transport Engines"]
+        BLE["MeshBleEngine\n(GATT Central + Peripheral, Max 5 Links, Rate Limiter)"]
+        WIFI["MeshWifiEngine\n(UDP 42425 Discovery, TCP 42426 Stream, Max 5 Conns)"]
+    end
+
+    subgraph Security_Storage["Security & Encrypted Persistence"]
+        CE["CryptoEngine / PureCryptoEngine\n(X25519 ECDH, Ed25519, HKDF, AES-256-GCM)"]
+        KS["AndroidKeyStore (TEE / StrongBox)\n(Hardware Master Key Vault)"]
+        DB[("SQLCipher Encrypted Room DB\n(AES-256-CBC + HMAC-SHA512)")]
+        CE --> KS
+    end
+
+    VM --> MR
+    FGS --> BLE
+    FGS --> WIFI
+    MR --> BLE
+    MR --> WIFI
+    MR --> CE
+    MR --> DB
+    MTM --> DB
+    BLE --> PHY_BLE["Physical RF: Bluetooth Low Energy 2.4 GHz"]
+    WIFI --> PHY_WLAN["Physical RF: Offline Local Wi-Fi / Hotspot"]
+```
+
 ---
 
 ## 3. Dual-Radio Network Layer
@@ -62,7 +112,11 @@ MeshWhisper/
 - **Symmetry Resolution (Anti-Deadlock)**:
   - When two Android devices detect each other simultaneously, uncoordinated dual-connection attempts exhaust Android's physical GATT connection slots (~5 active connections) and cause status 133 (`GATT_CONN_L2C_FAILURE`).
   - `MeshBleEngine` resolves this via **Deterministic Lexicographical Address Comparison**:
-    $$\text{Initiator} = \begin{cases} \text{Central (Outbound)}, & \text{if } \text{LocalMAC} > \text{RemoteMAC} \\ \text{Peripheral (Inbound Wait)}, & \text{if } \text{LocalMAC} < \text{RemoteMAC} \end{cases}$$
+    ```text
+    Initiator Role Decision:
+      If Local MAC > Remote MAC  => Central (Initiates Outbound GATT Connection)
+      If Local MAC < Remote MAC  => Peripheral (Advertises & Waits for Inbound GATT Connection)
+    ```
   - Exactly one GATT physical connection is created and maintained per peer pair.
 - **Dynamic MTU Fragmentation (`BleFrameFramer.kt`)**:
   - Automatically negotiates ATT MTU up to 517 bytes (512-byte payload).
@@ -72,6 +126,19 @@ MeshWhisper/
   - Background: Downshifts to `SCAN_MODE_LOW_POWER` (10% duty cycle) and `ADVERTISE_TX_POWER_LOW`, reducing idle RF drain by ~70%.
 - **Symmetric Rate-Limiting (`GattWriteRateLimiter.kt`)**:
   - Both GATT Server (`onCharacteristicWriteRequest`) and GATT Client (`onCharacteristicChanged`) enforce strict per-device rate limiting: max 50 writes/sec per address, dropping rogue/spamming notifications at the link ingress.
+
+```mermaid
+flowchart TD
+    Start(["Node A Discovers Node B via BLE Advertising"]) --> CheckAddresses{"Compare Hardware Addresses:\nNode A MAC vs Node B MAC"}
+    CheckAddresses -->|"Node A MAC > Node B MAC"| CentralRole["Node A Acts as CENTRAL\nInitiates Outbound GATT Connection"]
+    CheckAddresses -->|"Node A MAC < Node B MAC"| PeripheralRole["Node A Acts as PERIPHERAL\nWaits for Incoming GATT Connection"]
+    CentralRole --> Connect["Connect GATT & Negotiate MTU (up to 517B)"]
+    PeripheralRole --> Connect
+    Connect --> CheckConnCount{"Active GATT Connections < 5?"}
+    CheckConnCount -->|Yes| Limiter["Register with GattWriteRateLimiter\nMax 50 writes/sec per peer"]
+    CheckConnCount -->|No| RejectLink["Reject Connection / Close Slot"]
+    Limiter --> Established(["Single Dedicated Link Established\nZero Status 133 Collisions"])
+```
 
 ### 3.2 Offline Local Wi-Fi Subsystem
 - **No Access Point Required**: Works across ad-hoc Wi-Fi networks, portable Android Wi-Fi hotspots, or existing unrouted LAN switches.
@@ -83,6 +150,19 @@ MeshWhisper/
   - Used for large media transfers (images, audio notes, avatars) and high-volume packet relaying.
   - Symmetrically hard-capped at `MAX_CONCURRENT_WIFI_CONNECTIONS = 5` (matching BLE's connection ceiling).
   - Enforces `TCP_HANDSHAKE_TIMEOUT_MS = 5000` on initial socket read to eliminate thread pool starvation on the shared `Dispatchers.IO` dispatcher. Sockets reset to infinite read timeout only after authenticating.
+
+```mermaid
+flowchart TD
+    UDP["UDP Beacon Loop (Port 42425)\nBroadcast every 5 seconds"] --> Discovered["Peer Discovered on Subnet"]
+    Discovered --> ConnCheck{"Active Wi-Fi Connections < 5?"}
+    ConnCheck -->|No| DropConn["Reject Connection (EOF)\nProtect System Capacity"]
+    ConnCheck -->|Yes| AcceptSocket["Accept TCP Socket (Port 42426)\non Dispatchers.IO"]
+    AcceptSocket --> SetTimeout["Set TCP_HANDSHAKE_TIMEOUT_MS = 5000\nProtect Shared Thread Pool"]
+    SetTimeout --> HandshakeRead{"Receive Initial Handshake\nwithin 5000ms?"}
+    HandshakeRead -->|Timeout or Stalled| Abort["Socket Closes Immediately\nZero Thread Starvation"]
+    HandshakeRead -->|Success| ResetTimeout["Reset Socket Timeout to 0 (Infinite)\nAuthenticate Peer Identity"]
+    ResetTimeout --> ActiveStream(["Persistent High-Throughput Stream Ready"])
+```
 
 ---
 
@@ -132,18 +212,57 @@ Mesh packets are serialized as big-endian binary byte arrays with a 56-byte fixe
 - `0x0B` - `MEDIA_ABORT`: Cancellation of in-flight media session.
 - `0x0C` - `SOS_MESSAGE`: High-priority search-and-rescue distress beacon with GPS coordinates.
 
+### Send → Relay → Receive Sequence Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Alice as Sender (Alice)
+    participant Relay as Intermediate Relay
+    actor Bob as Recipient (Bob)
+
+    Note over Alice: 1. Message Packaging & Encryption
+    Alice->>Alice: Compute Shared Secret via X25519 ECDH
+    Alice->>Alice: Derive Epoch Session Key via HKDF-SHA256
+    Alice->>Alice: Generate Fresh 12-Byte CSPRNG Nonce
+    Alice->>Alice: AES-256-GCM Encrypt (40-Byte Header as AAD)
+    Alice->>Relay: Transmit Packet via Dual-Radio (BLE / Wi-Fi)
+
+    Note over Relay: 2. Relay & Flood Mitigation
+    Relay->>Relay: Check LruDedupCache (4000 entries)
+    Relay->>Relay: If Recipient != Self and TTL > 1: Decrement TTL
+    Relay->>Relay: Apply CSMA Random Jitter (15ms to 75ms)
+    Relay->>Relay: Cache in Bounded Store-and-Forward (Max 50/peer)
+    Relay->>Bob: Rebroadcast Packet to Neighbors
+
+    Note over Bob: 3. Authentication & Ingestion
+    Bob->>Bob: Check Recipient ID matches Local Node ID
+    Bob->>Bob: Verify AES-GCM Auth Tag with Header AAD
+    Bob->>Bob: Decrypt Payload using Session Key
+    Bob->>Bob: Persist to Encrypted SQLCipher Database
+    Bob-->>Relay: Broadcast Delivery ACK
+    Relay-->>Alice: Relay Delivery ACK (Status marked DELIVERED)
+```
+
 ---
 
 ## 5. Cryptography & Key Management
 
 ### 5.1 Direct Messaging (End-to-End Encryption)
-1. **Key Agreement**: X25519 Diffie-Hellman Key Exchange (RFC 7748) generates a 32-byte shared secret $Z$:
-   $$Z = \text{X25519}(sk_{\text{Alice}}, pk_{\text{Bob}})$$
+1. **Key Agreement**: X25519 Diffie-Hellman Key Exchange (RFC 7748) generates a 32-byte shared secret `Z`:
+   ```text
+   Z = X25519(PrivateKey_Alice, PublicKey_Bob)
+   ```
 2. **Key Derivation (HKDF)**: An epoch session key is derived using HKDF-SHA256 (RFC 5869):
-   $$K_{\text{session}} = \text{HKDF-Expand}(\text{HKDF-Extract}(\text{Salt}_{\text{epoch}}, Z), \text{"MeshWhisper-DirectMessage"}, 32)$$
+   ```text
+   SessionKey = HKDF-Expand(HKDF-Extract(Salt_epoch, Z), "MeshWhisper-DirectMessage", 32)
+   ```
 3. **AEAD Encryption (AES-256-GCM)**:
    - Nonce: Fresh 12-byte cryptographically secure pseudorandom number (`SecureRandom().nextBytes(12)`).
    - Additional Authenticated Data (AAD): The entire 40-byte routing header (`type`, `messageId`, `senderId`, `recipientId`, `ttl`, `timestamp`, `payloadLength`). This cryptographically binds routing metadata to the ciphertext, preventing header-tampering or packet-hijacking attacks.
+   ```text
+   Ciphertext, AuthTag = AES-256-GCM-Encrypt(SessionKey, Nonce_12B, Plaintext, AAD = Header_40B)
+   ```
 
 ### 5.2 Dynamic Mesh Channels (PBKDF2-HMAC-SHA256)
 - **Hardcoded Secrets Eliminated**: Static shared master keys have been completely removed.
@@ -154,9 +273,45 @@ Mesh packets are serialized as big-endian binary byte arrays with a 56-byte fixe
 - **Private Team Channels**:
   - Responders configure custom channel names and secret passphrases.
   - Derived via 100,000 iterations of PBKDF2-HMAC-SHA256 with per-channel salts:
-    $$\text{Salt} = \text{SHA256}(\text{"MESHWHISPER\_TACTICAL\_CHANNEL\_SALT\_V1:"} \parallel \text{ChannelName})[0..15]$$
-    $$K_{\text{channel}} = \text{PBKDF2}(\text{Passphrase}, \text{Salt}, 100\,000, 256)$$
+    ```text
+    Salt = SHA256("MESHWHISPER_TACTICAL_CHANNEL_SALT_V1:" + ChannelName)[0..15]
+    ChannelKey = PBKDF2-HMAC-SHA256(Passphrase, Salt, iterations = 100000, keyLength = 256)
+    ```
   - Channel credentials stored securely in hardware **AndroidKeyStore**.
+
+### Cryptographic Pipeline Flow
+
+```mermaid
+flowchart TB
+    subgraph E2EE_DM["Direct Messaging (E2EE)"]
+        PrivA["Alice Private Key (sk_Alice)"]
+        PubB["Bob Public Key (pk_Bob)"]
+        ECDH["X25519 Diffie-Hellman Exchange"]
+        SharedZ["Shared Secret (Z: 32 Bytes)"]
+        HKDF["HKDF-SHA256 (Extract + Expand)"]
+        SaltEpoch["Epoch Salt (Rotated Hourly)"]
+        SessionKey["Epoch Session Key (32 Bytes)"]
+        Nonce["Fresh CSPRNG Nonce (12 Bytes)"]
+        HeaderAAD["Packet Header (40 Bytes AAD)"]
+        Plaintext["Message Plaintext"]
+        AESGCM["AES-256-GCM Authenticated Encryption"]
+        Ciphertext["Encrypted Ciphertext + 16B Auth Tag"]
+
+        PrivA & PubB --> ECDH --> SharedZ
+        SharedZ & SaltEpoch --> HKDF --> SessionKey
+        SessionKey & Nonce & HeaderAAD & Plaintext --> AESGCM --> Ciphertext
+    end
+
+    subgraph Dynamic_Channels["Dynamic Team Channels"]
+        Passphrase["User Secret Passphrase"]
+        ChanName["Channel Name (e.g. TRIAGE_ALPHA)"]
+        ChanSalt["Channel Salt: SHA256(Prefix + ChannelName)[0..15]"]
+        PBKDF2["PBKDF2-HMAC-SHA256 (100,000 Iterations)"]
+        ChanKey["Channel Key (256-bit AES-GCM)"]
+
+        Passphrase & ChanName & ChanSalt --> PBKDF2 --> ChanKey
+    end
+```
 
 ---
 
@@ -180,9 +335,22 @@ To prevent Man-in-the-Middle (MITM) attacks during ephemeral key exchange, MeshW
      `meshwhisper://node?id=<NodeId>&pub=<Base64PublicKey>&alias=<Alias>`
    - The app verifies that:
      1. The scanned public key bytes match the peer's recorded X25519 public key.
-     2. The scanned Node ID equals $\text{CRC64}(\text{SHA256}(pk))$.
+     2. The scanned Node ID equals `CRC64(SHA256(scannedPublicKey))`.
    - If verified, `peerDao.setPeerVerified(peerNodeId, true)` is committed to the database, rendering a permanent green verified shield icon.
    - If mismatched, an immediate high-priority MITM alert dialog is presented to the user.
+
+```mermaid
+flowchart TD
+    User["Operator opens Safety Number Dialog in Direct Chat"] --> Scan["Tap 'Scan Peer Screen with Camera'"]
+    Scan --> CameraX["CameraX Live Viewfinder (QrCodeAnalyzer.kt)"]
+    CameraX --> StrideCheck["Raw Y-Plane Luminance Extraction\nStride-Safe Buffer Normalization"]
+    StrideCheck --> ZXing["ZXing Barcode Parsing\nmeshwhisper://node?id=...&pub=...&alias=..."]
+    ZXing --> HashCheck{"Scanned Node ID matches\nCRC64(SHA256(scannedPubKey))?"}
+    HashCheck -->|No| Invalid["Reject Malformed QR Code"]
+    HashCheck -->|Yes| KeyCompare{"Scanned Public Key matches\nPeer Recorded X25519 Public Key?"}
+    KeyCompare -->|Matches| Verified["peerDao.setPeerVerified(peerNodeId, true)\nPermanent Green Shield Rendered"]
+    KeyCompare -->|Mismatch| Alert["Trigger High-Priority MITM Alert Dialog\nKey Compromise Warning"]
+```
 
 ---
 
@@ -207,6 +375,20 @@ To prevent Man-in-the-Middle (MITM) attacks during ephemeral key exchange, MeshW
 ## 8. Symmetrical Resource Bounds & Memory Management
 
 To guarantee resilience in dense mesh topologies without central control, every subsystem enforces strict upper-bounds and oldest-first eviction:
+
+```mermaid
+flowchart LR
+    subgraph Bounds["Deterministic System Bounds"]
+        direction TB
+        WIFI_CAP["Wi-Fi Connections\nMax 5 Concurrent\nEOF Rejection"]
+        BLE_CAP["BLE Connections\nMax 5 Concurrent\nAnti-Deadlock Tie-Break"]
+        HANDSHAKE["TCP Handshake\nMax 5000ms Timeout\nZero Thread Starvation"]
+        RATE["GATT Writes\nMax 50 writes/sec\nServer & Client Symmetrical"]
+        MEDIA["Inbound Media Sessions\nMax 4 per Peer\nMax 16 Total Global"]
+        STORE["Store-and-Forward Queue\nMax 50 per Recipient\nMax 500 Total in SQLite"]
+        DEDUP_BOUND["LruDedupCache\nMax 4000 Entries\nPure Kotlin JVM LRU"]
+    end
+```
 
 1. **Shared Thread Pool Protection (`Dispatchers.IO`)**:
    - Blocking TCP socket reads during initial handshakes enforce a hard `5000ms` timeout (`TCP_HANDSHAKE_TIMEOUT_MS`). Stalled or slow connections are closed immediately, preventing thread starvation in the shared global pool.

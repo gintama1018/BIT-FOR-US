@@ -2,7 +2,7 @@ package com.meshwhisper.app.router
 
 import android.content.Context
 import android.util.Log
-import android.util.LruCache
+import com.meshwhisper.core.router.LruDedupCache
 import com.meshwhisper.app.ble.MeshBleEngine
 import com.meshwhisper.app.crypto.CryptoEngine
 import com.meshwhisper.app.data.MeshDatabase
@@ -39,7 +39,7 @@ class MeshRouter(
     private val scope = CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO + exceptionHandler)
 
     // Deduplication Cache (Capacity: 4000 keys) - Keyed by messageId:packetType to prevent ACK/DM collision
-    private val dedupCache = LruCache<String, Long>(4000)
+    private val dedupCache = LruDedupCache<String, Long>(4000)
 
     // Statistics
     private val _relayedPacketsCount = MutableStateFlow(0)
@@ -154,11 +154,9 @@ class MeshRouter(
 
         // Fast Layer 1 Deduplication Check: In-memory LRU Cache (keyed by msgId:type)
         val dedupKey = "${packet.messageId}:${packet.type.code}"
-        synchronized(dedupCache) {
-            if (dedupCache.get(dedupKey) != null) {
-                logPacket("DROP", packet, rawBytes.size, "Duplicate packet dropped (fast RAM cache)")
-                return
-            }
+        if (dedupCache.containsKey(dedupKey)) {
+            logPacket("DROP", packet, rawBytes.size, "Duplicate packet dropped (fast RAM cache)")
+            return
         }
 
         scope.launch {
@@ -172,9 +170,7 @@ class MeshRouter(
                 logPacket("DROP", packet, rawBytes.size, "Duplicate packet dropped (persistent replay DB)")
                 return@launch
             }
-            synchronized(dedupCache) {
-                dedupCache.put(dedupKey, System.currentTimeMillis())
-            }
+            dedupCache.put(dedupKey, System.currentTimeMillis())
 
             when (packet.type) {
                 PacketType.PEER_ANNOUNCE, PacketType.KEY_EXCHANGE -> {
@@ -765,9 +761,7 @@ class MeshRouter(
         val raw = MeshPacket.serialize(packet)
         val dedupKey = "${packet.messageId}:${PacketType.PEER_ANNOUNCE.code}"
         val nowSec = System.currentTimeMillis() / 1000L
-        synchronized(dedupCache) {
-            dedupCache.put(dedupKey, System.currentTimeMillis())
-        }
+        dedupCache.put(dedupKey, System.currentTimeMillis())
         try {
             database.processedPacketDao().purgeOld(nowSec - 86400L)
             database.storeForwardDao().purgeExpired(System.currentTimeMillis())
@@ -850,9 +844,7 @@ class MeshRouter(
 
         val raw = MeshPacket.serialize(packet)
         val dedupKey = "${packet.messageId}:${PacketType.SOS_MESSAGE.code}"
-        synchronized(dedupCache) {
-            dedupCache.put(dedupKey, System.currentTimeMillis())
-        }
+        dedupCache.put(dedupKey, System.currentTimeMillis())
         database.processedPacketDao().markSeen(
             com.meshwhisper.app.data.model.ProcessedPacketEntity(
                 messageId = packet.messageId.toString(),
@@ -1046,9 +1038,7 @@ class MeshRouter(
 
         val raw = MeshPacket.serialize(packet)
         val dedupKey = "$msgId:${PacketType.BROADCAST_MESSAGE.code}"
-        synchronized(dedupCache) {
-            dedupCache.put(dedupKey, System.currentTimeMillis())
-        }
+        dedupCache.put(dedupKey, System.currentTimeMillis())
         database.processedPacketDao().markSeen(
             com.meshwhisper.app.data.model.ProcessedPacketEntity(dedupKey, timestamp)
         )
@@ -1114,9 +1104,7 @@ class MeshRouter(
 
         val raw = MeshPacket.serialize(packet)
         val dedupKey = "$msgId:${PacketType.DIRECT_MESSAGE.code}"
-        synchronized(dedupCache) {
-            dedupCache.put(dedupKey, System.currentTimeMillis())
-        }
+        dedupCache.put(dedupKey, System.currentTimeMillis())
         database.processedPacketDao().markSeen(
             com.meshwhisper.app.data.model.ProcessedPacketEntity(dedupKey, timestamp)
         )
@@ -1188,9 +1176,7 @@ class MeshRouter(
 
         val raw = MeshPacket.serialize(ackPacket)
         val dedupKey = "${ackPacketId}:${PacketType.ACK.code}"
-        synchronized(dedupCache) {
-            dedupCache.put(dedupKey, System.currentTimeMillis())
-        }
+        dedupCache.put(dedupKey, System.currentTimeMillis())
         database.processedPacketDao().markSeen(
             com.meshwhisper.app.data.model.ProcessedPacketEntity(dedupKey, timestamp)
         )

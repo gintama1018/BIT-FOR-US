@@ -268,8 +268,9 @@ class MeshForegroundService : Service() {
         statsJob?.cancel()
         try {
             MeshApplication.instance.bleEngine.stop()
+            MeshApplication.instance.wifiEngine.stop()
         } catch (e: Exception) {
-            Log.e(tag, "Error stopping bleEngine on service destroy: ${e.message}")
+            Log.e(tag, "Error stopping engines on service destroy: ${e.message}")
         }
     }
 

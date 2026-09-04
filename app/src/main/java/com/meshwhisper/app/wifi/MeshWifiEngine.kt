@@ -42,6 +42,7 @@ class MeshWifiEngine(private val context: Context) {
         const val TCP_DATA_PORT = 42426
         const val MAX_WIFI_PACKETS_PER_SEC = 50
         const val MAX_CONCURRENT_WIFI_CONNECTIONS = 5
+        const val TCP_HANDSHAKE_TIMEOUT_MS = 5000
         private val BEACON_MAGIC = byteArrayOf(0x4D, 0x57, 0x49, 0x46) // 'MWIF'
         private const val MAX_PACKET_SIZE = 10 * 1024 * 1024 // 10MB max stream frame
     }
@@ -277,6 +278,7 @@ class MeshWifiEngine(private val context: Context) {
             }
             var peerNodeId: Long? = null
             try {
+                socket.soTimeout = TCP_HANDSHAKE_TIMEOUT_MS
                 val inStream = DataInputStream(socket.getInputStream())
                 val outStream = DataOutputStream(socket.getOutputStream())
 
@@ -298,6 +300,9 @@ class MeshWifiEngine(private val context: Context) {
                 activePeers[remoteNodeId] = session
                 peerIpToNodeId[remoteIp] = remoteNodeId
                 updatePeerStates()
+
+                // Reset timeout for persistent mesh streaming after handshake completes
+                socket.soTimeout = 0
 
                 Log.i(tag, "TCP Handshake established with 0x${String.format("%016X", remoteNodeId)} ($remoteAlias) at $remoteIp")
                 onPeerConnectedListener?.invoke(remoteNodeId, remoteIp)

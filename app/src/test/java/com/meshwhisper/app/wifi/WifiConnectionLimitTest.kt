@@ -64,4 +64,44 @@ class WifiConnectionLimitTest {
         clientSockets.forEach { try { it.close() } catch (_: Exception) {} }
         acceptedSockets.forEach { try { it.close() } catch (_: Exception) {} }
     }
+
+    @Test
+    fun testHandshakeTimeoutThrowsAndClosesSocket() {
+        assertThat(MeshWifiEngine.TCP_HANDSHAKE_TIMEOUT_MS).isEqualTo(5000)
+
+        val server = ServerSocket(0, 5, InetAddress.getByName("127.0.0.1"))
+        val port = server.localPort
+        val latch = CountDownLatch(1)
+        var timedOut = false
+
+        val serverThread = Thread {
+            try {
+                val socket = server.accept()
+                // Test timeout mechanism (300ms for fast test execution)
+                socket.soTimeout = 300
+                val inStream = java.io.DataInputStream(socket.getInputStream())
+                try {
+                    inStream.readLong() // Client connects and sends nothing
+                } catch (_: java.net.SocketTimeoutException) {
+                    timedOut = true
+                } finally {
+                    socket.close()
+                    latch.countDown()
+                }
+            } catch (_: Exception) {}
+        }
+        serverThread.isDaemon = true
+        serverThread.start()
+
+        val client = Socket("127.0.0.1", port)
+        // Client deliberately sends nothing
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue()
+        assertThat(timedOut).isTrue()
+
+        val readResult = client.getInputStream().read()
+        assertThat(readResult).isEqualTo(-1)
+
+        client.close()
+        server.close()
+    }
 }

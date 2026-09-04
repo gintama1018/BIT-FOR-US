@@ -22,6 +22,8 @@ MeshWhisper provides local, 100% offline text, location, voice, and media commun
 
 ## 2. Architecture Overview
 
+> For the comprehensive low-level specification, binary packet framing diagrams, and threat model analysis, see [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ### Modular Architecture Layout
 
 ```

@@ -22,20 +22,20 @@ The platform provides resilient, end-to-end encrypted messaging, dynamic multi-h
 ```mermaid
 flowchart TB
     subgraph UI_Layer["Presentation Layer (Jetpack Compose)"]
-        UI_Screens["Compose Screens\n(DirectChat, PublicMesh, Identity, Radar, QRScanner)"]
-        HUD["Sahara Call HUD & Overlays\n(CallOverlayDialog, Mute, Speaker)"]
-        VM["MeshViewModel\n(StateFlow, UI Coroutines)"]
+        UI_Screens["Compose Screens<br>DirectChat, PublicMesh, Identity, Radar, QRScanner"]
+        HUD["Sahara Call HUD and Overlays<br>CallOverlayDialog, Mute, Speaker"]
+        VM["MeshViewModel<br>StateFlow, UI Coroutines"]
         UI_Screens --> VM
         HUD --> VM
     end
 
-    subgraph Domain_Layer["Application & Domain Engine (:app)"]
-        Router["MeshRouter\n(Dual-Radio Multiplexer, Packet Dispatcher)"]
-        VoiceMgr["VoiceCallManager\n(Call State Machine, Signaling, Timeouts)"]
-        AudioStreamer["AndroidAudioStreamer\n(AudioRecord Mic Capture, AudioTrack Playback)"]
-        MediaMgr["MediaTransferManager\n(Chunked Transfer, NACK Retransmission)"]
-        CryptoApp["CryptoEngine\n(AndroidKeyStore TEE Wrapping, Keystore Prefs)"]
-        Service["MeshForegroundService\n(Background Radio Watchdog, Heartbeat Duty-Cycle)"]
+    subgraph Domain_Layer["Application and Domain Engine (:app)"]
+        Router["MeshRouter<br>Dual-Radio Multiplexer, Packet Dispatcher"]
+        VoiceMgr["VoiceCallManager<br>Call State Machine, Signaling, Timeouts"]
+        AudioStreamer["AndroidAudioStreamer<br>AudioRecord Mic Capture, AudioTrack Playback"]
+        MediaMgr["MediaTransferManager<br>Chunked Transfer, NACK Retransmission"]
+        CryptoApp["CryptoEngine<br>AndroidKeyStore TEE Wrapping, Keystore Prefs"]
+        Service["MeshForegroundService<br>Background Radio Watchdog, Heartbeat Duty-Cycle"]
         
         VM --> Router
         VM --> VoiceMgr
@@ -46,12 +46,12 @@ flowchart TB
     end
 
     subgraph Core_Layer["Pure Kotlin Shared Domain (:core)"]
-        RouteEngine["MeshRouteEngine\n(Dijkstra Shortest-Path, Directed Forwarding)"]
-        TrafficCtrl["MeshTrafficController\n(4-Tier QoS Queues, Anti-Starvation Scheduling)"]
-        Adpcm["AdpcmCodec\n(8 kHz 4-bit IMA ADPCM Encoder/Decoder)"]
-        Jitter["JitterBuffer\n(40-80ms Preload, Reordering, Loss Concealment)"]
-        PureCrypto["PureCryptoEngine\n(X25519, Ed25519, HKDF-SHA256, AES-256-GCM)"]
-        WireProtocol["MeshPacket & ProfilePayload\n(56-byte Wire Header, Canonical Framing)"]
+        RouteEngine["MeshRouteEngine<br>Dijkstra Shortest-Path, Directed Forwarding"]
+        TrafficCtrl["MeshTrafficController<br>4-Tier QoS Queues, Anti-Starvation Scheduling"]
+        Adpcm["AdpcmCodec<br>8 kHz 4-bit IMA ADPCM Encoder and Decoder"]
+        Jitter["JitterBuffer<br>40-80ms Preload, Reordering, Loss Concealment"]
+        PureCrypto["PureCryptoEngine<br>X25519, Ed25519, HKDF-SHA256, AES-256-GCM"]
+        WireProtocol["MeshPacket and ProfilePayload<br>56-byte Wire Header, Canonical Framing"]
 
         Router --> RouteEngine
         Router --> TrafficCtrl
@@ -62,9 +62,9 @@ flowchart TB
     end
 
     subgraph Transport_Layer["Hardware Radio Transports (:app)"]
-        BLE["MeshBleEngine\n(Dual-Role Central/Peripheral, Symmetry Tie-Breaking)"]
-        BleFramer["BleFrameFramer\n(MTU Chunk Fragmentation & Reassembly)"]
-        WiFi["MeshWifiEngine\n(UDP Discovery :42425, TCP Sockets :42426)"]
+        BLE["MeshBleEngine<br>Dual-Role Central/Peripheral, Symmetry Tie-Breaking"]
+        BleFramer["BleFrameFramer<br>MTU Chunk Fragmentation and Reassembly"]
+        WiFi["MeshWifiEngine<br>UDP Discovery 42425, TCP Sockets 42426"]
 
         Router --> BLE
         BLE --> BleFramer
@@ -72,8 +72,8 @@ flowchart TB
     end
 
     subgraph Persistence_Layer["Encrypted Persistence (:app)"]
-        SQLCipher["MeshDatabase (Room v11)\n(SQLCipher AES-256 Encrypted via TEE Passphrase)"]
-        DAOs["PeerDao | MessageDao | StoreForwardDao\nProfileDao | PacketLogDao | ProcessedPacketDao"]
+        SQLCipher["MeshDatabase Room v11<br>SQLCipher AES-256 Encrypted via TEE Passphrase"]
+        DAOs["PeerDao, MessageDao, StoreForwardDao<br>ProfileDao, PacketLogDao, ProcessedPacketDao"]
 
         Router --> SQLCipher
         SQLCipher --> DAOs
@@ -118,27 +118,27 @@ Incoming raw bytes from either BLE GATT or Wi-Fi TCP sockets enter `MeshRouter.h
 ```mermaid
 flowchart TD
     RawBytes["Incoming Raw Bytes (BLE / Wi-Fi)"] --> Deserialize["MeshPacket.deserialize()"]
-    Deserialize -->|Malformed / Too Short| DropShort["Drop Packet"]
+    Deserialize -->|Malformed or Too Short| DropShort["Drop Packet"]
     Deserialize -->|Valid 56+ Bytes| EchoCheck{"Sender ID == My Node ID?"}
     
-    EchoCheck -->|Yes| DropEcho["Drop (Own Echo)"]
+    EchoCheck -->|Yes| DropEcho["Drop: Own Echo"]
     EchoCheck -->|No| VoiceFastPath{"Packet Type == VOICE_FRAME?"}
 
     VoiceFastPath -->|Yes| RecipCheck{"Recipient ID == My Node ID?"}
-    RecipCheck -->|Yes| FeedVoice["VoiceCallManager.handleIncomingVoiceFrame()\n(Direct to JitterBuffer -> AudioTrack)"]
-    RecipCheck -->|No| DropNonLocalVoice["Drop (Strict 1-Hop; Never Relay)"]
+    RecipCheck -->|Yes| FeedVoice["VoiceCallManager.handleIncomingVoiceFrame<br>Direct to JitterBuffer and AudioTrack"]
+    RecipCheck -->|No| DropNonLocalVoice["Drop: Strict 1-Hop, Never Relay"]
 
-    VoiceFastPath -->|No| FreshnessCheck{"Timestamp within Validity Window?\n(10m Broadcast, 24h DM)"}
-    FreshnessCheck -->|No| DropStale["Drop (Replay / Stale Window)"]
-    FreshnessCheck -->|Yes| L1Dedup{"In-Memory LRU Cache\n(Key: messageId:type)?"}
+    VoiceFastPath -->|No| FreshnessCheck{"Timestamp within Validity Window?<br>10m Broadcast, 24h DM"}
+    FreshnessCheck -->|No| DropStale["Drop: Replay or Stale Window"]
+    FreshnessCheck -->|Yes| L1Dedup{"In-Memory LRU Cache Hit?<br>Key: messageId:type"}
 
-    L1Dedup -->|Hit (Seen)| AckRecovery{"Is DM addressed to me?"}
-    AckRecovery -->|Yes| ReAck["Re-emit sendAck(senderId, msgId)\n(Lost-ACK Recovery)"]
-    AckRecovery -->|No| DropL1["Drop (Duplicate in RAM)"]
+    L1Dedup -->|Hit - Duplicate| AckRecovery{"Is DM addressed to me?"}
+    AckRecovery -->|Yes| ReAck["Re-emit sendAck senderId, msgId<br>Lost-ACK Recovery"]
+    AckRecovery -->|No| DropL1["Drop: Duplicate in RAM"]
 
-    L1Dedup -->|Miss| L2Dedup["Atomic INSERT OR IGNORE\ninto processed_packets table"]
-    L2Dedup -->|Duplicate| DropL2["Drop (Duplicate in DB)"]
-    L2Dedup -->|New Row| Dispatch["Dispatch by PacketType\n(DIRECT_MESSAGE, ACK, SOS, PROFILE, SIGNAL)"]
+    L1Dedup -->|Miss - New| L2Dedup["Atomic INSERT OR IGNORE<br>into processed_packets table"]
+    L2Dedup -->|Duplicate| DropL2["Drop: Duplicate in DB"]
+    L2Dedup -->|New Row| Dispatch["Dispatch by PacketType<br>DIRECT_MESSAGE, ACK, SOS, PROFILE, SIGNAL"]
 ```
 
 > [!IMPORTANT]

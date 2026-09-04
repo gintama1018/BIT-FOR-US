@@ -27,22 +27,22 @@ BIT FOR US uses modern, standard cryptographic primitives without custom or prop
 ```mermaid
 graph TD
     subgraph Hardware_TEE["Hardware TEE / StrongBox (AndroidKeyStore)"]
-        MasterKey["Master Keystore Key\n(AES-256-GCM)"]
+        MasterKey["Master Keystore Key<br>AES-256-GCM"]
     end
 
     subgraph Encrypted_Storage["Encrypted Private Storage"]
-        MasterKey -->|Unwraps| IdentityKeys["Device Identity\n- Ed25519 Signing Key\n- X25519 Static Private Key"]
+        MasterKey -->|Unwraps| IdentityKeys["Device Identity<br>Ed25519 Signing Key<br>X25519 Static Private Key"]
         MasterKey -->|Unwraps| DbKey["SQLCipher Database Passphrase"]
     end
 
     subgraph Ephemeral_Derivation["Runtime Key Derivation (Memory Only)"]
-        IdentityKeys -->|X25519 ECDH with Peer Public Key| SharedSecret["Shared Secret (32 bytes)"]
-        SharedSecret -->|HKDF-SHA256 + 1-Hour Epoch Salt| SessionKey["Peer Session Key\n(Rotated Hourly, 256-entry LRU)"]
-        Passphrase["Channel Passphrase"] -->|PBKDF2-SHA256 100k rounds| ChannelKey["Public Channel Key"]
+        IdentityKeys -->|"X25519 ECDH with Peer Public Key"| SharedSecret["Shared Secret: 32 bytes"]
+        SharedSecret -->|"HKDF-SHA256 and 1-Hour Epoch Salt"| SessionKey["Peer Session Key<br>Rotated Hourly, 256-entry LRU"]
+        Passphrase["Channel Passphrase"] -->|"PBKDF2-SHA256 100k rounds"| ChannelKey["Public Channel Key"]
     end
 
-    SessionKey -->|Encrypts/Decrypts| DirectPackets["DIRECT_MESSAGE (E2EE)"]
-    ChannelKey -->|Encrypts/Decrypts| PublicPackets["BROADCAST_MESSAGE"]
+    SessionKey -->|"Encrypts and Decrypts"| DirectPackets["DIRECT_MESSAGE (E2EE)"]
+    ChannelKey -->|"Encrypts and Decrypts"| PublicPackets["BROADCAST_MESSAGE"]
 ```
 
 ### 2.1. Node ID Derivation

@@ -1,13 +1,5 @@
 # BIT FOR US — System Architecture Specification
 
-> **Documentation Suite Navigation**:
-> - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**: Authoritative System Architecture Specification
-> - **[docs/PROTOCOL.md](docs/PROTOCOL.md)**: 56-Byte Wire Protocol, Packet Types & Binary Encodings
-> - **[docs/SECURITY.md](docs/SECURITY.md)**: Cryptographic Architecture, Hardware TEE & Threat Model
-> - **[docs/LIMITATIONS.md](docs/LIMITATIONS.md)**: Physical Boundaries, Radio Constraints & Scope Limits
-> - **[docs/TESTING.md](docs/TESTING.md)**: Test Architecture, 118 Unit Tests & Verification Matrix
-> - **[docs/ROADMAP.md](docs/ROADMAP.md)**: Implemented Milestones & Future Research Trajectory
-
 Version: **v1.4 (Synchronized with Codebase)**  
 Last Updated: **September 2026**
 
@@ -15,7 +7,7 @@ Last Updated: **September 2026**
 
 ## 1. System Overview
 
-BIT FOR US (MeshWhisper) is an **offline, infrastructure-free peer-to-peer communication system** operating over a dual-radio **Bluetooth Low Energy (BLE) + Local Wi-Fi (LAN / Hotspot)** hybrid transport.
+BIT FOR US is an **offline, infrastructure-free peer-to-peer communication system** operating over a dual-radio **Bluetooth Low Energy (BLE) + Local Wi-Fi (LAN / Hotspot)** hybrid transport.
 
 The platform provides resilient, end-to-end encrypted messaging, dynamic multi-hop routing, traffic-prioritized delivery, signed identity profiles, emergency distress beacons, and real-time 1-hop duplex voice calling without dependence on cellular towers, internet backbones, DNS root servers, or centralized infrastructure.
 

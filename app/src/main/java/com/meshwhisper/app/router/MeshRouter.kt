@@ -551,6 +551,7 @@ class MeshRouter(
                 expiresAt = System.currentTimeMillis() + (24 * 60 * 60 * 1000L)
             )
             database.storeForwardDao().insert(sfEntity)
+            database.storeForwardDao().trimRecipientQueue(packet.recipientId, MAX_STORE_FORWARD_PER_RECIPIENT)
 
             // Flood relay forward (with Software CSMA Jitter)
             if (packet.ttl > 1) {
@@ -765,6 +766,7 @@ class MeshRouter(
         try {
             database.processedPacketDao().purgeOld(nowSec - 86400L)
             database.storeForwardDao().purgeExpired(System.currentTimeMillis())
+            database.storeForwardDao().trimTotalQueue(MAX_TOTAL_STORE_FORWARD)
             // Prune topology edges older than 2 minutes (live mesh dynamic graph)
             database.topologyEdgeDao().pruneStaleEdges(System.currentTimeMillis() - 120_000L)
         } catch (e: Exception) {
@@ -1118,6 +1120,7 @@ class MeshRouter(
             expiresAt = System.currentTimeMillis() + (24 * 60 * 60 * 1000L)
         )
         database.storeForwardDao().insert(sf)
+        database.storeForwardDao().trimRecipientQueue(recipientNodeId, MAX_STORE_FORWARD_PER_RECIPIENT)
 
         // Dual-Radio Dispatch: Send directly over Wi-Fi TCP if peer is on LAN, otherwise broadcast
         if (wifiEngine.isPeerConnected(recipientNodeId)) {
@@ -1390,5 +1393,10 @@ class MeshRouter(
                 database.packetLogDao().trimOldLogs(500)
             }
         }
+    }
+
+    companion object {
+        const val MAX_STORE_FORWARD_PER_RECIPIENT = 50
+        const val MAX_TOTAL_STORE_FORWARD = 500
     }
 }

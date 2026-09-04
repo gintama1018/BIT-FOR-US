@@ -107,6 +107,12 @@ interface StoreForwardDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(item: StoreForwardEntity)
 
+    @Query("DELETE FROM store_forward_queue WHERE recipientId = :recipientId AND messageId NOT IN (SELECT messageId FROM store_forward_queue WHERE recipientId = :recipientId ORDER BY createdAt DESC LIMIT :keepLimit)")
+    suspend fun trimRecipientQueue(recipientId: Long, keepLimit: Int = 50)
+
+    @Query("DELETE FROM store_forward_queue WHERE messageId NOT IN (SELECT messageId FROM store_forward_queue ORDER BY createdAt DESC LIMIT :keepLimit)")
+    suspend fun trimTotalQueue(keepLimit: Int = 500)
+
     @Query("DELETE FROM store_forward_queue WHERE messageId = :messageId")
     suspend fun delete(messageId: String)
 

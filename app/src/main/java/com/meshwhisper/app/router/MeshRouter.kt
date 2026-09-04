@@ -14,6 +14,8 @@ import com.meshwhisper.app.data.model.StoreForwardEntity
 import com.meshwhisper.app.data.model.MediaType
 import com.meshwhisper.app.protocol.MeshPacket
 import com.meshwhisper.app.protocol.PacketType
+import com.meshwhisper.app.protocol.TrafficPriority
+import com.meshwhisper.app.protocol.MeshTrafficController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -41,12 +43,41 @@ class MeshRouter(
     // Deduplication Cache (Capacity: 4000 keys) - Keyed by messageId:packetType to prevent ACK/DM collision
     private val dedupCache = LruDedupCache<String, Long>(4000)
 
+    // QoS Traffic Controller (4-tier bounded priority queues, anti-starvation scheduling)
+    val trafficController = MeshTrafficController(maxQueuePerTier = 100, maxPacketLifetimeMs = 30_000L)
+
     // Statistics
     private val _relayedPacketsCount = MutableStateFlow(0)
     val relayedPacketsCount: StateFlow<Int> = _relayedPacketsCount.asStateFlow()
 
     private val _totalPacketsReceived = MutableStateFlow(0)
     val totalPacketsReceived: StateFlow<Int> = _totalPacketsReceived.asStateFlow()
+
+    /**
+     * Checks if the target peer is directly connected over local Wi-Fi TCP or BLE GATT.
+     */
+    fun isPeerDirectlyConnected(nodeId: Long): Boolean {
+        return bleEngine.isDirectlyConnected(nodeId) || wifiEngine.isPeerConnected(nodeId)
+    }
+
+    /**
+     * Sends a raw packet directly to a specific connected peer node.
+     * Tries high-throughput local Wi-Fi TCP first, then direct BLE GATT.
+     * Returns true if delivered directly, false if not directly connected.
+     */
+    suspend fun sendDirectToNode(nodeId: Long, rawBytes: ByteArray): Boolean {
+        if (wifiEngine.isPeerConnected(nodeId)) {
+            if (wifiEngine.sendDirectPacket(nodeId, rawBytes)) {
+                return true
+            }
+        }
+        if (bleEngine.isDirectlyConnected(nodeId)) {
+            if (bleEngine.sendDirectPacket(nodeId, rawBytes)) {
+                return true
+            }
+        }
+        return false
+    }
 
     suspend fun broadcastPacket(rawBytes: ByteArray, ingressAddress: String? = null) {
         bleEngine.broadcastPacket(rawBytes, ingressAddress)
@@ -1192,7 +1223,7 @@ class MeshRouter(
         logPacket("ACK_TX", ackPacket, raw.size, "Sent authenticated ACK for msg $originalMsgId to $recipientNodeId (ackId=$ackPacketId)")
     }
 
-    private suspend fun drainStoreAndForwardQueueForPeer(recipientNodeId: Long) {
+    internal suspend fun drainStoreAndForwardQueueForPeer(recipientNodeId: Long) {
         val now = System.currentTimeMillis()
         val lastDrain = lastDrainTimes[recipientNodeId] ?: 0L
         if (now - lastDrain < 30_000L) {
@@ -1202,9 +1233,27 @@ class MeshRouter(
         lastDrainTimes[recipientNodeId] = now
 
         val pending = database.storeForwardDao().getPendingForRecipient(recipientNodeId, now)
+        if (pending.isEmpty()) return
+
+        val isDirect = isPeerDirectlyConnected(recipientNodeId)
         for (item in pending) {
-            broadcastPacket(item.packetData)
-            logPacket("SF_DRAIN", null, item.packetData.size, "Draining store-and-forward msg ${item.messageId} to $recipientNodeId")
+            if (isDirect) {
+                // Architectural Guarantee: Direct peers get targeted unicast transmission.
+                // NEVER falls back to global broadcast to eliminate broadcast amplification.
+                val delivered = sendDirectToNode(recipientNodeId, item.packetData)
+                if (delivered) {
+                    logPacket("SF_DRAIN_DIRECT", null, item.packetData.size, "Directed unicast drain msg ${item.messageId} to direct peer $recipientNodeId")
+                } else {
+                    logPacket("SF_DRAIN_FAIL", null, item.packetData.size, "Direct link failed during drain of msg ${item.messageId} to $recipientNodeId")
+                }
+            } else {
+                // Multi-hop peer: Only relay if TTL > 1 with paced jitter
+                val packet = MeshPacket.deserialize(item.packetData)
+                if (packet != null && packet.ttl > 1) {
+                    val relayedPacket = packet.decrementTtl()
+                    relayPacketWithJitter(relayedPacket, null, "Relaying store-and-forward msg ${item.messageId} for remote peer $recipientNodeId")
+                }
+            }
         }
     }
 

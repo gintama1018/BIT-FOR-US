@@ -813,6 +813,83 @@ class MeshBleEngine(private val context: Context) {
         }
     }
 
+    /**
+     * Sends packet bytes directly to a specific target peer over BLE GATT (Central or Peripheral role),
+     * completely bypassing broadcast to other connected peers.
+     * Returns true if peer was found directly connected and transmission completed.
+     */
+    @SuppressLint("MissingPermission")
+    suspend fun sendDirectPacket(peerNodeId: Long, packetBytes: ByteArray): Boolean {
+        var sent = false
+
+        // 1. Check if peer is a connected Central on our GATT server
+        val server = gattServer
+        val service = server?.getService(BleConstants.MESH_SERVICE_UUID)
+        val notifyChar = service?.getCharacteristic(BleConstants.NOTIFY_CHAR_UUID)
+
+        if (server != null && notifyChar != null) {
+            for ((addr, device) in connectedCentrals) {
+                if (directAddressToNodeId[addr] == peerNodeId) {
+                    val centralMtu = centralMtus[addr] ?: BleConstants.DEFAULT_MTU
+                    val frames = framer.fragment(packetBytes, centralMtu)
+                    for (frame in frames) {
+                        try {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                server.notifyCharacteristicChanged(device, notifyChar, false, frame)
+                            } else {
+                                @Suppress("DEPRECATION")
+                                notifyChar.value = frame
+                                @Suppress("DEPRECATION")
+                                server.notifyCharacteristicChanged(device, notifyChar, false)
+                            }
+                        } catch (e: Exception) {
+                            Log.e(tag, "Failed to notify direct central $addr for node $peerNodeId", e)
+                        }
+                        delay(15L)
+                    }
+                    sent = true
+                    break
+                }
+            }
+        }
+
+        if (sent) return true
+
+        // 2. Check if peer is a Peripheral where we are connected as GATT Client
+        for ((addr, conn) in activeGattClients) {
+            if (directAddressToNodeId[addr] == peerNodeId && conn.isReady) {
+                val writeChar = conn.writeChar ?: continue
+                val frames = framer.fragment(packetBytes, conn.mtu)
+
+                for (frame in frames) {
+                    try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            conn.gatt.writeCharacteristic(
+                                writeChar,
+                                frame,
+                                BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                            )
+                        } else {
+                            @Suppress("DEPRECATION")
+                            writeChar.value = frame
+                            @Suppress("DEPRECATION")
+                            writeChar.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                            @Suppress("DEPRECATION")
+                            conn.gatt.writeCharacteristic(writeChar)
+                        }
+                    } catch (e: Exception) {
+                        Log.e(tag, "Failed to write to direct peripheral $addr for node $peerNodeId", e)
+                    }
+                    delay(15L)
+                }
+                sent = true
+                break
+            }
+        }
+
+        return sent
+    }
+
     companion object {
         const val MAX_CONCURRENT_GATT_CONNECTIONS = 5
     }

@@ -28,6 +28,9 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
 import com.meshwhisper.core.protocol.ProfilePayload
+import com.meshwhisper.core.router.MeshRouteEngine
+import com.meshwhisper.core.router.RouteLookupResult
+import com.meshwhisper.core.router.RouteEdge
 
 class MeshRouter(
     private val context: Context,
@@ -99,6 +102,15 @@ class MeshRouter(
         isDirectPeer = { bleEngine.isDirectlyConnected(it) || wifiEngine.isPeerConnected(it) }
     )
 
+    val routeEngine = MeshRouteEngine(cryptoEngine.nodeId)
+
+    fun syncDirectNeighbors() {
+        val blePeers = bleEngine.connectedNodeIds.value
+        val wifiPeers = wifiEngine.connectedWifiPeers.value.keys
+        val allDirect = (blePeers + wifiPeers).filter { it != cryptoEngine.nodeId && it != 0L }.toSet()
+        routeEngine.updateDirectNeighbors(allDirect)
+    }
+
     private val lastDrainTimes = java.util.concurrent.ConcurrentHashMap<Long, Long>()
     private val logCounter = java.util.concurrent.atomic.AtomicInteger(0)
 
@@ -111,10 +123,25 @@ class MeshRouter(
             handleIncomingPacket(packetBytes, ingressAddress)
         }
 
-        bleEngine.onPeerReadyListener = { _ ->
-            // Exchange identity upon established BLE link
+        bleEngine.onPeerReadyListener = { address ->
+            // Exchange identity upon established BLE link and immediately drain S&F
             scope.launch {
+                syncDirectNeighbors()
                 announcePresence()
+                val directNodeId = bleEngine.getDirectNodeId(address)
+                if (directNodeId != null && directNodeId != 0L) {
+                    drainStoreAndForwardQueueForPeer(directNodeId, forceImmediate = true)
+                }
+            }
+        }
+
+        bleEngine.onPeerDisconnectedListener = { address ->
+            scope.launch {
+                val directNodeId = bleEngine.getDirectNodeId(address)
+                if (directNodeId != null && directNodeId != 0L) {
+                    routeEngine.markLinkFailed(cryptoEngine.nodeId, directNodeId)
+                }
+                syncDirectNeighbors()
             }
         }
 
@@ -133,7 +160,16 @@ class MeshRouter(
 
         wifiEngine.onPeerConnectedListener = { peerId, ip ->
             scope.launch {
+                syncDirectNeighbors()
                 announcePresence()
+                drainStoreAndForwardQueueForPeer(peerId, forceImmediate = true)
+            }
+        }
+
+        wifiEngine.onPeerDisconnectedListener = { peerId ->
+            scope.launch {
+                routeEngine.markLinkFailed(cryptoEngine.nodeId, peerId)
+                syncDirectNeighbors()
             }
         }
 
@@ -188,6 +224,14 @@ class MeshRouter(
         // Fast Layer 1 Deduplication Check: In-memory LRU Cache (keyed by msgId:type)
         val dedupKey = "${packet.messageId}:${packet.type.code}"
         if (dedupCache.containsKey(dedupKey)) {
+            // Lost-ACK Recovery: If sender retransmitted this DM because our delivery ACK was dropped,
+            // re-emit the delivery ACK so the sender can mark the message DELIVERED.
+            if (packet.type == PacketType.DIRECT_MESSAGE && packet.recipientId == cryptoEngine.nodeId) {
+                scope.launch {
+                    logPacket("ACK_RETRY", packet, rawBytes.size, "Re-emitting delivery ACK for duplicate DM ${packet.messageId}")
+                    sendAck(packet.senderId, packet.messageId)
+                }
+            }
             logPacket("DROP", packet, rawBytes.size, "Duplicate packet dropped (fast RAM cache)")
             return
         }
@@ -200,6 +244,10 @@ class MeshRouter(
                 com.meshwhisper.app.data.model.ProcessedPacketEntity(dedupKey, packet.timestamp)
             )
             if (inserted == -1L) {
+                if (packet.type == PacketType.DIRECT_MESSAGE && packet.recipientId == cryptoEngine.nodeId) {
+                    logPacket("ACK_RETRY", packet, rawBytes.size, "Re-emitting delivery ACK for duplicate DM ${packet.messageId}")
+                    sendAck(packet.senderId, packet.messageId)
+                }
                 logPacket("DROP", packet, rawBytes.size, "Duplicate packet dropped (persistent replay DB)")
                 return@launch
             }
@@ -323,8 +371,9 @@ class MeshRouter(
             }
         }
 
-        // Upsert reported topology edges into database
+        // Upsert reported topology edges into database and routing engine
         val now = System.currentTimeMillis()
+        val freshEdges = mutableListOf<com.meshwhisper.core.router.RouteEdge>()
         for (neighborId in neighborNodeIds) {
             database.topologyEdgeDao().insertOrUpdate(
                 com.meshwhisper.app.data.model.TopologyEdgeEntity(
@@ -334,6 +383,7 @@ class MeshRouter(
                     lastSeen = now
                 )
             )
+            freshEdges.add(com.meshwhisper.core.router.RouteEdge(packet.senderId, neighborId, 1, now))
         }
 
         val isDirectLink = (packet.ttl == MeshPacket.DEFAULT_TTL)
@@ -346,7 +396,9 @@ class MeshRouter(
                     lastSeen = now
                 )
             )
+            freshEdges.add(com.meshwhisper.core.router.RouteEdge(cryptoEngine.nodeId, packet.senderId, 1, now))
         }
+        routeEngine.updateEdges(freshEdges)
 
         var peerAvatarHash: Byte = 0
         if (buffer.hasRemaining()) {
@@ -588,21 +640,53 @@ class MeshRouter(
             // MULTI-HOP RELAY FOR ANOTHER NODE
             logPacket("RELAY", packet, rawBytes.size, "Relaying private DM for ${packet.recipientId}")
 
-            // Store-and-forward offline buffer (expires in 24 hours)
-            val sfEntity = StoreForwardEntity(
-                messageId = packet.messageId.toString(),
-                recipientId = packet.recipientId,
-                packetData = rawBytes,
-                createdAt = System.currentTimeMillis(),
-                expiresAt = System.currentTimeMillis() + (24 * 60 * 60 * 1000L)
-            )
-            database.storeForwardDao().insert(sfEntity)
-            database.storeForwardDao().trimRecipientQueue(packet.recipientId, MAX_STORE_FORWARD_PER_RECIPIENT)
+            syncDirectNeighbors()
+            val routeResult = routeEngine.resolveRoute(packet.recipientId)
+            var directDelivered = false
 
-            // Flood relay forward (with Software CSMA Jitter)
             if (packet.ttl > 1) {
                 val relayedPacket = packet.decrementTtl()
-                relayPacketWithJitter(relayedPacket, ingressAddress, "Relaying private DM for ${packet.recipientId}")
+                val relayedBytes = MeshPacket.serialize(relayedPacket)
+
+                when (routeResult) {
+                    is RouteLookupResult.Direct -> {
+                        directDelivered = sendDirectToNode(packet.recipientId, relayedBytes)
+                        if (directDelivered) {
+                            _relayedPacketsCount.value += 1
+                            logPacket("RELAY_DIRECT", relayedPacket, relayedBytes.size, "Delivered DM directly to destination ${packet.recipientId}")
+                        }
+                    }
+                    is RouteLookupResult.NextHop -> {
+                        val nextHop = routeResult.nextHopNodeId
+                        val forwarded = sendDirectToNode(nextHop, relayedBytes)
+                        if (forwarded) {
+                            directDelivered = true // successfully handed off to next relay
+                            _relayedPacketsCount.value += 1
+                            logPacket("RELAY_NEXTHOP", relayedPacket, relayedBytes.size, "Forwarded DM for ${packet.recipientId} to next-hop $nextHop (hops=${routeResult.hopCount})")
+                        } else {
+                            routeEngine.markLinkFailed(cryptoEngine.nodeId, nextHop)
+                        }
+                    }
+                    RouteLookupResult.Unreachable -> {
+                        // No route known, will buffer and broadcast below
+                    }
+                }
+
+                if (!directDelivered) {
+                    // Buffer in store-and-forward queue for offline peer
+                    val sfEntity = StoreForwardEntity(
+                        messageId = packet.messageId.toString(),
+                        recipientId = packet.recipientId,
+                        packetData = rawBytes,
+                        createdAt = System.currentTimeMillis(),
+                        expiresAt = System.currentTimeMillis() + (24 * 60 * 60 * 1000L)
+                    )
+                    database.storeForwardDao().insert(sfEntity)
+                    database.storeForwardDao().trimRecipientQueue(packet.recipientId, MAX_STORE_FORWARD_PER_RECIPIENT)
+
+                    // Flood relay forward with jitter as fallback
+                    relayPacketWithJitter(relayedPacket, ingressAddress, "Relaying private DM for ${packet.recipientId}")
+                }
             }
         }
     }
@@ -649,7 +733,25 @@ class MeshRouter(
             }
         } else if (packet.ttl > 1) {
             val relayedPacket = packet.decrementTtl()
-            relayPacketWithJitter(relayedPacket, ingressAddress, "Relaying ACK (ackId=${packet.messageId})")
+            val relayedBytes = MeshPacket.serialize(relayedPacket)
+            syncDirectNeighbors()
+            val routeResult = routeEngine.resolveRoute(packet.recipientId)
+            var ackRelayedDirect = false
+            when (routeResult) {
+                is RouteLookupResult.Direct -> {
+                    ackRelayedDirect = sendDirectToNode(packet.recipientId, relayedBytes)
+                }
+                is RouteLookupResult.NextHop -> {
+                    ackRelayedDirect = sendDirectToNode(routeResult.nextHopNodeId, relayedBytes)
+                }
+                RouteLookupResult.Unreachable -> {}
+            }
+            if (ackRelayedDirect) {
+                _relayedPacketsCount.value += 1
+                logPacket("RELAY_ACK_DIRECT", relayedPacket, relayedBytes.size, "Forwarded ACK for ${packet.recipientId} via unicast next-hop")
+            } else {
+                relayPacketWithJitter(relayedPacket, ingressAddress, "Relaying ACK (ackId=${packet.messageId})")
+            }
         }
     }
 
@@ -1168,12 +1270,49 @@ class MeshRouter(
         database.storeForwardDao().insert(sf)
         database.storeForwardDao().trimRecipientQueue(recipientNodeId, MAX_STORE_FORWARD_PER_RECIPIENT)
 
-        // Dual-Radio Dispatch: Send directly over Wi-Fi TCP if peer is on LAN, otherwise broadcast
-        if (wifiEngine.isPeerConnected(recipientNodeId)) {
-            wifiEngine.sendDirectPacket(recipientNodeId, raw)
-            bleEngine.broadcastPacket(raw)
-        } else {
-            broadcastPacket(raw)
+        // Directed Unicast Next-Hop Dispatch with Automatic Failover
+        syncDirectNeighbors()
+        val routeResult = routeEngine.resolveRoute(recipientNodeId)
+        var dispatched = false
+
+        when (routeResult) {
+            is RouteLookupResult.Direct -> {
+                dispatched = sendDirectToNode(recipientNodeId, raw)
+                if (!dispatched) {
+                    routeEngine.markLinkFailed(cryptoEngine.nodeId, recipientNodeId)
+                }
+            }
+            is RouteLookupResult.NextHop -> {
+                val nextHop = routeResult.nextHopNodeId
+                dispatched = sendDirectToNode(nextHop, raw)
+                if (dispatched) {
+                    database.messageDao().updateStatus(msgId.toString(), MessageStatus.RELAYED)
+                    logPacket("TX_RELAY_HOP", packet, raw.size, "Forwarded DM for $recipientNodeId via next-hop $nextHop (hops=${routeResult.hopCount})")
+                } else {
+                    routeEngine.markLinkFailed(cryptoEngine.nodeId, nextHop)
+                    // Immediate failover to alternate route if available
+                    val altRoute = routeEngine.resolveRoute(recipientNodeId)
+                    if (altRoute is RouteLookupResult.NextHop) {
+                        dispatched = sendDirectToNode(altRoute.nextHopNodeId, raw)
+                        if (dispatched) {
+                            database.messageDao().updateStatus(msgId.toString(), MessageStatus.RELAYED)
+                            logPacket("TX_FAILOVER", packet, raw.size, "Failover DM for $recipientNodeId via alt-hop ${altRoute.nextHopNodeId}")
+                        }
+                    }
+                }
+            }
+            RouteLookupResult.Unreachable -> {
+                // Route not yet discovered, fall through to broadcast below
+            }
+        }
+
+        if (!dispatched) {
+            if (wifiEngine.isPeerConnected(recipientNodeId)) {
+                wifiEngine.sendDirectPacket(recipientNodeId, raw)
+                bleEngine.broadcastPacket(raw)
+            } else {
+                broadcastPacket(raw)
+            }
         }
         logPacket("TX", packet, raw.size, "Sent direct DM to $recipientNodeId (${text.length} chars)")
 
@@ -1229,19 +1368,36 @@ class MeshRouter(
         database.processedPacketDao().markSeen(
             com.meshwhisper.app.data.model.ProcessedPacketEntity(dedupKey, timestamp)
         )
-        if (wifiEngine.isPeerConnected(recipientNodeId)) {
-            wifiEngine.sendDirectPacket(recipientNodeId, raw)
-            bleEngine.broadcastPacket(raw)
-        } else {
-            broadcastPacket(raw)
+        syncDirectNeighbors()
+        val routeResult = routeEngine.resolveRoute(recipientNodeId)
+        var ackDelivered = false
+        when (routeResult) {
+            is RouteLookupResult.Direct -> {
+                ackDelivered = sendDirectToNode(recipientNodeId, raw)
+            }
+            is RouteLookupResult.NextHop -> {
+                ackDelivered = sendDirectToNode(routeResult.nextHopNodeId, raw)
+                if (!ackDelivered) {
+                    routeEngine.markLinkFailed(cryptoEngine.nodeId, routeResult.nextHopNodeId)
+                }
+            }
+            RouteLookupResult.Unreachable -> {}
+        }
+        if (!ackDelivered) {
+            if (wifiEngine.isPeerConnected(recipientNodeId)) {
+                wifiEngine.sendDirectPacket(recipientNodeId, raw)
+                bleEngine.broadcastPacket(raw)
+            } else {
+                broadcastPacket(raw)
+            }
         }
         logPacket("ACK_TX", ackPacket, raw.size, "Sent authenticated ACK for msg $originalMsgId to $recipientNodeId (ackId=$ackPacketId)")
     }
 
-    internal suspend fun drainStoreAndForwardQueueForPeer(recipientNodeId: Long) {
+    internal suspend fun drainStoreAndForwardQueueForPeer(recipientNodeId: Long, forceImmediate: Boolean = false) {
         val now = System.currentTimeMillis()
         val lastDrain = lastDrainTimes[recipientNodeId] ?: 0L
-        if (now - lastDrain < 30_000L) {
+        if (!forceImmediate && now - lastDrain < 30_000L) {
             // Throttle: don't flood re-broadcasts if peer announced recently
             return
         }
@@ -1251,18 +1407,36 @@ class MeshRouter(
         if (pending.isEmpty()) return
 
         val isDirect = isPeerDirectlyConnected(recipientNodeId)
+        syncDirectNeighbors()
+        val route = routeEngine.resolveRoute(recipientNodeId)
+
         for (item in pending) {
             if (isDirect) {
                 // Architectural Guarantee: Direct peers get targeted unicast transmission.
                 // NEVER falls back to global broadcast to eliminate broadcast amplification.
                 val delivered = sendDirectToNode(recipientNodeId, item.packetData)
                 if (delivered) {
+                    database.storeForwardDao().delete(item.messageId)
                     logPacket("SF_DRAIN_DIRECT", null, item.packetData.size, "Directed unicast drain msg ${item.messageId} to direct peer $recipientNodeId")
                 } else {
                     logPacket("SF_DRAIN_FAIL", null, item.packetData.size, "Direct link failed during drain of msg ${item.messageId} to $recipientNodeId")
                 }
+            } else if (route is RouteLookupResult.NextHop) {
+                // Multi-hop peer with known route: Unicast handoff to next relay
+                val packet = MeshPacket.deserialize(item.packetData)
+                if (packet != null && packet.ttl > 1) {
+                    val relayedPacket = packet.decrementTtl()
+                    val relayedBytes = MeshPacket.serialize(relayedPacket)
+                    val forwarded = sendDirectToNode(route.nextHopNodeId, relayedBytes)
+                    if (forwarded) {
+                        database.storeForwardDao().delete(item.messageId) // Handed off to next hop!
+                        logPacket("SF_DRAIN_NEXTHOP", relayedPacket, relayedBytes.size, "Directed S&F handoff of msg ${item.messageId} via next-hop ${route.nextHopNodeId}")
+                    } else {
+                        routeEngine.markLinkFailed(cryptoEngine.nodeId, route.nextHopNodeId)
+                    }
+                }
             } else {
-                // Multi-hop peer: Only relay if TTL > 1 with paced jitter
+                // Multi-hop peer without known route: Only relay if TTL > 1 with paced jitter
                 val packet = MeshPacket.deserialize(item.packetData)
                 if (packet != null && packet.ttl > 1) {
                     val relayedPacket = packet.decrementTtl()

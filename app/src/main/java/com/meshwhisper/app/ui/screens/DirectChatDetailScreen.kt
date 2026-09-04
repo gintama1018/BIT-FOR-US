@@ -512,13 +512,19 @@ private fun SaharaDirectMessageBubble(
                         if (isMe) {
                             val icon = when (msg.status) {
                                 MessageStatus.DELIVERED -> Icons.Default.DoneAll
+                                MessageStatus.RELAYED -> Icons.Default.DoneAll
                                 MessageStatus.SENT -> Icons.Default.Check
                                 else -> Icons.Default.Schedule
+                            }
+                            val iconTint = when (msg.status) {
+                                MessageStatus.DELIVERED -> SaharaPrimary
+                                MessageStatus.RELAYED -> SaharaWarning
+                                else -> SaharaOnSurfaceVariant.copy(alpha = 0.7f)
                             }
                             Icon(
                                 imageVector = icon,
                                 contentDescription = null,
-                                tint = if (msg.status == MessageStatus.DELIVERED) SaharaPrimary else SaharaOnSurfaceVariant.copy(alpha = 0.7f),
+                                tint = iconTint,
                                 modifier = Modifier.size(13.dp)
                             )
                         }

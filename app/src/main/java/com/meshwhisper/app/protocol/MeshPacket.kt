@@ -12,6 +12,9 @@ typealias TrafficPriority = com.meshwhisper.core.protocol.TrafficPriority
 typealias PrioritizedPacket = com.meshwhisper.core.protocol.PrioritizedPacket
 typealias MeshTrafficController = com.meshwhisper.core.protocol.MeshTrafficController
 typealias ProfilePayload = com.meshwhisper.core.protocol.ProfilePayload
+typealias RouteEdge = com.meshwhisper.core.router.RouteEdge
+typealias RouteLookupResult = com.meshwhisper.core.router.RouteLookupResult
+typealias MeshRouteEngine = com.meshwhisper.core.router.MeshRouteEngine
 
 val PacketType.trafficPriority: TrafficPriority
     get() = this.coreTrafficPriority

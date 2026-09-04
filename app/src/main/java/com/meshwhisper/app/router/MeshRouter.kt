@@ -104,6 +104,25 @@ class MeshRouter(
 
     val routeEngine = MeshRouteEngine(cryptoEngine.nodeId)
 
+    var audioStreamerFactory: () -> com.meshwhisper.app.voice.AudioStreamer = {
+        com.meshwhisper.app.voice.AndroidAudioStreamer(context, scope)
+    }
+
+    val voiceCallManager by lazy {
+        com.meshwhisper.app.voice.VoiceCallManager(
+            myNodeId = cryptoEngine.nodeId,
+            isPeerDirectlyConnected = { isPeerDirectlyConnected(it) },
+            sendSignalPacket = { recipientId, signalBytes ->
+                sendVoiceCallSignalPacket(recipientId, signalBytes)
+            },
+            sendFramePacket = { recipientId, frameBytes ->
+                sendVoiceFramePacket(recipientId, frameBytes)
+            },
+            audioStreamer = audioStreamerFactory(),
+            scope = scope
+        )
+    }
+
     fun syncDirectNeighbors() {
         val blePeers = bleEngine.connectedNodeIds.value
         val wifiPeers = wifiEngine.connectedWifiPeers.value.keys
@@ -140,6 +159,7 @@ class MeshRouter(
                 val directNodeId = bleEngine.getDirectNodeId(address)
                 if (directNodeId != null && directNodeId != 0L) {
                     routeEngine.markLinkFailed(cryptoEngine.nodeId, directNodeId)
+                    voiceCallManager.onDirectPeerDisconnected(directNodeId)
                 }
                 syncDirectNeighbors()
             }
@@ -169,6 +189,7 @@ class MeshRouter(
         wifiEngine.onPeerDisconnectedListener = { peerId ->
             scope.launch {
                 routeEngine.markLinkFailed(cryptoEngine.nodeId, peerId)
+                voiceCallManager.onDirectPeerDisconnected(peerId)
                 syncDirectNeighbors()
             }
         }
@@ -202,6 +223,17 @@ class MeshRouter(
 
         // Ignore own echoes
         if (packet.senderId == cryptoEngine.nodeId) {
+            return
+        }
+
+        // Fast-path: Real-time voice frames bypass persistent Room dedup, S&F, and relaying
+        if (packet.type == PacketType.VOICE_FRAME) {
+            if (packet.recipientId == cryptoEngine.nodeId) {
+                val framePayload = com.meshwhisper.app.voice.VoiceFramePayload.deserialize(packet.payload)
+                if (framePayload != null) {
+                    voiceCallManager.handleIncomingVoiceFrame(packet.senderId, framePayload)
+                }
+            }
             return
         }
 
@@ -295,6 +327,12 @@ class MeshRouter(
                 }
                 PacketType.PROFILE_REQUEST -> {
                     handleProfileRequest(packet, rawBytes, ingressAddress)
+                }
+                PacketType.VOICE_CALL_SIGNAL -> {
+                    handleVoiceCallSignal(packet, rawBytes, ingressAddress)
+                }
+                PacketType.VOICE_FRAME -> {
+                    // Handled in fast-path above
                 }
             }
         }
@@ -1832,6 +1870,47 @@ class MeshRouter(
                 database.packetLogDao().trimOldLogs(500)
             }
         }
+    }
+
+    private fun handleVoiceCallSignal(packet: MeshPacket, rawBytes: ByteArray, ingressAddress: String?) {
+        if (packet.recipientId != cryptoEngine.nodeId) {
+            // Strict 1-hop: never forward voice call signals
+            return
+        }
+        val signalPayload = com.meshwhisper.app.voice.VoiceSignalPayload.deserialize(packet.payload) ?: return
+        voiceCallManager.handleIncomingSignal(packet.senderId, signalPayload)
+    }
+
+    suspend fun sendVoiceCallSignalPacket(recipientId: Long, signalBytes: ByteArray): Boolean {
+        val msgId = UUID.randomUUID()
+        val timestamp = System.currentTimeMillis() / 1000L
+        val packet = MeshPacket(
+            type = PacketType.VOICE_CALL_SIGNAL,
+            messageId = msgId,
+            senderId = cryptoEngine.nodeId,
+            recipientId = recipientId,
+            ttl = 1,
+            timestamp = timestamp,
+            payload = signalBytes
+        )
+        val rawBytes = MeshPacket.serialize(packet)
+        return sendDirectToNode(recipientId, rawBytes)
+    }
+
+    suspend fun sendVoiceFramePacket(recipientId: Long, frameBytes: ByteArray): Boolean {
+        val msgId = UUID.randomUUID()
+        val timestamp = System.currentTimeMillis() / 1000L
+        val packet = MeshPacket(
+            type = PacketType.VOICE_FRAME,
+            messageId = msgId,
+            senderId = cryptoEngine.nodeId,
+            recipientId = recipientId,
+            ttl = 1,
+            timestamp = timestamp,
+            payload = frameBytes
+        )
+        val rawBytes = MeshPacket.serialize(packet)
+        return sendDirectToNode(recipientId, rawBytes)
     }
 
     companion object {

@@ -30,6 +30,7 @@ import com.meshwhisper.app.data.model.MediaType
 import com.meshwhisper.app.data.model.MessageEntity
 import com.meshwhisper.app.data.model.MessageStatus
 import com.meshwhisper.app.media.MediaCompressor
+import com.meshwhisper.app.ui.components.CallOverlayDialog
 import com.meshwhisper.app.ui.components.CameraQrScannerDialog
 import com.meshwhisper.app.ui.components.ImageMessageBubble
 import com.meshwhisper.app.ui.components.NodeAvatar
@@ -56,6 +57,11 @@ fun DirectChatDetailScreen(
     val isDirect = connectedNodeIds.contains(peerNodeId)
     val isVerified = peer?.isVerified == true
     val peerProfile by viewModel.getPeerProfileFlow(peerNodeId).collectAsState(initial = null)
+    val callState by viewModel.callState.collectAsState()
+    val activeCallInfo by viewModel.activeCallInfo.collectAsState()
+    val callDurationSeconds by viewModel.callDurationSeconds.collectAsState()
+    val isCallMuted by viewModel.isCallMuted.collectAsState()
+    val isCallSpeakerOn by viewModel.isCallSpeakerOn.collectAsState()
 
     var textInput by remember { mutableStateOf("") }
     var showSafetyNumberDialog by remember { mutableStateOf(false) }
@@ -234,6 +240,24 @@ fun DirectChatDetailScreen(
         }
     }
 
+    // Call Overlay Dialog for Active / Ringing Call
+    if (activeCallInfo != null && activeCallInfo?.peerNodeId == peerNodeId && callState != com.meshwhisper.app.voice.CallState.IDLE) {
+        CallOverlayDialog(
+            callInfo = activeCallInfo!!,
+            peerAlias = peerProfile?.displayName?.ifBlank { null } ?: peer?.alias ?: "Peer",
+            avatarUri = peerProfile?.avatarUri ?: peer?.avatarUri,
+            durationSeconds = callDurationSeconds,
+            isMuted = isCallMuted,
+            isSpeakerOn = isCallSpeakerOn,
+            onAccept = { viewModel.acceptVoiceCall() },
+            onDecline = { viewModel.declineVoiceCall() },
+            onEndCall = { viewModel.endVoiceCall() },
+            onToggleMute = { viewModel.toggleCallMute() },
+            onToggleSpeaker = { viewModel.toggleCallSpeaker() },
+            onDismiss = { viewModel.dismissEndedCall() }
+        )
+    }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -321,6 +345,27 @@ fun DirectChatDetailScreen(
                             fontSize = 11.sp
                         )
                     }
+                }
+
+                // Voice Call Action (Milestone 4 - Direct 1-Hop Only)
+                IconButton(
+                    onClick = {
+                        if (isDirect) {
+                            val started = viewModel.startVoiceCall(peerNodeId)
+                            if (!started) {
+                                android.widget.Toast.makeText(context, "Cannot initiate call right now", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                        } else {
+                            android.widget.Toast.makeText(context, "Direct 1-hop link required for voice calls", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Call,
+                        contentDescription = "Voice Call",
+                        tint = if (isDirect) SaharaPrimary else SaharaOnSurfaceVariant.copy(alpha = 0.35f),
+                        modifier = Modifier.size(20.dp)
+                    )
                 }
 
                 IconButton(onClick = { showSafetyNumberDialog = true }) {

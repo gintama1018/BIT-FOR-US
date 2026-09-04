@@ -23,7 +23,9 @@ enum class PacketType(val code: Byte) {
     MEDIA_ABORT(0x0B),
     SOS_MESSAGE(0x0C),
     PROFILE_UPDATE(0x0D),
-    PROFILE_REQUEST(0x0E);
+    PROFILE_REQUEST(0x0E),
+    VOICE_CALL_SIGNAL(0x0F),
+    VOICE_FRAME(0x10);
 
     companion object {
         fun fromCode(code: Byte): PacketType? {

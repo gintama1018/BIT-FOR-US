@@ -84,6 +84,41 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
     val localIpAddress: StateFlow<String?> = app.wifiEngine.localIpAddress
     val connectedWifiPeers: StateFlow<Map<Long, String>> = app.wifiEngine.connectedWifiPeers
 
+    // Voice Call State & Controls (Milestone 4)
+    val callState: StateFlow<com.meshwhisper.app.voice.CallState> = router.voiceCallManager.callState
+    val activeCallInfo: StateFlow<com.meshwhisper.app.voice.ActiveCallInfo?> = router.voiceCallManager.activeCallInfo
+    val isCallMuted: StateFlow<Boolean> = router.voiceCallManager.isMuted
+    val isCallSpeakerOn: StateFlow<Boolean> = router.voiceCallManager.isSpeakerOn
+    val callDurationSeconds: StateFlow<Long> = router.voiceCallManager.callDurationSeconds
+
+    fun startVoiceCall(peerNodeId: Long): Boolean {
+        return router.voiceCallManager.startCall(peerNodeId)
+    }
+
+    fun acceptVoiceCall() {
+        router.voiceCallManager.acceptCall()
+    }
+
+    fun declineVoiceCall() {
+        router.voiceCallManager.declineCall()
+    }
+
+    fun endVoiceCall() {
+        router.voiceCallManager.endCall()
+    }
+
+    fun toggleCallMute() {
+        router.voiceCallManager.toggleMute()
+    }
+
+    fun toggleCallSpeaker() {
+        router.voiceCallManager.toggleSpeaker()
+    }
+
+    fun dismissEndedCall() {
+        router.voiceCallManager.dismissEndedCall()
+    }
+
     fun getDirectMessagesForPeer(peerNodeId: Long): Flow<List<MessageEntity>> {
         return database.messageDao().getDirectMessagesForPeer(peerNodeId)
     }

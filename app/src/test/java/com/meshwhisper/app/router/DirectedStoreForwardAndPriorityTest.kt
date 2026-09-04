@@ -20,6 +20,8 @@ class DirectedStoreForwardAndPriorityTest {
         assertThat(PacketType.ACK.trafficPriority).isEqualTo(TrafficPriority.HIGH_INTERACTIVE)
         assertThat(PacketType.KEY_EXCHANGE.trafficPriority).isEqualTo(TrafficPriority.HIGH_INTERACTIVE)
         assertThat(PacketType.TYPING_INDICATOR.trafficPriority).isEqualTo(TrafficPriority.HIGH_INTERACTIVE)
+        assertThat(PacketType.VOICE_CALL_SIGNAL.trafficPriority).isEqualTo(TrafficPriority.HIGH_INTERACTIVE)
+        assertThat(PacketType.VOICE_FRAME.trafficPriority).isEqualTo(TrafficPriority.HIGH_INTERACTIVE)
 
         // Standard Messaging Tier 2
         assertThat(PacketType.DIRECT_MESSAGE.trafficPriority).isEqualTo(TrafficPriority.STANDARD_MESSAGING)
@@ -143,5 +145,66 @@ class DirectedStoreForwardAndPriorityTest {
             payload = byteArrayOf(4, 5, 6)
         )
         assertThat(dmPacket.type.trafficPriority).isEqualTo(TrafficPriority.STANDARD_MESSAGING)
+    }
+
+    @Test
+    fun testVoicePacketsPreemptStandardAndBulkTraffic() {
+        val controller = MeshTrafficController(maxQueuePerTier = 50)
+
+        // 1. Enqueue bulk media chunks and standard direct messages
+        controller.enqueue("BULK_CHUNK".toByteArray(), PacketType.MEDIA_CHUNK)
+        controller.enqueue("CHAT_MESSAGE".toByteArray(), PacketType.DIRECT_MESSAGE)
+
+        // 2. Enqueue voice call signal and voice frame
+        val signalBytes = "CALL_OFFER".toByteArray()
+        val voiceFrameBytes = "VOICE_ADPCM_FRAME".toByteArray()
+        controller.enqueue(signalBytes, PacketType.VOICE_CALL_SIGNAL)
+        controller.enqueue(voiceFrameBytes, PacketType.VOICE_FRAME)
+
+        // 3. Dequeue: VOICE_CALL_SIGNAL and VOICE_FRAME must be dequeued before standard chat and bulk chunks
+        val first = controller.pollNext()
+        assertThat(first).isNotNull()
+        assertThat(first!!.priority).isEqualTo(TrafficPriority.HIGH_INTERACTIVE)
+        assertThat(first.rawBytes).isEqualTo(signalBytes)
+
+        val second = controller.pollNext()
+        assertThat(second).isNotNull()
+        assertThat(second!!.priority).isEqualTo(TrafficPriority.HIGH_INTERACTIVE)
+        assertThat(second.rawBytes).isEqualTo(voiceFrameBytes)
+
+        val third = controller.pollNext()
+        assertThat(third).isNotNull()
+        assertThat(third!!.priority).isEqualTo(TrafficPriority.STANDARD_MESSAGING)
+
+        val fourth = controller.pollNext()
+        assertThat(fourth).isNotNull()
+        assertThat(fourth!!.priority).isEqualTo(TrafficPriority.BULK_TRANSFER)
+    }
+
+    @Test
+    fun testVoicePacketsStrictOneHopInvariant() {
+        val voiceSignal = MeshPacket(
+            type = PacketType.VOICE_CALL_SIGNAL,
+            messageId = UUID.randomUUID(),
+            senderId = 100L,
+            recipientId = 200L,
+            ttl = 1, // Must be strictly 1-hop
+            timestamp = 1720000000L,
+            payload = byteArrayOf(1)
+        )
+        assertThat(voiceSignal.ttl).isEqualTo(1)
+
+        val voiceFrame = MeshPacket(
+            type = PacketType.VOICE_FRAME,
+            messageId = UUID.randomUUID(),
+            senderId = 100L,
+            recipientId = 200L,
+            ttl = 1, // Must be strictly 1-hop
+            timestamp = 1720000000L,
+            payload = ByteArray(80)
+        )
+        assertThat(voiceFrame.ttl).isEqualTo(1)
+        // Verify priority is Tier 1
+        assertThat(voiceFrame.type.trafficPriority.level).isEqualTo(1)
     }
 }

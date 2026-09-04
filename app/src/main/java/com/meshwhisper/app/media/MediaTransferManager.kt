@@ -756,6 +756,65 @@ class MediaTransferManager(
         }
 
         val sessionKey = "${packet.senderId}_$mediaId"
+
+        // Bound active inbound media sessions per remote sender (max 4) and total (max 16)
+        // with oldest-eviction, mirroring BleFrameFramer's bounded session pattern (P3)
+        if (!inboundSessions.containsKey(sessionKey)) {
+            val peerPrefix = "${packet.senderId}_"
+            val peerSessions = inboundSessions.keys.filter { it.startsWith(peerPrefix) }
+            if (peerSessions.size >= MAX_INBOUND_SESSIONS_PER_PEER) {
+                val oldestKey = peerSessions.minByOrNull { inboundSessions[it]?.lastActivityMs ?: 0L }
+                if (oldestKey != null) {
+                    val evicted = inboundSessions.remove(oldestKey)
+                    if (evicted != null) {
+                        updateTransferState(
+                            evicted.mediaId,
+                            TransferState.FAILED,
+                            false,
+                            evicted.chunks.size,
+                            evicted.totalChunks,
+                            0L,
+                            evicted.totalSizeBytes.toLong(),
+                            0L,
+                            "Evicted by per-peer concurrent session limit"
+                        )
+                        scope.launch {
+                            try {
+                                database.messageDao().updateStatus(evicted.mediaId.toString(), MessageStatus.FAILED)
+                            } catch (_: Exception) {}
+                        }
+                        Log.d(tag, "Evicted oldest inbound media session $oldestKey for peer ${packet.senderId}")
+                    }
+                }
+            }
+
+            if (inboundSessions.size >= MAX_TOTAL_INBOUND_SESSIONS) {
+                val oldestGlobalKey = inboundSessions.keys.minByOrNull { inboundSessions[it]?.lastActivityMs ?: 0L }
+                if (oldestGlobalKey != null) {
+                    val evicted = inboundSessions.remove(oldestGlobalKey)
+                    if (evicted != null) {
+                        updateTransferState(
+                            evicted.mediaId,
+                            TransferState.FAILED,
+                            false,
+                            evicted.chunks.size,
+                            evicted.totalChunks,
+                            0L,
+                            evicted.totalSizeBytes.toLong(),
+                            0L,
+                            "Evicted by global concurrent session limit"
+                        )
+                        scope.launch {
+                            try {
+                                database.messageDao().updateStatus(evicted.mediaId.toString(), MessageStatus.FAILED)
+                            } catch (_: Exception) {}
+                        }
+                        Log.d(tag, "Evicted oldest global inbound media session $oldestGlobalKey")
+                    }
+                }
+            }
+        }
+
         val session = InboundMediaSession(
             mediaId = mediaId,
             mediaType = mediaType,
@@ -1384,5 +1443,10 @@ class MediaTransferManager(
             MediaType.FILE -> if (originalFileName.isNotBlank()) "📄 $originalFileName" else "📄 Document"
             MediaType.NONE -> "Message"
         }
+    }
+
+    companion object {
+        const val MAX_INBOUND_SESSIONS_PER_PEER = 4
+        const val MAX_TOTAL_INBOUND_SESSIONS = 16
     }
 }

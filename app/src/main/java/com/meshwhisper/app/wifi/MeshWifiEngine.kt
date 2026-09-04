@@ -41,6 +41,7 @@ class MeshWifiEngine(private val context: Context) {
         const val UDP_DISCOVERY_PORT = 42425
         const val TCP_DATA_PORT = 42426
         const val MAX_WIFI_PACKETS_PER_SEC = 50
+        const val MAX_CONCURRENT_WIFI_CONNECTIONS = 5
         private val BEACON_MAGIC = byteArrayOf(0x4D, 0x57, 0x49, 0x46) // 'MWIF'
         private const val MAX_PACKET_SIZE = 10 * 1024 * 1024 // 10MB max stream frame
     }
@@ -247,8 +248,13 @@ class MeshWifiEngine(private val context: Context) {
                     try {
                         val clientSocket = server.accept()
                         clientSocket.tcpNoDelay = true
-                        clientSocket.soTimeout = 0
                         val remoteIp = clientSocket.inetAddress.hostAddress ?: "unknown"
+                        if (activePeers.size >= MAX_CONCURRENT_WIFI_CONNECTIONS) {
+                            Log.d(tag, "Wi-Fi TCP connection limit ($MAX_CONCURRENT_WIFI_CONNECTIONS) reached. Rejecting incoming connection from $remoteIp")
+                            try { clientSocket.close() } catch (_: Exception) {}
+                            continue
+                        }
+                        clientSocket.soTimeout = 0
                         Log.i(tag, "Incoming TCP connection from $remoteIp")
                         handleIncomingTcpConnection(clientSocket, remoteIp)
                     } catch (e: Exception) {
@@ -264,6 +270,11 @@ class MeshWifiEngine(private val context: Context) {
 
     private fun handleIncomingTcpConnection(socket: Socket, remoteIp: String) {
         scope.launch {
+            if (activePeers.size >= MAX_CONCURRENT_WIFI_CONNECTIONS) {
+                Log.d(tag, "Wi-Fi TCP connection limit ($MAX_CONCURRENT_WIFI_CONNECTIONS) reached in worker. Closing connection from $remoteIp")
+                try { socket.close() } catch (_: Exception) {}
+                return@launch
+            }
             var peerNodeId: Long? = null
             try {
                 val inStream = DataInputStream(socket.getInputStream())
@@ -369,8 +380,12 @@ class MeshWifiEngine(private val context: Context) {
             if (peerId == myNodeId) return
 
             // If not connected to this peer, connect via TCP client
-            if (!activePeers.containsKey(peerId)) {
-                connectToPeer(peerId, senderIp, tcpPort)
+            if (activePeers.size < MAX_CONCURRENT_WIFI_CONNECTIONS) {
+                if (!activePeers.containsKey(peerId)) {
+                    connectToPeer(peerId, senderIp, tcpPort)
+                }
+            } else {
+                Log.d(tag, "Wi-Fi connection limit ($MAX_CONCURRENT_WIFI_CONNECTIONS) reached. Peer 0x${String.format("%016X", peerId)} will communicate via mesh flood relay.")
             }
         } else {
             // Raw MeshPacket broadcast over UDP
@@ -379,6 +394,10 @@ class MeshWifiEngine(private val context: Context) {
     }
 
     private fun connectToPeer(peerId: Long, ip: String, tcpPort: Int) {
+        if (activePeers.size >= MAX_CONCURRENT_WIFI_CONNECTIONS) {
+            Log.d(tag, "Wi-Fi TCP connection limit ($MAX_CONCURRENT_WIFI_CONNECTIONS) reached. Skipping outbound connection to $ip:$tcpPort")
+            return
+        }
         scope.launch {
             try {
                 Log.i(tag, "Attempting outbound TCP connection to peer 0x${String.format("%016X", peerId)} at $ip:$tcpPort")

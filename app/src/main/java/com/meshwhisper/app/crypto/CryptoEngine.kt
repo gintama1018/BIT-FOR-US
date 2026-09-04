@@ -186,8 +186,10 @@ class CryptoEngine private constructor(private val context: Context) : SecureKey
         this.alias = alias
     }
 
-    override fun readPublicChannelKey(): ByteArray? = publicChannelKey
-    override fun writePublicChannelKey(key: ByteArray) {}
+    override fun readPublicChannelKey(): ByteArray? = getActiveBroadcastKey()
+    override fun writePublicChannelKey(key: ByteArray) {
+        cachedActiveChannelKey = key
+    }
 
     override fun clearAll() {
         resetIdentityKeys()
@@ -201,6 +203,100 @@ class CryptoEngine private constructor(private val context: Context) : SecureKey
 
     val publicChannelKey: ByteArray by lazy {
         PureCryptoEngine.derivePublicChannelKey()
+    }
+
+    private val _activeChannelNameFlow = MutableStateFlow(
+        prefs.getString(PREF_ACTIVE_CHANNEL_NAME, DEFAULT_PUBLIC_CHANNEL_NAME) ?: DEFAULT_PUBLIC_CHANNEL_NAME
+    )
+    val activeChannelNameFlow: StateFlow<String> = _activeChannelNameFlow.asStateFlow()
+
+    private val _isChannelConfidentialFlow = MutableStateFlow(
+        !loadEncryptedChannelPassphrase().isNullOrBlank()
+    )
+    val isChannelConfidentialFlow: StateFlow<Boolean> = _isChannelConfidentialFlow.asStateFlow()
+
+    var activeChannelName: String
+        get() = _activeChannelNameFlow.value
+        private set(value) {
+            _activeChannelNameFlow.value = value
+            prefs.edit().putString(PREF_ACTIVE_CHANNEL_NAME, value).apply()
+        }
+
+    var activeChannelPassphrase: String?
+        get() = loadEncryptedChannelPassphrase()
+        private set(value) {
+            saveEncryptedChannelPassphrase(value)
+            _isChannelConfidentialFlow.value = !value.isNullOrBlank()
+        }
+
+    @Volatile
+    private var cachedActiveChannelKey: ByteArray? = null
+
+    fun setActiveChannel(name: String, passphrase: String?) {
+        val cleanName = name.trim().ifEmpty { DEFAULT_PUBLIC_CHANNEL_NAME }
+        val cleanPass = passphrase?.trim()?.ifEmpty { null }
+        activeChannelName = cleanName
+        activeChannelPassphrase = cleanPass
+        cachedActiveChannelKey = if (cleanPass != null) {
+            PureCryptoEngine.deriveTeamChannelKey(cleanName, cleanPass)
+        } else {
+            publicChannelKey
+        }
+    }
+
+    fun getActiveBroadcastKey(): ByteArray {
+        cachedActiveChannelKey?.let { return it }
+        val pass = activeChannelPassphrase
+        val key = if (!pass.isNullOrBlank()) {
+            PureCryptoEngine.deriveTeamChannelKey(activeChannelName, pass)
+        } else {
+            publicChannelKey
+        }
+        cachedActiveChannelKey = key
+        return key
+    }
+
+    fun isCurrentChannelConfidential(): Boolean = _isChannelConfidentialFlow.value
+
+    fun resetToPublicEmergencyChannel() {
+        setActiveChannel(DEFAULT_PUBLIC_CHANNEL_NAME, null)
+    }
+
+    fun generateChannelQr(channelName: String, passphrase: String): String {
+        return "meshwhisper://channel?name=${android.net.Uri.encode(channelName)}&pass=${android.net.Uri.encode(passphrase)}"
+    }
+
+    private fun saveEncryptedChannelPassphrase(passphrase: String?) {
+        if (passphrase == null) {
+            prefs.edit()
+                .remove(PREF_ENCRYPTED_CHANNEL_PASSPHRASE)
+                .remove(PREF_ENCRYPTED_CHANNEL_IV)
+                .apply()
+            return
+        }
+        try {
+            val (ciphertext, iv) = encryptWithKeystore(passphrase.toByteArray(Charsets.UTF_8))
+            prefs.edit()
+                .putString(PREF_ENCRYPTED_CHANNEL_PASSPHRASE, bytesToHex(ciphertext))
+                .putString(PREF_ENCRYPTED_CHANNEL_IV, bytesToHex(iv))
+                .apply()
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "Failed to encrypt channel passphrase in Keystore", e)
+        }
+    }
+
+    private fun loadEncryptedChannelPassphrase(): String? {
+        val encHex = prefs.getString(PREF_ENCRYPTED_CHANNEL_PASSPHRASE, null) ?: return null
+        val ivHex = prefs.getString(PREF_ENCRYPTED_CHANNEL_IV, null) ?: return null
+        return try {
+            val ciphertext = hexToBytes(encHex)
+            val iv = hexToBytes(ivHex)
+            val plainBytes = decryptWithKeystore(ciphertext, iv)
+            String(plainBytes, Charsets.UTF_8)
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "Failed to decrypt channel passphrase from Keystore", e)
+            null
+        }
     }
 
     fun getEpochForTimestamp(timestampSec: Long): Long = PureCryptoEngine.getEpochForTimestamp(timestampSec)
@@ -222,11 +318,15 @@ class CryptoEngine private constructor(private val context: Context) : SecureKey
 
     fun resetIdentityKeys() {
         clearAllSessionKeys()
+        resetToPublicEmergencyChannel()
         prefs.edit()
             .remove(PREF_PRIVATE_KEY_ENC)
             .remove(PREF_PRIVATE_KEY_IV)
             .remove(PREF_PUBLIC_KEY)
             .remove(PREF_LEGACY_PRIVATE_KEY)
+            .remove(PREF_ACTIVE_CHANNEL_NAME)
+            .remove(PREF_ENCRYPTED_CHANNEL_PASSPHRASE)
+            .remove(PREF_ENCRYPTED_CHANNEL_IV)
             .commit() // Synchronous flush to prevent race before killProcess
     }
 
@@ -274,6 +374,10 @@ class CryptoEngine private constructor(private val context: Context) : SecureKey
         private const val PREF_LEGACY_PRIVATE_KEY = "identity_private_key_hex"
         private const val PREF_PUBLIC_KEY = "identity_public_key_hex"
         private const val PREF_NODE_ALIAS = "node_alias"
+        const val DEFAULT_PUBLIC_CHANNEL_NAME = "Public Emergency Channel"
+        private const val PREF_ACTIVE_CHANNEL_NAME = "active_channel_name"
+        private const val PREF_ENCRYPTED_CHANNEL_PASSPHRASE = "enc_channel_pass"
+        private const val PREF_ENCRYPTED_CHANNEL_IV = "enc_channel_iv"
 
         @Volatile
         private var INSTANCE: CryptoEngine? = null

@@ -99,8 +99,15 @@ dependencies {
     // Cryptography (Pure Java X25519 & HKDF via BouncyCastle)
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
 
-    // ZXing for QR Code generation (Identity QR)
+    // ZXing for QR Code generation and barcode decoding
     implementation("com.google.zxing:core:3.5.3")
+
+    // CameraX for Live In-App QR Code Viewfinder & Scanner
+    val cameraVersion = "1.4.1"
+    implementation("androidx.camera:camera-core:$cameraVersion")
+    implementation("androidx.camera:camera-camera2:$cameraVersion")
+    implementation("androidx.camera:camera-lifecycle:$cameraVersion")
+    implementation("androidx.camera:camera-view:$cameraVersion")
 
     // Testing
     testImplementation("junit:junit:4.13.2")

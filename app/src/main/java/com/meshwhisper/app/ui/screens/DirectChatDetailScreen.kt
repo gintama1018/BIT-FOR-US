@@ -30,11 +30,14 @@ import com.meshwhisper.app.data.model.MediaType
 import com.meshwhisper.app.data.model.MessageEntity
 import com.meshwhisper.app.data.model.MessageStatus
 import com.meshwhisper.app.media.MediaCompressor
+import com.meshwhisper.app.ui.components.CameraQrScannerDialog
 import com.meshwhisper.app.ui.components.ImageMessageBubble
 import com.meshwhisper.app.ui.components.NodeAvatar
 import com.meshwhisper.app.ui.components.VoiceNoteBubble
 import com.meshwhisper.app.ui.theme.*
 import com.meshwhisper.app.ui.viewmodel.MeshViewModel
+import com.meshwhisper.app.ui.viewmodel.QrScanResult
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -55,6 +58,8 @@ fun DirectChatDetailScreen(
 
     var textInput by remember { mutableStateOf("") }
     var showSafetyNumberDialog by remember { mutableStateOf(false) }
+    var showCameraScanner by remember { mutableStateOf(false) }
+    val coroutineScope = rememberCoroutineScope()
     val listState = rememberLazyListState()
 
     // Safety Number Verification Dialog (Cryptographic MITM Defense)
@@ -97,6 +102,16 @@ fun DirectChatDetailScreen(
                             color = SaharaPrimary,
                             modifier = Modifier.padding(12.dp)
                         )
+                    }
+                    Button(
+                        onClick = { showCameraScanner = true },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Scan Peer's Screen with Camera")
                     }
                     if (isVerified) {
                         Surface(
@@ -147,6 +162,43 @@ fun DirectChatDetailScreen(
                     }
                 }
             }
+        )
+    }
+
+    // Live Camera QR Scanner for Safety Number Verification
+    if (showCameraScanner) {
+        CameraQrScannerDialog(
+            onDismissRequest = { showCameraScanner = false },
+            onQrCodeScanned = { scannedContent ->
+                showCameraScanner = false
+                coroutineScope.launch {
+                    when (val res = viewModel.handleScannedQrContent(scannedContent, targetPeerNodeId = peerNodeId)) {
+                        is QrScanResult.PeerVerified -> {
+                            showSafetyNumberDialog = false
+                            android.widget.Toast.makeText(
+                                context,
+                                "✓ Identity Verified! End-to-end cryptographic link authenticated with ${peer?.alias ?: "peer"}.",
+                                android.widget.Toast.LENGTH_LONG
+                            ).show()
+                        }
+                        is QrScanResult.KeyMismatch -> {
+                            android.widget.Toast.makeText(
+                                context,
+                                "⚠️ MITM WARNING: Scanned QR code does not match ${peer?.alias ?: "peer"}'s public key!",
+                                android.widget.Toast.LENGTH_LONG
+                            ).show()
+                        }
+                        is QrScanResult.ChannelConfigured -> {
+                            android.widget.Toast.makeText(context, "Configured channel: ${res.channelName}", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                        is QrScanResult.Invalid -> {
+                            android.widget.Toast.makeText(context, res.reason, android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            },
+            title = "Verify Safety Number",
+            subtitle = "Point camera at ${peer?.alias ?: "peer"}'s screen to authenticate public key"
         )
     }
 

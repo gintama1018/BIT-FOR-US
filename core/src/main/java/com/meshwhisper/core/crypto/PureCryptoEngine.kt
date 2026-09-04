@@ -18,7 +18,9 @@ import java.security.SecureRandom
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.Cipher
+import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 
 data class EncryptedResult(
@@ -45,8 +47,10 @@ data class EncryptedResult(
  */
 object PureCryptoEngine {
 
-    val PUBLIC_CHANNEL_SALT = "MESHWHISPER_PUBLIC_SALT_9A8B7C6D5E".toByteArray(Charsets.UTF_8)
+    val PUBLIC_EMERGENCY_CHANNEL_SALT = "MESHWHISPER_PUBLIC_SALT_9A8B7C6D5E".toByteArray(Charsets.UTF_8)
+    val PUBLIC_CHANNEL_SALT = PUBLIC_EMERGENCY_CHANNEL_SALT
     val HKDF_DM_SALT = "MESHWHISPER_DM_SALT_1F2E3D4C5B6A".toByteArray(Charsets.UTF_8)
+    private const val PUBLIC_EMERGENCY_IKM = "MESHWHISPER_PUBLIC_EMERGENCY_DISASTER_ROOT_V1"
 
     private val secureRandom = SecureRandom()
     private const val MAX_SESSION_KEY_CACHE_SIZE = 256
@@ -200,10 +204,46 @@ object PureCryptoEngine {
     }
 
     /**
-     * Derives shared Public Channel AES-256 key.
+     * Derives shared Public Emergency Channel AES-256 key.
+     * Open disaster broadcast channel for search & rescue, beacons, and civilian alerts.
+     * Spoof prevention is cryptographically guaranteed via Ed25519 identity signatures.
      */
     fun derivePublicChannelKey(): ByteArray {
-        return deriveKeyFromMasterSalt(PUBLIC_CHANNEL_SALT, "MESHWHISPER_PUBLIC_V1".toByteArray(Charsets.UTF_8))
+        return derivePublicEmergencyChannelKey()
+    }
+
+    fun derivePublicEmergencyChannelKey(): ByteArray {
+        return deriveKeyFromMasterSalt(PUBLIC_CHANNEL_SALT, "MESHWHISPER_PUBLIC_EMERGENCY_V1".toByteArray(Charsets.UTF_8))
+    }
+
+    /**
+     * Derives a confidential 256-bit AES-GCM channel key for private tactical groups,
+     * first responders, and custom mesh channels using PBKDF2-HMAC-SHA256 (100,000 iterations).
+     *
+     * @param channelName Name of the channel/team (e.g. "TEAM_ALPHA")
+     * @param passphrase Secret passphrase known only to authorized team members
+     * @param salt Optional 16-byte custom salt; defaults to channel-specific SHA-256 derived salt
+     */
+    fun deriveTeamChannelKey(
+        channelName: String,
+        passphrase: String,
+        salt: ByteArray? = null
+    ): ByteArray {
+        val actualSalt = salt ?: deriveChannelSalt(channelName)
+        val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+        val spec = PBEKeySpec(passphrase.toCharArray(), actualSalt, 100_000, 256)
+        return factory.generateSecret(spec).encoded
+    }
+
+    fun deriveChannelSalt(channelName: String): ByteArray {
+        val digest = SHA256Digest()
+        val input = "MESHWHISPER_TACTICAL_CHANNEL_SALT_V1:$channelName".toByteArray(Charsets.UTF_8)
+        digest.update(input, 0, input.size)
+        val hash = ByteArray(32)
+        digest.doFinal(hash, 0)
+        val outSalt = ByteArray(16)
+        System.arraycopy(hash, 0, outSalt, 0, 16)
+        return outSalt
     }
 
     fun invalidateSessionKey(peerNodeId: Long) {
@@ -325,7 +365,7 @@ object PureCryptoEngine {
 
     fun deriveKeyFromMasterSalt(salt: ByteArray, info: ByteArray): ByteArray {
         val hkdf = HKDFBytesGenerator(SHA256Digest())
-        hkdf.init(HKDFParameters("MASTER_ROOT_KEY_MATERIAL".toByteArray(Charsets.UTF_8), salt, info))
+        hkdf.init(HKDFParameters(PUBLIC_EMERGENCY_IKM.toByteArray(Charsets.UTF_8), salt, info))
         val key = ByteArray(32)
         hkdf.generateBytes(key, 0, 32)
         return key

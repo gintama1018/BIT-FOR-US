@@ -32,6 +32,17 @@ import com.meshwhisper.app.ui.components.SaharaTopAppBar
 import com.meshwhisper.app.ui.components.VoiceNoteBubble
 import com.meshwhisper.app.ui.theme.*
 import com.meshwhisper.app.ui.viewmodel.MeshViewModel
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
+import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.QrCode
+import androidx.compose.material.icons.filled.QrCodeScanner
+import com.meshwhisper.app.ui.components.CameraQrScannerDialog
+import com.meshwhisper.app.ui.util.QrCodeGenerator
+import com.meshwhisper.app.ui.viewmodel.QrScanResult
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -44,9 +55,18 @@ fun PublicMeshScreen(
     val messages by viewModel.broadcastMessages.collectAsState()
     val connectedNodes by viewModel.connectedPeersCount.collectAsState()
     val activeSos by viewModel.activeSosAlert.collectAsState()
+    val activeChannelName by viewModel.activeChannelName.collectAsState()
+    val isChannelConfidential by viewModel.isChannelConfidential.collectAsState()
+
     var textInput by remember { mutableStateOf("") }
     var showSosDialog by remember { mutableStateOf(false) }
+    var showChannelConfigDialog by remember { mutableStateOf(false) }
+    var showChannelQrShareDialog by remember { mutableStateOf(false) }
+    var showCameraScanner by remember { mutableStateOf(false) }
+    var channelNameInput by remember(activeChannelName) { mutableStateOf(activeChannelName) }
+    var channelPassphraseInput by remember { mutableStateOf("") }
     var sosCustomText by remember { mutableStateOf("") }
+    val coroutineScope = rememberCoroutineScope()
     val listState = rememberLazyListState()
 
     // Media Pickers
@@ -154,6 +174,75 @@ fun PublicMeshScreen(
             onActionClick = { showSosDialog = true }
         )
 
+        // Tactical Channel Badge & Configuration Trigger
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 4.dp)
+                .clickable {
+                    channelNameInput = activeChannelName
+                    channelPassphraseInput = ""
+                    showChannelConfigDialog = true
+                },
+            colors = CardDefaults.cardColors(
+                containerColor = if (isChannelConfidential) Color(0xFF1B5E20).copy(alpha = 0.25f) else SaharaSurfaceContainerLowest
+            ),
+            shape = RoundedCornerShape(12.dp),
+            border = androidx.compose.foundation.BorderStroke(
+                1.dp,
+                if (isChannelConfidential) Color(0xFF00E676).copy(alpha = 0.5f) else SaharaOutlineVariant.copy(alpha = 0.4f)
+            )
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isChannelConfidential) Icons.Default.Lock else Icons.Default.CellTower,
+                        contentDescription = null,
+                        tint = if (isChannelConfidential) Color(0xFF00E676) else SaharaPrimary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Column {
+                        Text(
+                            text = activeChannelName,
+                            color = SaharaOnSurface,
+                            fontFamily = EBGaramondFamily,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = if (isChannelConfidential) "Private Team Channel • 256-bit AES-GCM" else "Public Emergency Channel • Open Broadcast",
+                            color = if (isChannelConfidential) Color(0xFF00E676) else SaharaOnSurfaceVariant,
+                            fontFamily = ManropeFamily,
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "Tune",
+                        color = SaharaPrimary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Icon(
+                        imageVector = Icons.Default.ChevronRight,
+                        contentDescription = null,
+                        tint = SaharaPrimary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+        }
+
         Box(
             modifier = Modifier
                 .weight(1f)
@@ -243,6 +332,213 @@ fun PublicMeshScreen(
                     .padding(horizontal = 16.dp, vertical = 8.dp)
             )
         }
+    }
+
+    // Dynamic Channel Configuration Modal
+    if (showChannelConfigDialog) {
+        AlertDialog(
+            onDismissRequest = { showChannelConfigDialog = false },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(
+                        imageVector = if (isChannelConfidential) Icons.Default.Lock else Icons.Default.CellTower,
+                        contentDescription = null,
+                        tint = if (isChannelConfidential) Color(0xFF00E676) else SaharaPrimary
+                    )
+                    Text(
+                        text = "Mesh Channel Cipher",
+                        color = SaharaPrimary,
+                        fontFamily = EBGaramondFamily,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "Configure custom private channels for tactical teams or first responders. Key is derived locally using PBKDF2-HMAC-SHA256 (100k iterations).",
+                        color = SaharaOnSurfaceVariant,
+                        fontSize = 12.sp,
+                        fontFamily = ManropeFamily
+                    )
+                    OutlinedTextField(
+                        value = channelNameInput,
+                        onValueChange = { channelNameInput = it },
+                        label = { Text("Channel / Team Name") },
+                        placeholder = { Text("e.g. TEAM_ALPHA, TRIAGE_01") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = channelPassphraseInput,
+                        onValueChange = { channelPassphraseInput = it },
+                        label = { Text("Channel Secret Passphrase") },
+                        placeholder = { Text("Leave blank for open public emergency") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                showChannelConfigDialog = false
+                                showCameraScanner = true
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Icon(Icons.Default.QrCodeScanner, null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Scan QR", fontSize = 12.sp)
+                        }
+                        if (isChannelConfidential) {
+                            OutlinedButton(
+                                onClick = {
+                                    showChannelConfigDialog = false
+                                    showChannelQrShareDialog = true
+                                },
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Icon(Icons.Default.QrCode, null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Share QR", fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val name = channelNameInput.trim()
+                        val pass = channelPassphraseInput.trim()
+                        if (name.isNotEmpty()) {
+                            if (pass.isNotEmpty()) {
+                                viewModel.setActiveChannel(name, pass)
+                                android.widget.Toast.makeText(context, "✓ Joined Encrypted Team Channel: $name", android.widget.Toast.LENGTH_SHORT).show()
+                            } else {
+                                viewModel.setActiveChannel(name, null)
+                                android.widget.Toast.makeText(context, "✓ Joined Open Channel: $name", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        showChannelConfigDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = SaharaPrimary)
+                ) {
+                    Text("Apply & Activate")
+                }
+            },
+            dismissButton = {
+                if (isChannelConfidential) {
+                    TextButton(onClick = {
+                        viewModel.resetToPublicEmergencyChannel()
+                        showChannelConfigDialog = false
+                        android.widget.Toast.makeText(context, "Reverted to Public Emergency Channel", android.widget.Toast.LENGTH_SHORT).show()
+                    }) {
+                        Text("Reset to Public", color = SaharaError)
+                    }
+                } else {
+                    TextButton(onClick = { showChannelConfigDialog = false }) {
+                        Text("Cancel", color = SaharaOnSurfaceVariant)
+                    }
+                }
+            },
+            containerColor = SaharaSurfaceContainerLowest,
+            shape = RoundedCornerShape(16.dp)
+        )
+    }
+
+    // Share Channel QR Dialog
+    if (showChannelQrShareDialog) {
+        val channelQrContent = viewModel.getChannelQrContent()
+        val channelQrBitmap = remember(channelQrContent) {
+            QrCodeGenerator.generateQrBitmap(channelQrContent, 300)
+        }
+        AlertDialog(
+            onDismissRequest = { showChannelQrShareDialog = false },
+            title = {
+                Text(
+                    text = "Share Team Channel",
+                    fontFamily = EBGaramondFamily,
+                    fontWeight = FontWeight.Bold,
+                    color = SaharaPrimary
+                )
+            },
+            text = {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                    if (channelQrBitmap != null) {
+                        Image(
+                            bitmap = channelQrBitmap,
+                            contentDescription = "Channel QR",
+                            modifier = Modifier
+                                .size(220.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color.White)
+                                .padding(8.dp)
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        text = "Have team members scan this code to join \"$activeChannelName\" with identical encryption keys.",
+                        fontSize = 12.sp,
+                        color = SaharaOnSurfaceVariant,
+                        fontFamily = ManropeFamily,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showChannelQrShareDialog = false }) {
+                    Text("Done", color = SaharaPrimary, fontWeight = FontWeight.Bold)
+                }
+            },
+            containerColor = SaharaSurfaceContainerLowest,
+            shape = RoundedCornerShape(16.dp)
+        )
+    }
+
+    // Live Camera QR Scanner Dialog
+    if (showCameraScanner) {
+        CameraQrScannerDialog(
+            onDismissRequest = { showCameraScanner = false },
+            onQrCodeScanned = { scannedContent ->
+                showCameraScanner = false
+                coroutineScope.launch {
+                    when (val res = viewModel.handleScannedQrContent(scannedContent)) {
+                        is QrScanResult.ChannelConfigured -> {
+                            android.widget.Toast.makeText(
+                                context,
+                                "✓ Joined Encrypted Channel: ${res.channelName}",
+                                android.widget.Toast.LENGTH_LONG
+                            ).show()
+                        }
+                        is QrScanResult.PeerVerified -> {
+                            android.widget.Toast.makeText(
+                                context,
+                                "✓ Authenticated Peer: ${res.alias} (Safety Number Verified)",
+                                android.widget.Toast.LENGTH_LONG
+                            ).show()
+                        }
+                        is QrScanResult.KeyMismatch -> {
+                            android.widget.Toast.makeText(
+                                context,
+                                "⚠️ MITM ALERT: Key does not match claimed peer!",
+                                android.widget.Toast.LENGTH_LONG
+                            ).show()
+                        }
+                        is QrScanResult.Invalid -> {
+                            android.widget.Toast.makeText(context, res.reason, android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            },
+            title = "Scan Channel or Peer QR",
+            subtitle = "Point camera at channel QR code or peer screen"
+        )
     }
 }
 

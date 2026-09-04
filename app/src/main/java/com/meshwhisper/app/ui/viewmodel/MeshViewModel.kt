@@ -239,6 +239,82 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // Dynamic Mesh Channel Configuration & Key Derivation
+    val activeChannelName: StateFlow<String> = cryptoEngine.activeChannelNameFlow
+    val isChannelConfidential: StateFlow<Boolean> = cryptoEngine.isChannelConfidentialFlow
+
+    fun setActiveChannel(name: String, passphrase: String?) {
+        cryptoEngine.setActiveChannel(name, passphrase)
+    }
+
+    fun resetToPublicEmergencyChannel() {
+        cryptoEngine.resetToPublicEmergencyChannel()
+    }
+
+    fun getChannelQrContent(): String {
+        return cryptoEngine.generateChannelQr(cryptoEngine.activeChannelName, cryptoEngine.activeChannelPassphrase ?: "")
+    }
+
+    suspend fun handleScannedQrContent(
+        content: String,
+        targetPeerNodeId: Long? = null
+    ): QrScanResult {
+        val trimmed = content.trim()
+        val uri = try { android.net.Uri.parse(trimmed) } catch (_: Exception) { null }
+            ?: return QrScanResult.Invalid("Unparseable QR code format")
+
+        if (uri.scheme != "meshwhisper") {
+            return QrScanResult.Invalid("Not a valid MeshWhisper QR format")
+        }
+
+        return when (uri.host) {
+            "node" -> {
+                val idHex = uri.getQueryParameter("id")
+                val alias = uri.getQueryParameter("alias") ?: "Verified Peer"
+                val pubHex = uri.getQueryParameter("pub")
+                if (!idHex.isNullOrBlank() && !pubHex.isNullOrBlank()) {
+                    try {
+                        val nodeId = java.lang.Long.parseUnsignedLong(idHex, 16)
+                        val pubBytes = com.meshwhisper.app.crypto.CryptoEngine.hexToBytes(pubHex)
+                        val derivedNodeId = com.meshwhisper.app.crypto.CryptoEngine.deriveNodeId(pubBytes)
+                        if (derivedNodeId != nodeId) {
+                            return QrScanResult.Invalid("Security Warning: Claimed Node ID does not match Public Key!")
+                        }
+
+                        if (targetPeerNodeId != null && targetPeerNodeId != nodeId) {
+                            return QrScanResult.KeyMismatch(
+                                claimedNodeId = nodeId,
+                                expectedNodeId = targetPeerNodeId,
+                                alias = alias
+                            )
+                        }
+
+                        registerScannedPeer(nodeId, alias, pubHex)
+                        database.peerDao().setPeerVerified(nodeId, true)
+                        val fp = com.meshwhisper.app.crypto.CryptoEngine.generateFingerprint(pubBytes)
+                        QrScanResult.PeerVerified(nodeId, alias, pubHex, fp)
+                    } catch (e: Exception) {
+                        QrScanResult.Invalid("Invalid cryptographic parameters in QR code")
+                    }
+                } else {
+                    QrScanResult.Invalid("Incomplete peer identity parameters in QR")
+                }
+            }
+            "channel" -> {
+                val channelName = uri.getQueryParameter("name") ?: "Team Channel"
+                val passphrase = uri.getQueryParameter("pass")
+                if (!passphrase.isNullOrBlank()) {
+                    setActiveChannel(channelName, passphrase)
+                    QrScanResult.ChannelConfigured(channelName, isConfidential = true)
+                } else {
+                    setActiveChannel(channelName, null)
+                    QrScanResult.ChannelConfigured(channelName, isConfidential = false)
+                }
+            }
+            else -> QrScanResult.Invalid("Unknown MeshWhisper action: ${uri.host}")
+        }
+    }
+
     fun togglePeerVerification(peerNodeId: Long, isVerified: Boolean) {
         viewModelScope.launch {
             database.peerDao().setPeerVerified(peerNodeId, isVerified)
@@ -595,4 +671,26 @@ data class SosAlertEvent(
 ) {
     val isLocationStale: Boolean
         get() = fixTimestamp != null && (System.currentTimeMillis() - fixTimestamp) > 10 * 60 * 1000L
+}
+
+sealed class QrScanResult {
+    data class PeerVerified(
+        val nodeId: Long,
+        val alias: String,
+        val publicKeyHex: String,
+        val fingerprint: String
+    ) : QrScanResult()
+
+    data class ChannelConfigured(
+        val channelName: String,
+        val isConfidential: Boolean
+    ) : QrScanResult()
+
+    data class KeyMismatch(
+        val claimedNodeId: Long,
+        val expectedNodeId: Long,
+        val alias: String
+    ) : QrScanResult()
+
+    data class Invalid(val reason: String) : QrScanResult()
 }

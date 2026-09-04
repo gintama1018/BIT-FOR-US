@@ -10,15 +10,20 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.QrCode2
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import com.meshwhisper.app.ui.components.CameraQrScannerDialog
+import com.meshwhisper.app.ui.viewmodel.QrScanResult
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -56,8 +61,10 @@ fun IdentitySettingsScreen(
     var aliasInput by remember { mutableStateOf(myAlias) }
     var showQrDialog by remember { mutableStateOf(false) }
     var showImportContactDialog by remember { mutableStateOf(false) }
+    var showCameraScanner by remember { mutableStateOf(false) }
     var importContactInput by remember { mutableStateOf("") }
     var showPanicDialog by remember { mutableStateOf(false) }
+    val coroutineScope = rememberCoroutineScope()
 
     val avatarPickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         contract = androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia()
@@ -126,15 +133,27 @@ fun IdentitySettingsScreen(
                                 fontWeight = FontWeight.Bold,
                                 letterSpacing = 0.6.sp
                             )
-                            IconButton(
-                                onClick = { showQrDialog = true },
-                                modifier = Modifier.size(32.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.QrCode2,
-                                    contentDescription = "Show QR",
-                                    tint = SaharaPrimary
-                                )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(
+                                    onClick = { showCameraScanner = true },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.QrCodeScanner,
+                                        contentDescription = "Scan Peer QR",
+                                        tint = SaharaPrimary
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { showQrDialog = true },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.QrCode2,
+                                        contentDescription = "Show QR",
+                                        tint = SaharaPrimary
+                                    )
+                                }
                             }
                         }
 
@@ -547,6 +566,20 @@ fun IdentitySettingsScreen(
                         textAlign = TextAlign.Center,
                         lineHeight = 17.sp
                     )
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Button(
+                        onClick = {
+                            showQrDialog = false
+                            showCameraScanner = true
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = SaharaPrimary),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Scan Peer's Screen with Camera")
+                    }
                 }
             },
             containerColor = SaharaSurfaceContainerLowest,
@@ -569,8 +602,20 @@ fun IdentitySettingsScreen(
             },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedButton(
+                        onClick = {
+                            showImportContactDialog = false
+                            showCameraScanner = true
+                        },
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Scan Screen with Camera")
+                    }
                     Text(
-                        text = "Paste a contact URI (meshwhisper://node?id=...&alias=...&pub=...) scanned or shared from another device to establish an authenticated, verified peer link.",
+                        text = "Or paste a contact URI (meshwhisper://node?id=...&alias=...&pub=...) shared from another device:",
                         color = SaharaOnSurfaceVariant,
                         fontSize = 12.sp,
                         fontFamily = ManropeFamily
@@ -626,6 +671,46 @@ fun IdentitySettingsScreen(
             },
             containerColor = SaharaSurfaceContainerLowest,
             shape = RoundedCornerShape(16.dp)
+        )
+    }
+
+    // Live In-App CameraX QR Scanner Viewfinder Modal
+    if (showCameraScanner) {
+        CameraQrScannerDialog(
+            onDismissRequest = { showCameraScanner = false },
+            onQrCodeScanned = { scannedContent ->
+                showCameraScanner = false
+                coroutineScope.launch {
+                    when (val res = viewModel.handleScannedQrContent(scannedContent)) {
+                        is QrScanResult.PeerVerified -> {
+                            Toast.makeText(
+                                context,
+                                "✓ Authenticated Peer: ${res.alias} (Safety Number Verified)",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                        is QrScanResult.ChannelConfigured -> {
+                            Toast.makeText(
+                                context,
+                                "✓ Joined Channel: ${res.channelName}",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                        is QrScanResult.KeyMismatch -> {
+                            Toast.makeText(
+                                context,
+                                "⚠️ MITM ALERT: Scanned key does not match peer!",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                        is QrScanResult.Invalid -> {
+                            Toast.makeText(context, res.reason, Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            },
+            title = "Scan Peer Identity QR",
+            subtitle = "Point camera at peer screen to verify out-of-band safety numbers"
         )
     }
 

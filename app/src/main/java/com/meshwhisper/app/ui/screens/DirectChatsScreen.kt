@@ -28,9 +28,12 @@ import androidx.compose.ui.unit.sp
 import com.meshwhisper.app.data.model.MediaType
 import com.meshwhisper.app.data.model.MessageEntity
 import com.meshwhisper.app.data.model.PeerEntity
+import com.meshwhisper.app.ui.components.CameraQrScannerDialog
 import com.meshwhisper.app.ui.components.NodeAvatar
 import com.meshwhisper.app.ui.theme.*
 import com.meshwhisper.app.ui.viewmodel.MeshViewModel
+import com.meshwhisper.app.ui.viewmodel.QrScanResult
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -43,9 +46,12 @@ fun DirectChatsScreen(
     val peers by viewModel.peers.collectAsState()
     val connectedNodeIds by viewModel.connectedNodeIds.collectAsState()
     val recentConversations by viewModel.recentConversations.collectAsState()
+    val context = androidx.compose.ui.platform.LocalContext.current
 
-    var isSearchActive by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
+    var isSearchActive by remember { mutableStateOf(false) }
+    var showCameraScanner by remember { mutableStateOf(false) }
+    val coroutineScope = rememberCoroutineScope()
 
     // Map latest messages by peerId
     val recentMap = remember(recentConversations) {
@@ -73,6 +79,47 @@ fun DirectChatsScreen(
             compareByDescending<PeerEntity> { recentMap[it.nodeId]?.timestamp ?: 0L }
                 .thenByDescending { it.isDirect }
                 .thenBy { it.alias }
+        )
+    }
+
+    // Live Camera QR Scanner to Pair and Chat
+    if (showCameraScanner) {
+        CameraQrScannerDialog(
+            onDismissRequest = { showCameraScanner = false },
+            onQrCodeScanned = { scannedContent ->
+                showCameraScanner = false
+                coroutineScope.launch {
+                    when (val res = viewModel.handleScannedQrContent(scannedContent)) {
+                        is QrScanResult.PeerVerified -> {
+                            android.widget.Toast.makeText(
+                                context,
+                                "✓ Verified Contact: ${res.alias}",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                            onOpenChat(res.nodeId)
+                        }
+                        is QrScanResult.ChannelConfigured -> {
+                            android.widget.Toast.makeText(
+                                context,
+                                "✓ Configured Channel: ${res.channelName}",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                        is QrScanResult.KeyMismatch -> {
+                            android.widget.Toast.makeText(
+                                context,
+                                "⚠️ MITM ALERT: Key mismatch!",
+                                android.widget.Toast.LENGTH_LONG
+                            ).show()
+                        }
+                        is QrScanResult.Invalid -> {
+                            android.widget.Toast.makeText(context, res.reason, android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            },
+            title = "Scan Peer to Pair",
+            subtitle = "Point camera at peer's screen to verify keys and start direct chat"
         )
     }
 
@@ -112,21 +159,40 @@ fun DirectChatsScreen(
                         )
                     }
 
-                    IconButton(
-                        onClick = {
-                            isSearchActive = !isSearchActive
-                            if (!isSearchActive) searchQuery = ""
-                        },
-                        modifier = Modifier
-                            .size(38.dp)
-                            .clip(CircleShape)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Icon(
-                            imageVector = if (isSearchActive) Icons.Default.Close else Icons.Default.Search,
-                            contentDescription = "Search Contacts",
-                            tint = if (isSearchActive) SaharaPrimary else SaharaOnSurfaceVariant,
-                            modifier = Modifier.size(22.dp)
-                        )
+                        IconButton(
+                            onClick = { showCameraScanner = true },
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.QrCodeScanner,
+                                contentDescription = "Scan Peer QR",
+                                tint = SaharaPrimary,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+
+                        IconButton(
+                            onClick = {
+                                isSearchActive = !isSearchActive
+                                if (!isSearchActive) searchQuery = ""
+                            },
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                        ) {
+                            Icon(
+                                imageVector = if (isSearchActive) Icons.Default.Close else Icons.Default.Search,
+                                contentDescription = "Search Contacts",
+                                tint = if (isSearchActive) SaharaPrimary else SaharaOnSurfaceVariant,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
                     }
                 }
 

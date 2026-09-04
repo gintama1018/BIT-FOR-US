@@ -395,15 +395,29 @@ class MeshRouter(
     ) {
         logPacket("RX", packet, rawBytes.size, "Broadcast msg from ${packet.senderId}")
 
-        // Decrypt public payload with AAD header verification and Ed25519 sender authentication (P0-2 Fix)
+        // Decrypt broadcast payload with AAD header verification and Ed25519 sender authentication
         try {
-            val decryptedBytes = cryptoEngine.decrypt(
-                ciphertext = packet.payload,
-                authTag = packet.authTag,
-                messageId = packet.messageId,
-                aesKey = cryptoEngine.publicChannelKey,
-                aad = packet.getAuthenticatedHeaderBytes()
-            )
+            val decryptedBytes = try {
+                cryptoEngine.decrypt(
+                    ciphertext = packet.payload,
+                    authTag = packet.authTag,
+                    messageId = packet.messageId,
+                    aesKey = cryptoEngine.getActiveBroadcastKey(),
+                    aad = packet.getAuthenticatedHeaderBytes()
+                )
+            } catch (teamEx: Exception) {
+                if (cryptoEngine.isCurrentChannelConfidential()) {
+                    cryptoEngine.decrypt(
+                        ciphertext = packet.payload,
+                        authTag = packet.authTag,
+                        messageId = packet.messageId,
+                        aesKey = cryptoEngine.publicChannelKey,
+                        aad = packet.getAuthenticatedHeaderBytes()
+                    )
+                } else {
+                    throw teamEx
+                }
+            }
 
             val sender = database.peerDao().getPeerById(packet.senderId)
             val (text, isValidSender) = if (decryptedBytes.size >= 64) {
@@ -1001,7 +1015,7 @@ class MeshRouter(
         val encResult = cryptoEngine.encrypt(
             plaintext = signedPlaintext,
             messageId = msgId,
-            aesKey = cryptoEngine.publicChannelKey,
+            aesKey = cryptoEngine.getActiveBroadcastKey(),
             aad = aad
         )
 

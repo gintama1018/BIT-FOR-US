@@ -363,5 +363,58 @@ class MultiHopRelayAndSecurityMeshTest {
         PureCryptoEngine.invalidateSessionKey(0x12345678L)
         PureCryptoEngine.clearAllSessionKeys()
     }
+
+    @Test
+    fun testTeamChannelKeyDerivationAndIsolation() {
+        val channelAlpha = "TEAM_ALPHA"
+        val channelBravo = "TEAM_BRAVO"
+        val passphraseAlpha = "TacticalSecretAlpha2026!"
+        val passphraseBravo = "TacticalSecretBravo2026!"
+
+        val keyAlpha1 = PureCryptoEngine.deriveTeamChannelKey(channelAlpha, passphraseAlpha)
+        val keyAlpha2 = PureCryptoEngine.deriveTeamChannelKey(channelAlpha, passphraseAlpha)
+        val keyBravo = PureCryptoEngine.deriveTeamChannelKey(channelBravo, passphraseBravo)
+        val keyAlphaWrongPass = PureCryptoEngine.deriveTeamChannelKey(channelAlpha, "WrongPassword")
+        val publicEmergencyKey = PureCryptoEngine.derivePublicEmergencyChannelKey()
+
+        // 32-byte key length enforcement
+        assertThat(keyAlpha1.size).isEqualTo(32)
+        assertThat(keyBravo.size).isEqualTo(32)
+        assertThat(publicEmergencyKey.size).isEqualTo(32)
+
+        // Deterministic derivation for identical channel + passphrase
+        assertThat(keyAlpha1).isEqualTo(keyAlpha2)
+
+        // Cryptographic isolation: different passphrases or channel names yield distinct keys
+        assertThat(keyAlpha1).isNotEqualTo(keyBravo)
+        assertThat(keyAlpha1).isNotEqualTo(keyAlphaWrongPass)
+        assertThat(keyAlpha1).isNotEqualTo(publicEmergencyKey)
+
+        // Encrypt on Team Alpha channel, verify Team Bravo cannot decrypt
+        val messageId = UUID.randomUUID()
+        val plaintext = "CONFIDENTIAL: Medic required at sector 4".toByteArray(Charsets.UTF_8)
+        val aad = "TEAM_ALPHA:HEADER".toByteArray(Charsets.UTF_8)
+
+        val encAlpha = PureCryptoEngine.encrypt(plaintext, messageId, keyAlpha1, aad)
+
+        // Authorized peer with Team Alpha key decrypts successfully
+        val decAlpha = PureCryptoEngine.decrypt(encAlpha.ciphertext, encAlpha.authTag, messageId, keyAlpha2, aad)
+        assertThat(String(decAlpha, Charsets.UTF_8)).isEqualTo("CONFIDENTIAL: Medic required at sector 4")
+
+        // Eavesdropper with Team Bravo key or Public Emergency key fails authentication
+        try {
+            PureCryptoEngine.decrypt(encAlpha.ciphertext, encAlpha.authTag, messageId, keyBravo, aad)
+            org.junit.Assert.fail("Eavesdropper on Team Bravo must fail decryption of Team Alpha message")
+        } catch (_: Exception) {
+            // Expected AEAD authentication failure
+        }
+
+        try {
+            PureCryptoEngine.decrypt(encAlpha.ciphertext, encAlpha.authTag, messageId, publicEmergencyKey, aad)
+            org.junit.Assert.fail("Public emergency key must fail decryption of confidential team message")
+        } catch (_: Exception) {
+            // Expected AEAD authentication failure
+        }
+    }
 }
 

@@ -63,20 +63,10 @@ class MeshBleEngine(private val context: Context) {
     private val centralMtus = ConcurrentHashMap<String, Int>()
 
     // Rate limiting for inbound GATT writes (Max 50 writes per second per remote device address)
-    private val writeRateTracker = ConcurrentHashMap<String, MutableList<Long>>()
-    private val maxWritesPerSecond = 50
+    private val rateLimiter = GattWriteRateLimiter(maxWritesPerSecond = 50)
 
     private fun isWriteRateAllowed(address: String): Boolean {
-        val now = System.currentTimeMillis()
-        val timestamps = writeRateTracker.getOrPut(address) { mutableListOf() }
-        synchronized(timestamps) {
-            timestamps.removeAll { now - it > 1000L }
-            if (timestamps.size >= maxWritesPerSecond) {
-                return false
-            }
-            timestamps.add(now)
-            return true
-        }
+        return rateLimiter.isWriteRateAllowed(address)
     }
 
     // Connected peripheral GATT clients (Central role)
@@ -326,7 +316,7 @@ class MeshBleEngine(private val context: Context) {
             gattServer = null
             connectedCentrals.clear()
             centralMtus.clear()
-            writeRateTracker.clear()
+            rateLimiter.clear()
         } catch (e: Exception) {
             Log.e(tag, "Error closing GATT server", e)
         }
@@ -441,7 +431,7 @@ class MeshBleEngine(private val context: Context) {
                 Log.d(tag, "Central disconnected from GATT server: $address")
                 connectedCentrals.remove(address)
                 centralMtus.remove(address)
-                writeRateTracker.remove(address)
+                rateLimiter.remove(address)
                 updatePeerCount()
                 onPeerDisconnectedListener?.invoke(address)
             }
@@ -685,6 +675,12 @@ class MeshBleEngine(private val context: Context) {
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray
         ) {
+            // Client-role ingestion rate limiter check (P5)
+            if (!isWriteRateAllowed(deviceAddress)) {
+                Log.w(tag, "Dropping rate-limited characteristic notification from peripheral: $deviceAddress")
+                return
+            }
+
             val fullPacket = framer.receiveFrame(deviceAddress, value)
             if (fullPacket != null) {
                 scope.launch {
@@ -701,6 +697,13 @@ class MeshBleEngine(private val context: Context) {
             if (characteristic == null) return
             @Suppress("DEPRECATION")
             val value = characteristic.value ?: return
+
+            // Client-role ingestion rate limiter check (P5)
+            if (!isWriteRateAllowed(deviceAddress)) {
+                Log.w(tag, "Dropping rate-limited characteristic notification from peripheral: $deviceAddress")
+                return
+            }
+
             val fullPacket = framer.receiveFrame(deviceAddress, value)
             if (fullPacket != null) {
                 scope.launch {

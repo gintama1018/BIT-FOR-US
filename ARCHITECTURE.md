@@ -70,15 +70,19 @@ MeshWhisper/
 - **Power Duty-Cycling**:
   - Foreground: `SCAN_MODE_LOW_LATENCY` + `ADVERTISE_MODE_LOW_LATENCY` for instant peer discovery.
   - Background: Downshifts to `SCAN_MODE_LOW_POWER` (10% duty cycle) and `ADVERTISE_TX_POWER_LOW`, reducing idle RF drain by ~70%.
+- **Symmetric Rate-Limiting (`GattWriteRateLimiter.kt`)**:
+  - Both GATT Server (`onCharacteristicWriteRequest`) and GATT Client (`onCharacteristicChanged`) enforce strict per-device rate limiting: max 50 writes/sec per address, dropping rogue/spamming notifications at the link ingress.
 
 ### 3.2 Offline Local Wi-Fi Subsystem
 - **No Access Point Required**: Works across ad-hoc Wi-Fi networks, portable Android Wi-Fi hotspots, or existing unrouted LAN switches.
 - **Peer Discovery**:
   - Periodic UDP broadcast datagrams on port `42425` with payload `MESH_DISCOVERY:<nodeId>:<alias>`.
   - Rate-limited to one announcement every 5 seconds to preserve battery and channel capacity.
-- **High-Throughput Streaming**:
+- **High-Throughput Streaming & Connection Caps**:
   - Once discovered, nodes establish persistent, non-blocking TCP socket connections on port `42426`.
   - Used for large media transfers (images, audio notes, avatars) and high-volume packet relaying.
+  - Symmetrically hard-capped at `MAX_CONCURRENT_WIFI_CONNECTIONS = 5` (matching BLE's connection ceiling).
+  - Enforces `TCP_HANDSHAKE_TIMEOUT_MS = 5000` on initial socket read to eliminate thread pool starvation on the shared `Dispatchers.IO` dispatcher. Sockets reset to infinite read timeout only after authenticating.
 
 ---
 
@@ -200,11 +204,37 @@ To prevent Man-in-the-Middle (MITM) attacks during ephemeral key exchange, MeshW
 
 ---
 
-## 8. Threat Model & Mitigations
+## 8. Symmetrical Resource Bounds & Memory Management
+
+To guarantee resilience in dense mesh topologies without central control, every subsystem enforces strict upper-bounds and oldest-first eviction:
+
+1. **Shared Thread Pool Protection (`Dispatchers.IO`)**:
+   - Blocking TCP socket reads during initial handshakes enforce a hard `5000ms` timeout (`TCP_HANDSHAKE_TIMEOUT_MS`). Stalled or slow connections are closed immediately, preventing thread starvation in the shared global pool.
+2. **Dual-Transport Connection Caps**:
+   - Both radios enforce identical physical link caps: BLE is capped at 5 GATT connections (`MAX_CONCURRENT_GATT_CONNECTIONS`), and local Wi-Fi TCP is capped at 5 active sessions (`MAX_CONCURRENT_WIFI_CONNECTIONS`).
+3. **Inbound Media Session Bounding (`MediaTransferManager.kt`)**:
+   - Concurrent inbound media transfers are restricted to **max 4 sessions per remote peer** and **max 16 sessions globally**.
+   - Excess inbound sessions trigger deterministic oldest-first eviction (`minByOrNull { lastActivityMs }`), marking evicted records as `MessageStatus.FAILED` in SQLite.
+4. **Store-and-Forward Queue Bounding (`StoreForwardDao.kt`)**:
+   - Unreachable direct message queues are capped at **max 50 pending messages per recipient** and **max 500 total messages** across the mesh table.
+   - Oldest-first database pruning (`trimRecipientQueue` and `trimTotalQueue`) runs on every insertion and presence heartbeat.
+5. **Shared Platform Deduplication**:
+   - Replaced fragmented Android-specific caches with shared pure Kotlin [`core.router.LruDedupCache`](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/core/src/main/java/com/meshwhisper/core/router/LruDedupCache.kt) (capacity 4000) unified across Android and Desktop.
+6. **Graceful Engine Lifecycle**:
+   - `MeshForegroundService.onDestroy()` cleanly terminates both `bleEngine.stop()` and `wifiEngine.stop()`, preventing orphaned sockets, UDP discovery loops, or background thread leaks.
+
+---
+
+## 9. Threat Model & Mitigations
 
 | Threat Vector | Attack Scenario | MeshWhisper Architectural Mitigation |
 | :--- | :--- | :--- |
 | **Man-In-The-Middle (MITM)** | Attacker broadcasts spoofed public key during unauthenticated key exchange | CameraX live in-app QR scanner compares Safety Numbers and X25519 public keys out-of-band, pinning trust in SQLCipher DB. |
+| **Slow-Peer Thread Starvation** | Rogue peer connects on Wi-Fi TCP socket and stalls without sending data | Sockets enforce `TCP_HANDSHAKE_TIMEOUT_MS = 5000` on `Dispatchers.IO`, aborting hung handshakes and closing socket. |
+| **Hotspot Connection Flooding** | Attacker opens hundreds of concurrent TCP sockets on local Wi-Fi | `MAX_CONCURRENT_WIFI_CONNECTIONS = 5` strictly closes excess sockets at the `server.accept()` loop. |
+| **GATT Client Notification Flooding** | Malicious peripheral pushes high-frequency characteristic notifications | `GattWriteRateLimiter` enforces 50 writes/sec per address on `onCharacteristicChanged` (symmetrically matching server role). |
+| **Inbound Media Session Exhaustion** | Rogue peer floods `MEDIA_INIT` frames to deplete heap memory and disk | `MediaTransferManager` caps inbound sessions at 4/peer and 16 globally with automatic oldest-eviction. |
+| **Store-and-Forward Queue Bloat** | Spamming direct messages to an offline recipient exhausts SQLite space | `StoreForwardDao` caps queues at 50/recipient and 500 total via atomic subquery trimming. |
 | **Replay Attacks** | Attacker captures and retransmits valid historical packets to trigger duplicate actions | Thread-safe `LruDedupCache` (4,000 capacity) + SQLite `SeenMessageDao` drop duplicates; packets older than 86,400s are discarded. |
 | **Broadcast Storms** | Flooding packets create RF collisions on shared 2.4 GHz channels | CSMA random jitter delay (15ms - 75ms) desynchronizes relay transmissions; TTL is strictly decremented at each hop. |
 | **Physical Flash Extraction** | Adversary seizes physical device in hostile territory | Operator activates Emergency Panic Wipe: synchronous `.commit()` wipes keys from Keystore, deletes database files, and kills process. |
@@ -213,14 +243,14 @@ To prevent Man-in-the-Middle (MITM) attacks during ephemeral key exchange, MeshW
 
 ---
 
-## 9. Verification & Build Integrity
+## 10. Verification & Build Integrity
 
 MeshWhisper compiles and tests 100% offline:
 
 - **Core Module Tests**: `.\gradlew.bat :core:test` (14 passing tests)
 - **Desktop Module Tests**: `.\gradlew.bat :desktop:test` (3 passing tests)
-- **Android Unit Tests**: `.\gradlew.bat :app:testDebugUnitTest` (51 passing tests)
+- **Android Unit Tests**: `.\gradlew.bat :app:testDebugUnitTest` (53 passing tests, including Wi-Fi connection caps, timeouts, and GATT rate-limiters)
 - **Android Instrumentation Tests**: `.\gradlew.bat :app:assembleAndroidTest`
 - **Android Production APK**: `.\gradlew.bat :app:assembleDebug`
 
-**Total Automated Test Coverage**: **68 passing tests, 0 failures.**
+**Total Automated Test Coverage**: **70 passing tests, 0 failures (100%).**

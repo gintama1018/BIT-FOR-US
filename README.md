@@ -7,7 +7,7 @@ Offline, infrastructure-free peer-to-peer messaging, tactical team coordination,
 [![Target SDK](https://img.shields.io/badge/Target%20SDK-35%20(Android%2015)-orange.svg)](https://developer.android.com)
 [![Kotlin](https://img.shields.io/badge/Kotlin-2.0.21-purple.svg)](https://kotlinlang.org)
 [![CameraX](https://img.shields.io/badge/CameraX-1.4.1-green.svg)](https://developer.android.com/training/camerax)
-[![Tests](https://img.shields.io/badge/Tests-68%20Passing%20(100%25)-success.svg)](file:///c:/Users/hp/Downloads/BIT%20FOR%20US)
+[![Tests](https://img.shields.io/badge/Tests-70%20Passing%20(100%25)-success.svg)](file:///c:/Users/hp/Downloads/BIT%20FOR%20US)
 [![Security Architecture](https://img.shields.io/badge/Security%20Score-95%2F100%20(Production)-brightgreen.svg)](file:///c:/Users/hp/Downloads/BIT%20FOR%20US)
 
 ---
@@ -303,7 +303,7 @@ MeshWhisper implements the **Sahara Warm Minimalism** design system:
 - [x] **Phase 3: Search-and-Rescue (SAR) Suite** (GPS satellite acquisition, priority SOS flood routing, directional radar compass)
 - [x] **Phase 4: Topic Groups & Tactical Channels** (PBKDF2-HMAC-SHA256 100k-round derivation, in-app QR channel sharing & scanning)
 - [x] **Phase 5: In-App Camera QR Code Scanner** (Native CameraX 1.4.1 live viewfinder closing the Safety Number trust loop)
-- [x] **Phase 6: Hardware-Level Security Hardening** (NIST SP 800-38D CSPRNG nonces, strict Keystore enforcement, BLE symmetry resolution, CSMA jitter)
+- [x] **Phase 6: Hardware-Level Security & Symmetrical Resource Bounds** (NIST SP 800-38D CSPRNG nonces, strict Keystore enforcement, BLE symmetry resolution, CSMA jitter, 5-conn Wi-Fi/BLE ceilings, 5s handshake timeout, bounded media & store-forward queues)
 - [ ] **Phase 7: Push-To-Talk Voice Mesh** (Ultra-compact Opus audio streaming over hybrid channels)
 - [ ] **Future Roadmap**: Ephemeral Signal Double Ratchet session key progression for per-message forward secrecy.
 

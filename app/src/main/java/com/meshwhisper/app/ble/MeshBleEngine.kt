@@ -27,14 +27,19 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
 import android.os.ParcelUuid
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.meshwhisper.app.telemetry.GattRole
+import com.meshwhisper.app.telemetry.RssiSource
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
 
@@ -62,8 +67,8 @@ class MeshBleEngine(private val context: Context) {
     private val connectedCentrals = ConcurrentHashMap<String, BluetoothDevice>()
     private val centralMtus = ConcurrentHashMap<String, Int>()
 
-    // Rate limiting for inbound GATT writes (Max 50 writes per second per remote device address)
-    private val rateLimiter = GattWriteRateLimiter(maxWritesPerSecond = 50)
+    // Rate limiting for inbound GATT writes (200 writes/sec headroom for 50Hz real-time voice + bursts)
+    private val rateLimiter = GattWriteRateLimiter(maxWritesPerSecond = 200)
 
     private fun isWriteRateAllowed(address: String): Boolean {
         return rateLimiter.isWriteRateAllowed(address)
@@ -101,11 +106,84 @@ class MeshBleEngine(private val context: Context) {
     private val _supportsPeripheral = MutableStateFlow(true)
     val supportsPeripheral: StateFlow<Boolean> = _supportsPeripheral.asStateFlow()
 
+    // Scanned device RSSI cache (essential for Server/Peripheral role peers where Android cannot poll RSSI)
+    private val scannedDeviceRssi = ConcurrentHashMap<String, Int>()
+    private val powerManager: PowerManager? = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+    private var rssiPollerJob: Job? = null
+
     // Event listeners
     var onPacketReceivedListener: ((packetBytes: ByteArray, ingressAddress: String) -> Unit)? = null
     var onPeerDiscoveredListener: ((address: String, rssi: Int) -> Unit)? = null
     var onPeerReadyListener: ((address: String) -> Unit)? = null
     var onPeerDisconnectedListener: ((address: String) -> Unit)? = null
+    var onRssiUpdatedListener: ((nodeId: Long, rssi: Int) -> Unit)? = null
+    var onBackgroundScanMatchListener: ((address: String, rssi: Int) -> Unit)? = null
+    var onChunkSessionDroppedListener: ((deviceAddress: String, sessionId: Short, receivedChunks: Int, totalChunks: Int, reason: String) -> Unit)? = null
+
+    init {
+        framer.onChunkSessionDroppedListener = { addr, sessId, recv, total, reason ->
+            onChunkSessionDroppedListener?.invoke(addr, sessId, recv, total, reason)
+        }
+    }
+
+    fun getPeerRole(address: String): GattRole {
+        return when {
+            activeGattClients.containsKey(address) -> GattRole.CENTRAL_CLIENT
+            connectedCentrals.containsKey(address) -> GattRole.PERIPHERAL_SERVER
+            else -> GattRole.UNKNOWN
+        }
+    }
+
+    fun getPeerMtu(address: String): Int {
+        return activeGattClients[address]?.mtu
+            ?: centralMtus[address]
+            ?: BleConstants.DEFAULT_MTU
+    }
+
+    fun getPeerRssi(address: String): Pair<Int, RssiSource> {
+        val client = activeGattClients[address]
+        if (client != null && client.rssi != 0) {
+            return Pair(client.rssi, RssiSource.LIVE_POLL)
+        }
+        val scanned = scannedDeviceRssi[address]
+        if (scanned != null) {
+            return Pair(scanned, RssiSource.AT_CONNECT_SCAN)
+        }
+        if (client != null) {
+            return Pair(client.rssi, RssiSource.LIVE_POLL)
+        }
+        return Pair(0, RssiSource.UNKNOWN)
+    }
+
+    fun getAllConnectedAddresses(): Set<String> {
+        val addresses = HashSet<String>()
+        addresses.addAll(activeGattClients.keys)
+        addresses.addAll(connectedCentrals.keys)
+        return addresses
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startRssiPoller() {
+        rssiPollerJob?.cancel()
+        rssiPollerJob = scope.launch {
+            while (isActive) {
+                delay(2500L)
+                if (!isEngineRunning) break
+                for ((addr, conn) in activeGattClients) {
+                    try {
+                        conn.gatt.readRemoteRssi()
+                    } catch (e: Exception) {
+                        Log.w(tag, "readRemoteRssi failed for $addr: ${e.message}")
+                    }
+                }
+            }
+        }
+    }
+
+    private fun stopRssiPoller() {
+        rssiPollerJob?.cancel()
+        rssiPollerJob = null
+    }
 
     fun registerDirectNode(address: String, nodeId: Long) {
         directAddressToNodeId[address] = nodeId
@@ -231,6 +309,8 @@ class MeshBleEngine(private val context: Context) {
         } catch (e: Exception) {
             Log.e(tag, "Failed starting scanning", e)
         }
+
+        startRssiPoller()
     }
 
     @SuppressLint("MissingPermission")
@@ -241,6 +321,7 @@ class MeshBleEngine(private val context: Context) {
 
         Log.i(tag, "Stopping Mesh BLE Engine...")
         isEngineRunning = false
+        stopRssiPoller()
         stopAdvertising()
         stopScanning()
         closeAllGattClients()
@@ -342,6 +423,17 @@ class MeshBleEngine(private val context: Context) {
             stopAdvertising()
             startAdvertising()
         }
+
+        val priority = if (isForeground) {
+            BluetoothGatt.CONNECTION_PRIORITY_HIGH
+        } else {
+            BluetoothGatt.CONNECTION_PRIORITY_BALANCED
+        }
+        for (conn in activeGattClients.values) {
+            try {
+                conn.gatt.requestConnectionPriority(priority)
+            } catch (_: Exception) {}
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -358,11 +450,7 @@ class MeshBleEngine(private val context: Context) {
         } else {
             AdvertiseSettings.ADVERTISE_MODE_LOW_POWER // Low-power battery-preserving interval in background
         }
-        val txPower = if (isLowLatencyMode) {
-            AdvertiseSettings.ADVERTISE_TX_POWER_HIGH
-        } else {
-            AdvertiseSettings.ADVERTISE_TX_POWER_LOW // Lower RF transmit power in background
-        }
+        val txPower = AdvertiseSettings.ADVERTISE_TX_POWER_HIGH // Always maximum RF power (+4 to +8 dBm) for maximum mesh range
 
         val settings = AdvertiseSettings.Builder()
             .setAdvertiseMode(advMode)
@@ -377,9 +465,23 @@ class MeshBleEngine(private val context: Context) {
             .addServiceUuid(ParcelUuid(BleConstants.MESH_SERVICE_UUID))
             .build()
 
+        val scanResponse = if (myNodeId != 0L) {
+            val nodeIdBytes = java.nio.ByteBuffer.allocate(8).putLong(myNodeId).array()
+            AdvertiseData.Builder()
+                .setIncludeDeviceName(false)
+                .addServiceData(ParcelUuid(BleConstants.MESH_SERVICE_UUID), nodeIdBytes)
+                .build()
+        } else {
+            null
+        }
+
         try {
-            advertiser?.startAdvertising(settings, data, advertiseCallback)
-            Log.d(tag, "Initiated BLE Advertising for Mesh Service UUID")
+            if (scanResponse != null) {
+                advertiser?.startAdvertising(settings, data, scanResponse, advertiseCallback)
+            } else {
+                advertiser?.startAdvertising(settings, data, advertiseCallback)
+            }
+            Log.d(tag, "Initiated BLE Advertising for Mesh Service UUID (Node ID: $myNodeId)")
         } catch (e: Exception) {
             Log.e(tag, "Failed to start BLE advertising", e)
             _supportsPeripheral.value = false
@@ -416,17 +518,22 @@ class MeshBleEngine(private val context: Context) {
         override fun onConnectionStateChange(device: BluetoothDevice?, status: Int, newState: Int) {
             val address = device?.address ?: return
             if (newState == BluetoothProfile.STATE_CONNECTED) {
+                if (connectedCentrals.size >= MAX_CONCURRENT_GATT_CONNECTIONS) {
+                    Log.w(tag, "GATT server connection limit ($MAX_CONCURRENT_GATT_CONNECTIONS) reached. Rejecting central: $address")
+                    try {
+                        gattServer?.cancelConnection(device)
+                    } catch (_: Exception) {}
+                    return
+                }
                 Log.d(tag, "Central connected to our GATT server: $address")
                 connectedCentrals[address] = device
-
-                // Connection Symmetry Resolution: Abort redundant outbound central connection if present
-                val clientConn = activeGattClients.remove(address)
-                if (clientConn != null) {
-                    Log.d(tag, "Aborting redundant outbound Central connection to $address; established incoming Peripheral link takes precedence.")
-                    try { clientConn.gatt.close() } catch (_: Exception) {}
-                }
-
                 updatePeerCount()
+
+                // Trigger announcement from Peripheral to Central once incoming link is established
+                scope.launch {
+                    delay(800L)
+                    onPeerReadyListener?.invoke(address)
+                }
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 Log.d(tag, "Central disconnected from GATT server: $address")
                 connectedCentrals.remove(address)
@@ -484,6 +591,7 @@ class MeshBleEngine(private val context: Context) {
             offset: Int,
             value: ByteArray?
         ) {
+            descriptor?.value = value
             if (responseNeeded && device != null) {
                 gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value)
             }
@@ -511,12 +619,21 @@ class MeshBleEngine(private val context: Context) {
             return
         }
 
-        val scanFilters = listOf(
-            ScanFilter.Builder()
-                .setServiceUuid(ParcelUuid(BleConstants.MESH_SERVICE_UUID))
-                .build(),
-            ScanFilter.Builder().build() // Catch all for devices whose OEM drops UUID filters
-        )
+        val scanFilters = if (isLowLatencyMode) {
+            listOf(
+                ScanFilter.Builder()
+                    .setServiceUuid(ParcelUuid(BleConstants.MESH_SERVICE_UUID))
+                    .build(),
+                ScanFilter.Builder().build() // Catch all for devices whose OEM drops UUID filters in foreground
+            )
+        } else {
+            // Android 8+ OEM background scan compliance: STRICT UUID filter only, no blank catch-all
+            listOf(
+                ScanFilter.Builder()
+                    .setServiceUuid(ParcelUuid(BleConstants.MESH_SERVICE_UUID))
+                    .build()
+            )
+        }
 
         val scanMode = if (isLowLatencyMode) {
             ScanSettings.SCAN_MODE_LOW_LATENCY
@@ -532,7 +649,7 @@ class MeshBleEngine(private val context: Context) {
         try {
             scanner?.startScan(scanFilters, settings, scanCallback)
             _isScanning.value = true
-            Log.d(tag, "BLE Scan started for Mesh Service")
+            Log.d(tag, "BLE Scan started for Mesh Service (lowLatency=$isLowLatencyMode, filters=${scanFilters.size})")
         } catch (e: Exception) {
             Log.e(tag, "Error starting BLE scan", e)
         }
@@ -553,28 +670,32 @@ class MeshBleEngine(private val context: Context) {
             val device = result?.device ?: return
             val address = device.address
             val rssi = result.rssi
+            scannedDeviceRssi[address] = rssi
 
             val serviceUuids = result.scanRecord?.serviceUuids
-            val hasMeshService = serviceUuids?.any { it.uuid == BleConstants.MESH_SERVICE_UUID } == true
+            val serviceData = result.scanRecord?.serviceData?.get(ParcelUuid(BleConstants.MESH_SERVICE_UUID))
+            val hasMeshService = (serviceUuids?.any { it.uuid == BleConstants.MESH_SERVICE_UUID } == true) || (serviceData != null)
 
-            if (hasMeshService || result.scanRecord?.serviceData?.containsKey(ParcelUuid(BleConstants.MESH_SERVICE_UUID)) == true) {
+            if (hasMeshService) {
+                val isInteractive = powerManager?.isInteractive ?: true
+                if (!isInteractive) {
+                    onBackgroundScanMatchListener?.invoke(address, rssi)
+                }
+                if (serviceData != null && serviceData.size >= 8) {
+                    val peerNodeId = java.nio.ByteBuffer.wrap(serviceData).long
+                    if (peerNodeId != 0L && peerNodeId != myNodeId) {
+                        registerDirectNode(address, peerNodeId)
+                    }
+                }
                 onPeerDiscoveredListener?.invoke(address, rssi)
 
-                // Auto-connect with Deterministic Symmetry Resolution (Tie-Breaking)
-                if (!activeGattClients.containsKey(address) && !connectedCentrals.containsKey(address)) {
-                    val localAddress = try { bluetoothAdapter?.address } catch (_: Exception) { null }
-                    if (localAddress != null && localAddress.isNotBlank() && !localAddress.equals("02:00:00:00:00:00", ignoreCase = true)) {
-                        // Deterministic tie-breaker: Lower MAC address waits as peripheral, higher initiates as central
-                        if (localAddress.compareTo(address, ignoreCase = true) < 0) {
-                            return
-                        }
-                    }
-
-                    val currentConnections = activeGattClients.size + connectedCentrals.size
+                // Auto-connect: Establish outbound GATT Client connection if not already connected as client
+                if (!activeGattClients.containsKey(address)) {
+                    val currentConnections = activeGattClients.size
                     if (currentConnections < MAX_CONCURRENT_GATT_CONNECTIONS) {
                         connectToPeer(device, rssi)
                     } else {
-                        Log.d(tag, "GATT connection limit ($MAX_CONCURRENT_GATT_CONNECTIONS) reached. Peer $address will communicate via mesh flood relay.")
+                        Log.d(tag, "GATT client connection limit ($MAX_CONCURRENT_GATT_CONNECTIONS) reached. Peer $address will communicate via mesh flood relay.")
                     }
                 }
             }
@@ -591,12 +712,22 @@ class MeshBleEngine(private val context: Context) {
         val address = device.address
         Log.d(tag, "Initiating GATT connection to peer: $address (RSSI: $rssi)")
 
-        val gatt = device.connectGatt(
-            context,
-            false,
-            createGattCallback(address),
-            BluetoothDevice.TRANSPORT_LE
-        )
+        val gatt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            device.connectGatt(
+                context,
+                false,
+                createGattCallback(address),
+                BluetoothDevice.TRANSPORT_LE,
+                BluetoothDevice.PHY_LE_1M_MASK or BluetoothDevice.PHY_LE_2M_MASK or BluetoothDevice.PHY_LE_CODED_MASK
+            )
+        } else {
+            device.connectGatt(
+                context,
+                false,
+                createGattCallback(address),
+                BluetoothDevice.TRANSPORT_LE
+            )
+        }
 
         activeGattClients[address] = ClientConnection(
             gatt = gatt,
@@ -605,14 +736,36 @@ class MeshBleEngine(private val context: Context) {
     }
 
     private fun createGattCallback(deviceAddress: String) = object : BluetoothGattCallback() {
+        private val hasDiscoveredServices = java.util.concurrent.atomic.AtomicBoolean(false)
+
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt?, status: Int, newState: Int) {
             if (gatt == null) return
 
             if (newState == BluetoothProfile.STATE_CONNECTED) {
-                Log.d(tag, "Connected as Central to $deviceAddress, requesting MTU 512...")
+                Log.d(tag, "Connected as Central to $deviceAddress, requesting HIGH priority and MTU 512...")
+                gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
                 gatt.requestMtu(BleConstants.REQUESTED_MTU)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    try {
+                        gatt.setPreferredPhy(
+                            BluetoothDevice.PHY_LE_2M_MASK or BluetoothDevice.PHY_LE_1M_MASK or BluetoothDevice.PHY_LE_CODED_MASK,
+                            BluetoothDevice.PHY_LE_2M_MASK or BluetoothDevice.PHY_LE_1M_MASK or BluetoothDevice.PHY_LE_CODED_MASK,
+                            BluetoothDevice.PHY_OPTION_NO_PREFERRED
+                        )
+                    } catch (_: Exception) {}
+                }
                 updatePeerCount()
+
+                // Fallback: If MTU negotiation hangs or does not trigger onMtuChanged on certain OEM devices,
+                // trigger service discovery automatically after 600ms.
+                scope.launch {
+                    delay(600L)
+                    if (hasDiscoveredServices.compareAndSet(false, true)) {
+                        Log.d(tag, "MTU negotiation timeout fallback for $deviceAddress; discovering services...")
+                        gatt.discoverServices()
+                    }
+                }
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 Log.d(tag, "Disconnected from $deviceAddress")
                 gatt.close()
@@ -628,7 +781,9 @@ class MeshBleEngine(private val context: Context) {
                 Log.d(tag, "MTU negotiated with $deviceAddress: $mtu")
                 activeGattClients[deviceAddress]?.mtu = mtu
             }
-            gatt?.discoverServices()
+            if (hasDiscoveredServices.compareAndSet(false, true)) {
+                gatt?.discoverServices()
+            }
         }
 
         @SuppressLint("MissingPermission")
@@ -648,23 +803,71 @@ class MeshBleEngine(private val context: Context) {
             if (conn != null) {
                 conn.writeChar = writeChar
                 conn.notifyChar = notifyChar
-                conn.isReady = true
 
-                // Enable notifications on Notify characteristic
                 if (notifyChar != null) {
+                    // Enable notifications on Notify characteristic as return path first before opening outgoing writes
                     gatt.setCharacteristicNotification(notifyChar, true)
                     val descriptor = notifyChar.getDescriptor(BleConstants.CCCD_UUID)
                     if (descriptor != null) {
-                        @Suppress("DEPRECATION")
-                        descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                        @Suppress("DEPRECATION")
-                        gatt.writeDescriptor(descriptor)
+                        scope.launch {
+                            var attempts = 0
+                            var submitted = false
+                            while (attempts < 5 && !submitted) {
+                                attempts++
+                                gatt.setCharacteristicNotification(notifyChar, true)
+                                val ok = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                    val res = gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                                    Log.d(tag, "writeDescriptor CCCD to $deviceAddress attempt $attempts returned: $res")
+                                    res == BluetoothGatt.GATT_SUCCESS
+                                } else {
+                                    @Suppress("DEPRECATION")
+                                    descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                                    @Suppress("DEPRECATION")
+                                    val okOld = gatt.writeDescriptor(descriptor)
+                                    Log.d(tag, "writeDescriptor CCCD to $deviceAddress attempt $attempts returned: $okOld")
+                                    okOld
+                                }
+                                if (ok) {
+                                    submitted = true
+                                    break
+                                }
+                                delay(100L)
+                            }
+                        }
+                    }
+
+                    // Safety fallback: if OEM BLE driver drops onDescriptorWrite callback, mark ready after timeout
+                    scope.launch {
+                        delay(1200L)
+                        if (!conn.isReady && writeChar != null) {
+                            Log.w(tag, "Fallback: onDescriptorWrite timed out for $deviceAddress; opening write channel")
+                            conn.isReady = true
+                            onPeerReadyListener?.invoke(deviceAddress)
+                        }
+                    }
+                } else if (writeChar != null) {
+                    // Peripheral does not expose notifyChar; ready immediately for writes
+                    conn.isReady = true
+                    Log.i(tag, "GATT Client write channel ready immediately for $deviceAddress (no notifyChar)")
+                    scope.launch {
+                        delay(150L)
+                        onPeerReadyListener?.invoke(deviceAddress)
                     }
                 }
+            }
+        }
 
-                Log.i(tag, "GATT Client ready for mesh traffic to $deviceAddress -> trigger announce")
+        override fun onDescriptorWrite(
+            gatt: BluetoothGatt?,
+            descriptor: BluetoothGattDescriptor?,
+            status: Int
+        ) {
+            Log.i(tag, "onDescriptorWrite callback for $deviceAddress (status=$status)")
+            val conn = activeGattClients[deviceAddress]
+            if (conn != null && !conn.isReady) {
+                conn.isReady = true
                 scope.launch {
-                    delay(300L)
+                    delay(150L)
                     onPeerReadyListener?.invoke(deviceAddress)
                 }
             }
@@ -711,6 +914,19 @@ class MeshBleEngine(private val context: Context) {
                 }
             }
         }
+
+        override fun onReadRemoteRssi(gatt: BluetoothGatt?, rssi: Int, status: Int) {
+            if (status == BluetoothGatt.GATT_SUCCESS && gatt != null) {
+                val conn = activeGattClients[deviceAddress]
+                if (conn != null) {
+                    conn.rssi = rssi
+                }
+                val nodeId = directAddressToNodeId[deviceAddress]
+                if (nodeId != null) {
+                    onRssiUpdatedListener?.invoke(nodeId, rssi)
+                }
+            }
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -754,25 +970,37 @@ class MeshBleEngine(private val context: Context) {
                 val centralMtu = centralMtus[addr] ?: BleConstants.DEFAULT_MTU
                 val frames = framer.fragment(packetBytes, centralMtu)
                 for (frame in frames) {
-                    try {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                            val status = server.notifyCharacteristicChanged(device, notifyChar, false, frame)
-                            if (status != BluetoothGatt.GATT_SUCCESS) {
-                                Log.w(tag, "notifyCharacteristicChanged rejected for central $addr (status=$status, frameSize=${frame.size})")
-                            }
-                        } else {
+                    var attempts = 0
+                    var sentOk = false
+                    while (attempts < 3 && !sentOk) {
+                        attempts++
+                        try {
                             @Suppress("DEPRECATION")
                             notifyChar.value = frame
-                            @Suppress("DEPRECATION")
-                            val ok = server.notifyCharacteristicChanged(device, notifyChar, false)
-                            if (!ok) {
-                                Log.w(tag, "notifyCharacteristicChanged returned false for central $addr (frameSize=${frame.size})")
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                val status = server.notifyCharacteristicChanged(device, notifyChar, false, frame)
+                                if (status == BluetoothGatt.GATT_SUCCESS) {
+                                    sentOk = true
+                                } else {
+                                    Log.w(tag, "notifyCharacteristicChanged rejected for central $addr (status=$status, attempt=$attempts)")
+                                    delay(25L)
+                                }
+                            } else {
+                                @Suppress("DEPRECATION")
+                                val ok = server.notifyCharacteristicChanged(device, notifyChar, false)
+                                if (ok) {
+                                    sentOk = true
+                                } else {
+                                    Log.w(tag, "notifyCharacteristicChanged returned false for central $addr (attempt=$attempts)")
+                                    delay(25L)
+                                }
                             }
+                        } catch (e: Exception) {
+                            Log.e(tag, "Failed to notify central $addr", e)
+                            break
                         }
-                    } catch (e: Exception) {
-                        Log.e(tag, "Failed to notify central $addr", e)
                     }
-                    delay(15L) // Pace raw BLE frame writes to prevent write-queue saturation
+                    delay(35L) // Pace raw BLE frame writes to prevent write-queue saturation
                 }
             }
         }
@@ -784,31 +1012,43 @@ class MeshBleEngine(private val context: Context) {
             val frames = framer.fragment(packetBytes, conn.mtu)
 
             for (frame in frames) {
-                try {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        val status = conn.gatt.writeCharacteristic(
-                            writeChar,
-                            frame,
-                            BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-                        )
-                        if (status != BluetoothGatt.GATT_SUCCESS) {
-                            Log.w(tag, "writeCharacteristic rejected for peripheral $addr (status=$status, frameSize=${frame.size})")
+                var attempts = 0
+                var sentOk = false
+                while (attempts < 3 && !sentOk) {
+                    attempts++
+                    try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            val status = conn.gatt.writeCharacteristic(
+                                writeChar,
+                                frame,
+                                BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                            )
+                            if (status == BluetoothGatt.GATT_SUCCESS) {
+                                sentOk = true
+                            } else {
+                                Log.w(tag, "writeCharacteristic rejected for peripheral $addr (status=$status, attempt=$attempts)")
+                                delay(25L)
+                            }
+                        } else {
+                            @Suppress("DEPRECATION")
+                            writeChar.value = frame
+                            @Suppress("DEPRECATION")
+                            writeChar.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                            @Suppress("DEPRECATION")
+                            val ok = conn.gatt.writeCharacteristic(writeChar)
+                            if (ok) {
+                                sentOk = true
+                            } else {
+                                Log.w(tag, "writeCharacteristic returned false for peripheral $addr (attempt=$attempts)")
+                                delay(25L)
+                            }
                         }
-                    } else {
-                        @Suppress("DEPRECATION")
-                        writeChar.value = frame
-                        @Suppress("DEPRECATION")
-                        writeChar.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-                        @Suppress("DEPRECATION")
-                        val ok = conn.gatt.writeCharacteristic(writeChar)
-                        if (!ok) {
-                            Log.w(tag, "writeCharacteristic returned false for peripheral $addr (frameSize=${frame.size})")
-                        }
+                    } catch (e: Exception) {
+                        Log.e(tag, "Failed to write to client $addr", e)
+                        break
                     }
-                } catch (e: Exception) {
-                    Log.e(tag, "Failed to write to client $addr", e)
                 }
-                delay(15L) // Pace raw BLE frame writes to prevent write-queue saturation
+                delay(35L) // Pace raw BLE frame writes to prevent write-queue saturation
             }
         }
     }
@@ -822,30 +1062,58 @@ class MeshBleEngine(private val context: Context) {
     suspend fun sendDirectPacket(peerNodeId: Long, packetBytes: ByteArray): Boolean {
         var sent = false
 
-        // 1. Check if peer is a connected Central on our GATT server
-        val server = gattServer
-        val service = server?.getService(BleConstants.MESH_SERVICE_UUID)
-        val notifyChar = service?.getCharacteristic(BleConstants.NOTIFY_CHAR_UUID)
+        // 1. Prioritize direct GATT Client write (most reliable across all Android OEMs)
+        for ((addr, conn) in activeGattClients) {
+            val isTarget = (directAddressToNodeId[addr] == peerNodeId) ||
+                    (directAddressToNodeId[addr] == null && activeGattClients.isNotEmpty())
+            if (isTarget && conn.isReady) {
+                val writeChar = conn.writeChar ?: continue
+                val frames = framer.fragment(packetBytes, conn.mtu)
 
-        if (server != null && notifyChar != null) {
-            for ((addr, device) in connectedCentrals) {
-                if (directAddressToNodeId[addr] == peerNodeId) {
-                    val centralMtu = centralMtus[addr] ?: BleConstants.DEFAULT_MTU
-                    val frames = framer.fragment(packetBytes, centralMtu)
-                    for (frame in frames) {
+                var allChunksSent = true
+                for (frame in frames) {
+                    var attempts = 0
+                    var sentOk = false
+                    while (attempts < 3 && !sentOk) {
+                        attempts++
                         try {
                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                server.notifyCharacteristicChanged(device, notifyChar, false, frame)
+                                val status = conn.gatt.writeCharacteristic(
+                                    writeChar,
+                                    frame,
+                                    BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                                )
+                                if (status == BluetoothGatt.GATT_SUCCESS) {
+                                    sentOk = true
+                                } else {
+                                    delay(25L)
+                                }
                             } else {
                                 @Suppress("DEPRECATION")
-                                notifyChar.value = frame
+                                writeChar.value = frame
                                 @Suppress("DEPRECATION")
-                                server.notifyCharacteristicChanged(device, notifyChar, false)
+                                writeChar.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                                @Suppress("DEPRECATION")
+                                val ok = conn.gatt.writeCharacteristic(writeChar)
+                                if (ok) {
+                                    sentOk = true
+                                } else {
+                                    delay(25L)
+                                }
                             }
                         } catch (e: Exception) {
-                            Log.e(tag, "Failed to notify direct central $addr for node $peerNodeId", e)
+                            Log.e(tag, "Failed to write to direct peripheral $addr for node $peerNodeId", e)
+                            break
                         }
-                        delay(15L)
+                    }
+                    if (!sentOk) allChunksSent = false
+                    if (frames.size > 1) {
+                        delay(20L)
+                    }
+                }
+                if (allChunksSent) {
+                    if (directAddressToNodeId[addr] == null) {
+                        registerDirectNode(addr, peerNodeId)
                     }
                     sent = true
                     break
@@ -855,35 +1123,63 @@ class MeshBleEngine(private val context: Context) {
 
         if (sent) return true
 
-        // 2. Check if peer is a Peripheral where we are connected as GATT Client
-        for ((addr, conn) in activeGattClients) {
-            if (directAddressToNodeId[addr] == peerNodeId && conn.isReady) {
-                val writeChar = conn.writeChar ?: continue
-                val frames = framer.fragment(packetBytes, conn.mtu)
+        // 2. Fallback: Check if peer is a connected Central on our GATT server
+        val server = gattServer
+        val service = server?.getService(BleConstants.MESH_SERVICE_UUID)
+        val notifyChar = service?.getCharacteristic(BleConstants.NOTIFY_CHAR_UUID)
 
-                for (frame in frames) {
-                    try {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                            conn.gatt.writeCharacteristic(
-                                writeChar,
-                                frame,
-                                BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-                            )
-                        } else {
-                            @Suppress("DEPRECATION")
-                            writeChar.value = frame
-                            @Suppress("DEPRECATION")
-                            writeChar.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-                            @Suppress("DEPRECATION")
-                            conn.gatt.writeCharacteristic(writeChar)
+        if (server != null && notifyChar != null) {
+            for ((addr, device) in connectedCentrals) {
+                val isTarget = (directAddressToNodeId[addr] == peerNodeId) ||
+                        (directAddressToNodeId[addr] == null && connectedCentrals.isNotEmpty())
+                if (isTarget) {
+                    val centralMtu = centralMtus[addr] ?: BleConstants.DEFAULT_MTU
+                    val frames = framer.fragment(packetBytes, centralMtu)
+                    var allChunksSent = true
+                    for (frame in frames) {
+                        var attempts = 0
+                        var sentOk = false
+                        while (attempts < 5 && !sentOk) {
+                            attempts++
+                            try {
+                                @Suppress("DEPRECATION")
+                                notifyChar.value = frame
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                    val status = server.notifyCharacteristicChanged(device, notifyChar, false, frame)
+                                    if (status == BluetoothGatt.GATT_SUCCESS) {
+                                        sentOk = true
+                                    } else {
+                                        Log.w(tag, "notifyCharacteristicChanged direct central $addr returned status $status (attempt $attempts)")
+                                        delay(30L)
+                                    }
+                                } else {
+                                    @Suppress("DEPRECATION")
+                                    val ok = server.notifyCharacteristicChanged(device, notifyChar, false)
+                                    if (ok) {
+                                        sentOk = true
+                                    } else {
+                                        Log.w(tag, "notifyCharacteristicChanged direct central $addr returned false (attempt $attempts)")
+                                        delay(30L)
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                Log.e(tag, "Failed to notify direct central $addr for node $peerNodeId", e)
+                                break
+                            }
                         }
-                    } catch (e: Exception) {
-                        Log.e(tag, "Failed to write to direct peripheral $addr for node $peerNodeId", e)
+                        if (!sentOk) allChunksSent = false
+                        if (frames.size > 1) {
+                            delay(20L)
+                        }
                     }
-                    delay(15L)
+                    if (allChunksSent) {
+                        if (directAddressToNodeId[addr] == null) {
+                            registerDirectNode(addr, peerNodeId)
+                        }
+                        sent = true
+                        break
+                    }
                 }
-                sent = true
-                break
             }
         }
 

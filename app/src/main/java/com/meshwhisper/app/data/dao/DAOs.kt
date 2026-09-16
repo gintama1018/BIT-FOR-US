@@ -18,6 +18,9 @@ interface PeerDao {
     @Query("SELECT * FROM peers ORDER BY lastSeen DESC")
     fun getAllPeers(): Flow<List<PeerEntity>>
 
+    @Query("SELECT * FROM peers")
+    suspend fun getAllPeersList(): List<PeerEntity>
+
     @Query("SELECT * FROM peers WHERE nodeId = :nodeId LIMIT 1")
     suspend fun getPeerById(nodeId: Long): PeerEntity?
 

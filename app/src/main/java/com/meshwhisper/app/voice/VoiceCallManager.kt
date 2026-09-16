@@ -35,12 +35,15 @@ class VoiceCallManager(
     private val _isSpeakerOn = MutableStateFlow(false)
     val isSpeakerOn: StateFlow<Boolean> = _isSpeakerOn.asStateFlow()
 
+    private val voiceIoScope = CoroutineScope(Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
+
     private val _callDurationSeconds = MutableStateFlow(0L)
     val callDurationSeconds: StateFlow<Long> = _callDurationSeconds.asStateFlow()
 
     private var timeoutJob: Job? = null
     private var durationJob: Job? = null
     private var autoDismissJob: Job? = null
+    private var outboundWorkerJob: Job? = null
 
     companion object {
         const val RINGING_TIMEOUT_MS = 30_000L
@@ -89,6 +92,8 @@ class VoiceCallManager(
         _callState.value = CallState.OUTGOING_RINGING
         _isMuted.value = false
         audioStreamer.setMuted(false)
+        _isSpeakerOn.value = true
+        audioStreamer.setSpeakerOn(true)
 
         scope.launch {
             val signal = VoiceSignalPayload(
@@ -96,7 +101,13 @@ class VoiceCallManager(
                 sessionId = sessionId,
                 timestamp = System.currentTimeMillis()
             )
-            sendSignalPacket(peerNodeId, signal.serialize())
+            val signalBytes = signal.serialize()
+            repeat(3) {
+                if (_callState.value == CallState.OUTGOING_RINGING) {
+                    sendSignalPacket(peerNodeId, signalBytes)
+                    delay(50L)
+                }
+            }
         }
 
         // Outgoing Ringing Timeout
@@ -128,6 +139,8 @@ class VoiceCallManager(
         timeoutJob?.cancel()
 
         _callState.value = CallState.CONNECTED
+        _isSpeakerOn.value = true
+        audioStreamer.setSpeakerOn(true)
         _activeCallInfo.value = current.copy(
             callState = CallState.CONNECTED,
             connectedAtMs = System.currentTimeMillis()
@@ -139,7 +152,11 @@ class VoiceCallManager(
                 sessionId = current.sessionId,
                 timestamp = System.currentTimeMillis()
             )
-            sendSignalPacket(current.peerNodeId, signal.serialize())
+            val signalBytes = signal.serialize()
+            repeat(4) {
+                sendSignalPacket(current.peerNodeId, signalBytes)
+                delay(35L)
+            }
         }
 
         startAudioPipeline(current.sessionId, current.peerNodeId)
@@ -153,44 +170,55 @@ class VoiceCallManager(
         if (_callState.value != CallState.INCOMING_RINGING) return
 
         timeoutJob?.cancel()
-
         scope.launch {
             val signal = VoiceSignalPayload(
                 action = CallAction.DECLINE,
                 sessionId = current.sessionId,
                 timestamp = System.currentTimeMillis()
             )
-            sendSignalPacket(current.peerNodeId, signal.serialize())
+            val signalBytes = signal.serialize()
+            repeat(2) {
+                sendSignalPacket(current.peerNodeId, signalBytes)
+                delay(40L)
+            }
         }
-
         terminateCall(CallEndReason.DECLINED)
     }
 
     /**
-     * Terminates an active, outgoing, or incoming call.
+     * Ends an active or ringing call.
      */
     fun endCall() {
-        val current = _activeCallInfo.value
-        if (current != null && _callState.value != CallState.IDLE && _callState.value != CallState.ENDED) {
-            scope.launch {
-                val signal = VoiceSignalPayload(
-                    action = CallAction.HANGUP,
-                    sessionId = current.sessionId,
-                    timestamp = System.currentTimeMillis()
-                )
-                sendSignalPacket(current.peerNodeId, signal.serialize())
+        val current = _activeCallInfo.value ?: return
+        timeoutJob?.cancel()
+        scope.launch {
+            val signal = VoiceSignalPayload(
+                action = CallAction.HANGUP,
+                sessionId = current.sessionId,
+                timestamp = System.currentTimeMillis()
+            )
+            val signalBytes = signal.serialize()
+            repeat(2) {
+                sendSignalPacket(current.peerNodeId, signalBytes)
+                delay(40L)
             }
         }
         terminateCall(CallEndReason.NORMAL)
     }
 
     /**
-     * Handles an incoming signaling packet.
+     * Handles incoming protocol signaling packet from the mesh.
      */
     fun handleIncomingSignal(senderId: Long, payload: VoiceSignalPayload) {
         when (payload.action) {
             CallAction.OFFER -> {
-                // If already in a call, reject with BUSY
+                // If already handling this exact call session, ignore duplicate OFFER packet
+                val current = _activeCallInfo.value
+                if (current != null && current.sessionId == payload.sessionId) {
+                    return
+                }
+
+                // If already in another call, reject with BUSY
                 if (_callState.value != CallState.IDLE) {
                     scope.launch {
                         val busySignal = VoiceSignalPayload(
@@ -235,6 +263,8 @@ class VoiceCallManager(
                 ) {
                     timeoutJob?.cancel()
                     _callState.value = CallState.CONNECTED
+                    _isSpeakerOn.value = true
+                    audioStreamer.setSpeakerOn(true)
                     _activeCallInfo.value = current.copy(
                         callState = CallState.CONNECTED,
                         connectedAtMs = System.currentTimeMillis()
@@ -271,11 +301,25 @@ class VoiceCallManager(
      */
     fun handleIncomingVoiceFrame(senderId: Long, frame: VoiceFramePayload) {
         val current = _activeCallInfo.value ?: return
-        if (_callState.value == CallState.CONNECTED &&
-            current.peerNodeId == senderId &&
-            current.sessionId == frame.sessionId
-        ) {
-            audioStreamer.onInboundFrame(frame.sequenceNumber, frame.timestamp, frame.audioData)
+        if (current.peerNodeId == senderId) {
+            // Implicit ANSWER failsafe: if caller is still in OUTGOING_RINGING when peer's audio arrives,
+            // immediately transition caller to CONNECTED so ringing stops and audio streaming starts.
+            if (_callState.value == CallState.OUTGOING_RINGING) {
+                logInfo("Voice frame received from peer $senderId while OUTGOING_RINGING; auto-answering call")
+                timeoutJob?.cancel()
+                _callState.value = CallState.CONNECTED
+                _isSpeakerOn.value = true
+                audioStreamer.setSpeakerOn(true)
+                _activeCallInfo.value = current.copy(
+                    sessionId = frame.sessionId,
+                    callState = CallState.CONNECTED,
+                    connectedAtMs = System.currentTimeMillis()
+                )
+                startAudioPipeline(frame.sessionId, senderId)
+            }
+            if (_callState.value == CallState.CONNECTED) {
+                audioStreamer.onInboundFrame(frame.sequenceNumber, frame.timestamp, frame.audioData)
+            }
         }
     }
 
@@ -309,10 +353,22 @@ class VoiceCallManager(
             _callState.value = CallState.IDLE
             _activeCallInfo.value = null
             _callDurationSeconds.value = 0L
+            _isSpeakerOn.value = false
+            audioStreamer.setSpeakerOn(false)
         }
     }
 
     private fun startAudioPipeline(sessionId: UUID, peerNodeId: Long) {
+        val outboundChannel = kotlinx.coroutines.channels.Channel<ByteArray>(capacity = 64)
+        outboundWorkerJob?.cancel()
+        outboundWorkerJob = voiceIoScope.launch {
+            for (frameBytes in outboundChannel) {
+                try {
+                    sendFramePacket(peerNodeId, frameBytes)
+                } catch (_: Exception) {}
+            }
+        }
+
         audioStreamer.startStreaming { seq, ts, audioBytes ->
             val payload = VoiceFramePayload(
                 sessionId = sessionId,
@@ -320,9 +376,7 @@ class VoiceCallManager(
                 timestamp = ts,
                 audioData = audioBytes
             )
-            scope.launch {
-                sendFramePacket(peerNodeId, payload.serialize())
-            }
+            outboundChannel.trySend(payload.serialize())
         }
 
         // Duration tracking coroutine
@@ -339,6 +393,8 @@ class VoiceCallManager(
     private fun terminateCall(reason: CallEndReason) {
         timeoutJob?.cancel()
         durationJob?.cancel()
+        outboundWorkerJob?.cancel()
+        outboundWorkerJob = null
         autoDismissJob?.cancel()
         audioStreamer.stopStreaming()
 

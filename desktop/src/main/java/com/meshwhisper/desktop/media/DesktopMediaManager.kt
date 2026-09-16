@@ -1,6 +1,7 @@
 package com.meshwhisper.desktop.media
 
-import com.meshwhisper.core.crypto.PureCryptoEngine
+import com.meshwhisper.core.protocol.AdmittedChunk
+import com.meshwhisper.desktop.crypto.DesktopCryptoEngine
 import com.meshwhisper.core.logging.MeshLogger
 import com.meshwhisper.core.protocol.MeshPacket
 import com.meshwhisper.core.protocol.PacketType
@@ -69,27 +70,7 @@ class DesktopMediaManager(
     private val _mediaTransfersUpdated = MutableSharedFlow<DesktopMessage>(extraBufferCapacity = 64)
     val mediaTransfersUpdated = _mediaTransfersUpdated.asSharedFlow()
 
-    fun handleMediaInit(packet: MeshPacket, isBroadcast: Boolean) {
-        val aad = packet.getAuthenticatedHeaderBytes()
-        val plainBytes = try {
-            if (isBroadcast) {
-                val publicChannelKey = PureCryptoEngine.derivePublicChannelKey()
-                PureCryptoEngine.decrypt(packet.payload, packet.authTag, packet.messageId, publicChannelKey, aad)
-            } else {
-                val peer = database.getPeer(packet.senderId)
-                val peerPubKey = if (peer != null) PureCryptoEngine.hexToBytes(peer.publicKeyHex) else null
-                if (peerPubKey == null) {
-                    logger.w(TAG, "Cannot decrypt MEDIA_INIT from unknown peer 0x${String.format("%016X", packet.senderId)}")
-                    return
-                }
-                val sessionKey = PureCryptoEngine.derivePeerSessionKey(myPrivateKey, peerPubKey, packet.timestamp)
-                PureCryptoEngine.decrypt(packet.payload, packet.authTag, packet.messageId, sessionKey, aad)
-            }
-        } catch (e: Exception) {
-            logger.e(TAG, "Failed to decrypt MEDIA_INIT from 0x${String.format("%016X", packet.senderId)}: ${e.message}")
-            return
-        }
-
+    fun handleMediaInit(packet: MeshPacket, plainBytes: ByteArray, isBroadcast: Boolean) {
         if (plainBytes.size < 62) return
         val buffer = ByteBuffer.wrap(plainBytes).order(ByteOrder.BIG_ENDIAN)
         val mediaIdMost = buffer.getLong()
@@ -205,31 +186,11 @@ class DesktopMediaManager(
         _mediaTransfersUpdated.tryEmit(msg)
     }
 
-    fun handleMediaChunk(packet: MeshPacket, isBroadcast: Boolean) {
-        val aad = packet.getAuthenticatedHeaderBytes()
-        val plainBytes = try {
-            if (isBroadcast) {
-                val publicChannelKey = PureCryptoEngine.derivePublicChannelKey()
-                PureCryptoEngine.decrypt(packet.payload, packet.authTag, packet.messageId, publicChannelKey, aad)
-            } else {
-                val peer = database.getPeer(packet.senderId)
-                val peerPubKey = if (peer != null) PureCryptoEngine.hexToBytes(peer.publicKeyHex) else null
-                if (peerPubKey == null) return
-                val sessionKey = PureCryptoEngine.derivePeerSessionKey(myPrivateKey, peerPubKey, packet.timestamp)
-                PureCryptoEngine.decrypt(packet.payload, packet.authTag, packet.messageId, sessionKey, aad)
-            }
-        } catch (e: Exception) {
-            return
-        }
-
-        if (plainBytes.size < 18) return
-        val buffer = ByteBuffer.wrap(plainBytes).order(ByteOrder.BIG_ENDIAN)
-        val mediaIdMost = buffer.getLong()
-        val mediaIdLeast = buffer.getLong()
-        val mediaId = UUID(mediaIdMost, mediaIdLeast)
-        val chunkIndex = buffer.getShort().toInt() and 0xFFFF
-        val chunkData = ByteArray(buffer.remaining())
-        buffer.get(chunkData)
+    fun handleMediaChunk(chunk: AdmittedChunk) {
+        val packet = chunk.packet
+        val mediaId = chunk.mediaId
+        val chunkIndex = chunk.chunkIndex
+        val chunkData = chunk.chunkData
 
         val sessionKey = "${packet.senderId}_$mediaId"
         val session = inboundSessions[sessionKey] ?: return
@@ -243,7 +204,7 @@ class DesktopMediaManager(
 
         if (received >= session.totalChunks) {
             // Reassemble complete media file with tile stitching if tiled image
-            assembleAndSaveMedia(session, isBroadcast)
+            assembleAndSaveMedia(session, chunk.isBroadcast)
             inboundSessions.remove(sessionKey)
         }
     }
@@ -408,15 +369,15 @@ class DesktopMediaManager(
             )
 
             val sessionKey = if (isBroadcast) {
-                PureCryptoEngine.derivePublicChannelKey()
+                DesktopCryptoEngine.derivePublicChannelKey()
             } else {
                 val peer = database.getPeer(recipientNodeId)
-                val peerPubKey = if (peer != null) PureCryptoEngine.hexToBytes(peer.publicKeyHex) else null
+                val peerPubKey = if (peer != null) DesktopCryptoEngine.hexToBytes(peer.publicKeyHex) else null
                 if (peerPubKey == null) return@launch
-                PureCryptoEngine.derivePeerSessionKey(myPrivateKey, peerPubKey, timestampSec)
+                DesktopCryptoEngine.derivePeerSessionKey(myPrivateKey, peerPubKey, timestampSec)
             }
 
-            val encInit = PureCryptoEngine.encrypt(plainInit, initPacketId, sessionKey, aadInit)
+            val encInit = DesktopCryptoEngine.encrypt(plainInit, initPacketId, sessionKey, aadInit)
             val initPacket = MeshPacket(
                 type = PacketType.MEDIA_INIT,
                 messageId = initPacketId,
@@ -458,7 +419,7 @@ class DesktopMediaManager(
                     recipientId = recipientNodeId,
                     timestamp = timestampSec
                 )
-                val encChunk = PureCryptoEngine.encrypt(plainChunk, chunkPacketId, sessionKey, aadChunk)
+                val encChunk = DesktopCryptoEngine.encrypt(plainChunk, chunkPacketId, sessionKey, aadChunk)
                 val chunkPacket = MeshPacket(
                     type = PacketType.MEDIA_CHUNK,
                     messageId = chunkPacketId,

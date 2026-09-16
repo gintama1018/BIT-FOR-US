@@ -33,11 +33,29 @@ class CryptoEngine private constructor(private val context: Context) : SecureKey
         private set
     var publicKeyBytes: ByteArray = ByteArray(0)
         private set
+    var ikPublicKeyBytes: ByteArray = ByteArray(0)
+        private set
+    var identityHash: ByteArray = ByteArray(0)
+        private set
+    var nodeId64: Long = 0L
+        private set
     var nodeId: Long = 0L
         private set
     var nodeIdHex: String = ""
         private set
     var publicFingerprint: String = ""
+        private set
+    var keyVersion: Long = 1L
+        private set
+    var announceCounter: Long = 1L
+        private set
+    var lastEmittedTimestamp: Long = 0L
+        private set
+    var ekPrivateKeyBytes: ByteArray = ByteArray(0)
+        private set
+    var ekPublicKeyBytes: ByteArray = ByteArray(0)
+        private set
+    var ibcSignature: ByteArray = ByteArray(0)
         private set
 
     private val _identityVersion = MutableStateFlow(0L)
@@ -50,11 +68,92 @@ class CryptoEngine private constructor(private val context: Context) : SecureKey
 
     private fun applyIdentity(priv: ByteArray, pub: ByteArray) {
         privateKeyBytes = priv
-        publicKeyBytes = pub
-        nodeId = PureCryptoEngine.deriveNodeId(pub)
-        nodeIdHex = java.lang.Long.toUnsignedString(nodeId, 16).padStart(16, '0').uppercase()
-        publicFingerprint = PureCryptoEngine.generateFingerprint(pub)
+        ikPublicKeyBytes = PureCryptoEngine.deriveSigningPublicKey(priv)
+        identityHash = PureCryptoEngine.deriveIdentityHash(ikPublicKeyBytes)
+        nodeId64 = PureCryptoEngine.deriveNodeId64(identityHash)
+        nodeId = nodeId64
+        nodeIdHex = java.lang.Long.toUnsignedString(nodeId64, 16).padStart(16, '0').uppercase()
+        publicFingerprint = PureCryptoEngine.generateFingerprint(ikPublicKeyBytes)
+
+        // Load persisted counters & version
+        keyVersion = maxOf(1L, prefs.getLong(PREF_KEY_VERSION, 1L))
+        announceCounter = maxOf(1L, prefs.getLong(PREF_ANNOUNCE_COUNTER, 1L))
+        lastEmittedTimestamp = maxOf(0L, prefs.getLong(PREF_LAST_EMITTED_TIMESTAMP, 0L))
+
+        // Load rotatable EK if previously rotated, else default to master seed keypair (EK_sk == S)
+        val loadedEk = loadOrInitializeEk(priv, pub)
+        ekPrivateKeyBytes = loadedEk.first
+        ekPublicKeyBytes = loadedEk.second
+        publicKeyBytes = ekPublicKeyBytes
+
+        // Sign current IBC
+        ibcSignature = PureCryptoEngine.signIbc(privateKeyBytes, ekPublicKeyBytes, keyVersion, notBefore = 0L)
+
         _identityVersion.value += 1
+    }
+
+    private fun loadOrInitializeEk(masterPriv: ByteArray, masterPub: ByteArray): Pair<ByteArray, ByteArray> {
+        val encHex = prefs.getString(PREF_EK_PRIVATE_KEY_ENC, null)
+        val ivHex = prefs.getString(PREF_EK_PRIVATE_KEY_IV, null)
+        val pubHex = prefs.getString(PREF_EK_PUBLIC_KEY, null)
+
+        if (encHex != null && ivHex != null && pubHex != null) {
+            try {
+                val cipherBytes = PureCryptoEngine.hexToBytes(encHex)
+                val iv = PureCryptoEngine.hexToBytes(ivHex)
+                val decryptedPriv = decryptWithKeystore(cipherBytes, iv)
+                val pubBytes = PureCryptoEngine.hexToBytes(pubHex)
+                return Pair(decryptedPriv, pubBytes)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to decrypt EK key with Keystore, falling back to master seed", e)
+            }
+        }
+        return Pair(masterPriv, masterPub)
+    }
+
+    private fun persistEncryptedEk(privBytes: ByteArray, pubBytes: ByteArray) {
+        val (encBytes, iv) = encryptWithKeystore(privBytes)
+        prefs.edit()
+            .putString(PREF_EK_PRIVATE_KEY_ENC, PureCryptoEngine.bytesToHex(encBytes))
+            .putString(PREF_EK_PRIVATE_KEY_IV, PureCryptoEngine.bytesToHex(iv))
+            .putString(PREF_EK_PUBLIC_KEY, PureCryptoEngine.bytesToHex(pubBytes))
+            .commit()
+    }
+
+    /**
+     * Rotates device Encryption Key (EK) according to NEXTGEN/01_VNEXT_PROTOCOL_FROZEN.md C-12, §9.3.
+     * Identity Key (IK), identityHash, and nodeId64 remain UNCHANGED.
+     * keyVersion is incremented, session keys are invalidated, and a new IBC is generated.
+     */
+    fun rotateEncryptionKey(): Pair<ByteArray, ByteArray> {
+        clearAllSessionKeys()
+        val (newEkPriv, newEkPub) = PureCryptoEngine.generateX25519KeyPair()
+        ekPrivateKeyBytes = newEkPriv
+        ekPublicKeyBytes = newEkPub
+        publicKeyBytes = newEkPub
+        keyVersion += 1L
+
+        persistEncryptedEk(newEkPriv, newEkPub)
+        prefs.edit().putLong(PREF_KEY_VERSION, keyVersion).commit()
+
+        ibcSignature = PureCryptoEngine.signIbc(privateKeyBytes, ekPublicKeyBytes, keyVersion, notBefore = 0L)
+        _identityVersion.value += 1
+        return Pair(newEkPriv, newEkPub)
+    }
+
+    @Synchronized
+    fun nextMonotonicTimestamp(wallClockSeconds: Long = System.currentTimeMillis() / 1000L): Long {
+        val ts = maxOf(wallClockSeconds, lastEmittedTimestamp + 1L)
+        lastEmittedTimestamp = ts
+        prefs.edit().putLong(PREF_LAST_EMITTED_TIMESTAMP, ts).apply()
+        return ts
+    }
+
+    @Synchronized
+    fun nextAnnounceCounter(): Long {
+        announceCounter += 1L
+        prefs.edit().putLong(PREF_ANNOUNCE_COUNTER, announceCounter).apply()
+        return announceCounter
     }
 
     /**
@@ -63,6 +162,18 @@ class CryptoEngine private constructor(private val context: Context) : SecureKey
     fun regenerateIdentity(): Pair<ByteArray, ByteArray> {
         clearAllSessionKeys()
         val (privBytes, pubBytes) = PureCryptoEngine.generateX25519KeyPair()
+
+        keyVersion = 1L
+        announceCounter = 1L
+        lastEmittedTimestamp = 0L
+        prefs.edit()
+            .putLong(PREF_KEY_VERSION, 1L)
+            .putLong(PREF_ANNOUNCE_COUNTER, 1L)
+            .putLong(PREF_LAST_EMITTED_TIMESTAMP, 0L)
+            .remove(PREF_EK_PRIVATE_KEY_ENC)
+            .remove(PREF_EK_PRIVATE_KEY_IV)
+            .remove(PREF_EK_PUBLIC_KEY)
+            .commit()
 
         persistEncryptedPrivateKey(privBytes, pubBytes)
         applyIdentity(privBytes, pubBytes)
@@ -305,7 +416,7 @@ class CryptoEngine private constructor(private val context: Context) : SecureKey
         peerPublicKeyBytes: ByteArray,
         timestampSec: Long = System.currentTimeMillis() / 1000L
     ): ByteArray {
-        return PureCryptoEngine.derivePeerSessionKey(privateKeyBytes, peerPublicKeyBytes, timestampSec)
+        return PureCryptoEngine.derivePeerSessionKey(ekPrivateKeyBytes, peerPublicKeyBytes, timestampSec)
     }
 
     fun invalidateSessionKey(peerNodeId: Long) {
@@ -327,16 +438,20 @@ class CryptoEngine private constructor(private val context: Context) : SecureKey
             .remove(PREF_ACTIVE_CHANNEL_NAME)
             .remove(PREF_ENCRYPTED_CHANNEL_PASSPHRASE)
             .remove(PREF_ENCRYPTED_CHANNEL_IV)
+            .remove(PREF_KEY_VERSION)
+            .remove(PREF_ANNOUNCE_COUNTER)
+            .remove(PREF_LAST_EMITTED_TIMESTAMP)
+            .remove(PREF_EK_PRIVATE_KEY_ENC)
+            .remove(PREF_EK_PRIVATE_KEY_IV)
+            .remove(PREF_EK_PUBLIC_KEY)
             .commit() // Synchronous flush to prevent race before killProcess
     }
 
-    val signingPublicKey: ByteArray by lazy {
-        PureCryptoEngine.deriveSigningPublicKey(privateKeyBytes)
-    }
+    val signingPublicKey: ByteArray
+        get() = ikPublicKeyBytes
 
-    val signingPublicKeyHex: String by lazy {
-        PureCryptoEngine.bytesToHex(signingPublicKey)
-    }
+    val signingPublicKeyHex: String
+        get() = PureCryptoEngine.bytesToHex(ikPublicKeyBytes)
 
     fun sign(data: ByteArray): ByteArray {
         return PureCryptoEngine.sign(privateKeyBytes, data)
@@ -378,6 +493,12 @@ class CryptoEngine private constructor(private val context: Context) : SecureKey
         private const val PREF_ACTIVE_CHANNEL_NAME = "active_channel_name"
         private const val PREF_ENCRYPTED_CHANNEL_PASSPHRASE = "enc_channel_pass"
         private const val PREF_ENCRYPTED_CHANNEL_IV = "enc_channel_iv"
+        private const val PREF_KEY_VERSION = "identity_key_version"
+        private const val PREF_ANNOUNCE_COUNTER = "identity_announce_counter"
+        private const val PREF_LAST_EMITTED_TIMESTAMP = "identity_last_emitted_timestamp"
+        private const val PREF_EK_PRIVATE_KEY_ENC = "identity_ek_private_key_enc_hex"
+        private const val PREF_EK_PRIVATE_KEY_IV = "identity_ek_private_key_iv_hex"
+        private const val PREF_EK_PUBLIC_KEY = "identity_ek_public_key_hex"
 
         @Volatile
         private var INSTANCE: CryptoEngine? = null
@@ -387,6 +508,10 @@ class CryptoEngine private constructor(private val context: Context) : SecureKey
                 INSTANCE ?: CryptoEngine(context.applicationContext).also { INSTANCE = it }
             }
         }
+
+        fun deriveIdentityHash(ikPub: ByteArray): ByteArray = PureCryptoEngine.deriveIdentityHash(ikPub)
+
+        fun deriveNodeId64(identityHash: ByteArray): Long = PureCryptoEngine.deriveNodeId64(identityHash)
 
         fun deriveNodeId(publicKeyBytes: ByteArray): Long = PureCryptoEngine.deriveNodeId(publicKeyBytes)
 

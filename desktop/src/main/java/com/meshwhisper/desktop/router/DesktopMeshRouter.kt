@@ -1,12 +1,13 @@
 package com.meshwhisper.desktop.router
 
-import com.meshwhisper.core.crypto.PureCryptoEngine
 import com.meshwhisper.core.logging.MeshLogger
 import com.meshwhisper.core.logging.StdoutLogger
-import com.meshwhisper.core.protocol.MeshPacket
-import com.meshwhisper.core.protocol.PacketType
+import com.meshwhisper.core.protocol.*
 import com.meshwhisper.core.router.LruDedupCache
+import com.meshwhisper.core.util.*
+import com.meshwhisper.desktop.crypto.DesktopCryptoEngine
 import com.meshwhisper.desktop.crypto.DesktopPassphraseKeyStorage
+import com.meshwhisper.desktop.crypto.DesktopPipelineFactory
 import com.meshwhisper.desktop.db.*
 import com.meshwhisper.desktop.wifi.DesktopWifiEngine
 import kotlinx.coroutines.*
@@ -14,17 +15,22 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.security.MessageDigest
 import java.util.UUID
 
 /**
  * Desktop Mesh Router for Windows and macOS nodes.
- * Coordinates pure crypto, LRU deduplication, flood routing over Wi-Fi, SQLite persistence, and topology tracking.
+ * Coordinates dispatch, LRU deduplication, flood routing over Wi-Fi, and SQLite persistence.
+ * Uses the shared :core PacketPipeline for all ingress validation (T-ARCH-01, §9.1).
  */
 class DesktopMeshRouter(
     val keyStorage: DesktopPassphraseKeyStorage,
     val database: DesktopDatabase,
     val wifiEngine: DesktopWifiEngine,
-    val logger: MeshLogger = StdoutLogger
+    val logger: MeshLogger = StdoutLogger,
+    val clock: Clock = SystemClock(),
+    val randomSource: RandomSource = DefaultRandomSource()
 ) {
     companion object {
         private const val TAG = "DesktopMeshRouter"
@@ -43,6 +49,11 @@ class DesktopMeshRouter(
         private set
     var myAlias: String
         private set
+    var myIdentityHash: ByteArray
+        private set
+
+    private var currentAnnounceCounter: Long = 1L
+    private var currentKeyVersion: Long = 1L
 
     private val _incomingMessages = MutableSharedFlow<DesktopMessage>(extraBufferCapacity = 64)
     val incomingMessages: SharedFlow<DesktopMessage> = _incomingMessages.asSharedFlow()
@@ -53,21 +64,38 @@ class DesktopMeshRouter(
     lateinit var mediaManager: com.meshwhisper.desktop.media.DesktopMediaManager
         private set
 
+    private val packetStore = DesktopPacketStore(database)
+    private val pipeline: PacketPipeline
+
     init {
         val existingPriv = keyStorage.getPrivateKey()
         if (existingPriv != null && existingPriv.isNotEmpty()) {
             myPrivateKey = existingPriv
-            myPublicKey = PureCryptoEngine.derivePublicKey(existingPriv)
+            myPublicKey = DesktopCryptoEngine.derivePublicKey(existingPriv)
         } else {
-            val (priv, pub) = PureCryptoEngine.generateX25519KeyPair()
+            val (priv, pub) = DesktopCryptoEngine.generateX25519KeyPair()
             keyStorage.storePrivateKey(priv)
             myPrivateKey = priv
             myPublicKey = pub
         }
 
-        myNodeId = PureCryptoEngine.deriveNodeId(myPublicKey)
+        val ikPub = DesktopCryptoEngine.deriveSigningPublicKey(myPrivateKey)
+        myIdentityHash = DesktopCryptoEngine.deriveIdentityHash(ikPub)
+        myNodeId = DesktopCryptoEngine.deriveNodeId64(myIdentityHash)
         myNodeIdHex = java.lang.Long.toUnsignedString(myNodeId, 16).padStart(16, '0').uppercase()
         myAlias = keyStorage.readAlias() ?: "Desktop-${myNodeIdHex.takeLast(4)}"
+
+        pipeline = DesktopPipelineFactory.create(
+            myNodeId = myNodeId,
+            myIdentityHash = myIdentityHash,
+            myPublicKey = myPublicKey,
+            myPrivateKey = myPrivateKey,
+            currentKeyVersion = currentKeyVersion,
+            packetStore = packetStore,
+            database = database,
+            clock = clock,
+            dedupCache = dedupCache
+        )
 
         mediaManager = com.meshwhisper.desktop.media.DesktopMediaManager(
             myNodeId = myNodeId,
@@ -122,19 +150,34 @@ class DesktopMeshRouter(
     }
 
     private fun handleIncomingRawPacket(rawBytes: ByteArray, ingressSource: String) {
-        val packet = MeshPacket.deserialize(rawBytes) ?: return
-        val dedupKey = "${packet.messageId}:${packet.type.code}"
+        val linkContext = LinkContext(
+            linkHandle = ingressSource,
+            transport = TransportType.WIFI_TCP,
+            boundIdentity = null,
+            state = LinkState.AUTHENTICATED
+        )
 
-        // Deduplication Check
-        if (dedupCache.containsKey(dedupKey) || database.isPacketSeen(dedupKey)) {
-            return
+        when (val result = pipeline.ingest(rawBytes, linkContext)) {
+            is IngestResult.Accepted -> {
+                dispatchAuthenticatedPacket(result.packet, ingressSource)
+            }
+            is IngestResult.Admitted -> {
+                mediaManager.handleMediaChunk(result.chunk)
+            }
+            is IngestResult.Dropped -> {
+                val dup = result.duplicateDmPacket
+                if (result.isDuplicateDmForUs && dup != null) {
+                    sendAck(dup.senderId, dup.messageId)
+                }
+                logger.d(TAG, "Dropped incoming packet at ${result.stage}: ${result.reason}")
+            }
         }
-        dedupCache.put(dedupKey, System.currentTimeMillis())
-        database.markPacketSeen(dedupKey, packet.timestamp)
+    }
 
-        logPacket("RX", packet, rawBytes.size, "From $ingressSource (TTL=${packet.ttl})")
+    private fun dispatchAuthenticatedPacket(authPacket: AuthenticatedPacket, ingressSource: String) {
+        val packet = authPacket.packet
 
-        // Record Topology Edge (Radar Graph)
+        // Post-auth: record topology edge
         database.upsertTopologyEdge(
             DesktopTopologyEdge(
                 sourceNodeId = packet.senderId,
@@ -144,20 +187,24 @@ class DesktopMeshRouter(
             )
         )
 
-        // Process based on packet opcode
+        logPacket("RX", packet, packet.payload.size, "From $ingressSource (TTL=${packet.ttl})")
+
         when (packet.type) {
-            PacketType.BROADCAST_MESSAGE -> handleBroadcastMessage(packet, isSos = false)
-            PacketType.SOS_MESSAGE -> handleBroadcastMessage(packet, isSos = true)
-            PacketType.DIRECT_MESSAGE -> handleDirectMessage(packet)
-            PacketType.ACK -> handleAck(packet)
-            PacketType.PEER_ANNOUNCE -> handlePeerAnnounce(packet)
-            PacketType.MEDIA_INIT -> mediaManager.handleMediaInit(packet, isBroadcast = (packet.recipientId == MeshPacket.BROADCAST_RECIPIENT_ID))
-            PacketType.MEDIA_CHUNK -> mediaManager.handleMediaChunk(packet, isBroadcast = (packet.recipientId == MeshPacket.BROADCAST_RECIPIENT_ID))
+            PacketType.BROADCAST_MESSAGE -> handleBroadcastMessage(authPacket, isSos = false)
+            PacketType.SOS_MESSAGE -> handleBroadcastMessage(authPacket, isSos = true)
+            PacketType.DIRECT_MESSAGE -> handleDirectMessage(authPacket)
+            PacketType.ACK -> handleAck(authPacket)
+            PacketType.PEER_ANNOUNCE -> handlePeerAnnounce(authPacket)
+            PacketType.MEDIA_INIT -> mediaManager.handleMediaInit(
+                packet = packet,
+                plainBytes = authPacket.decryptedPayload,
+                isBroadcast = (packet.recipientId == MeshPacket.BROADCAST_RECIPIENT_ID)
+            )
             else -> {}
         }
 
-        // Flood Relay (if TTL > 0 and not addressed exclusively to me)
-        if (packet.ttl > 0 && packet.recipientId != myNodeId) {
+        // Flood Relay post-auth (if TTL > 1 and not addressed exclusively to me)
+        if (packet.ttl > 1 && packet.senderId != myNodeId && packet.recipientId != myNodeId) {
             val relayPacket = packet.decrementTtl()
             val relayBytes = MeshPacket.serialize(relayPacket)
             wifiEngine.broadcastPacket(relayBytes)
@@ -165,210 +212,140 @@ class DesktopMeshRouter(
         }
     }
 
-    private fun handleBroadcastMessage(packet: MeshPacket, isSos: Boolean) {
-        val publicChannelKey = PureCryptoEngine.derivePublicChannelKey()
-        val aad = packet.getAuthenticatedHeaderBytes()
+    private fun handleBroadcastMessage(authPacket: AuthenticatedPacket, isSos: Boolean) {
+        val packet = authPacket.packet
+        val decryptedBytes = authPacket.decryptedPayload
 
-        try {
-            val decryptedBytes = PureCryptoEngine.decrypt(
-                ciphertext = packet.payload,
-                authTag = packet.authTag,
-                messageId = packet.messageId,
-                aesKey = publicChannelKey,
-                aad = aad
-            )
-
-            val peer = database.getPeer(packet.senderId)
-            val (text, isVerified) = if (decryptedBytes.size >= 64) {
-                val tBytes = decryptedBytes.copyOfRange(0, decryptedBytes.size - 64)
-                val sig = decryptedBytes.copyOfRange(decryptedBytes.size - 64, decryptedBytes.size)
-                val valid = if (peer != null) {
-                    val pubKey = PureCryptoEngine.hexToBytes(peer.publicKeyHex)
-                    PureCryptoEngine.verifySignature(pubKey, tBytes, sig)
-                } else true
-                Pair(String(tBytes, Charsets.UTF_8), valid)
-            } else {
-                Pair(String(decryptedBytes, Charsets.UTF_8), true)
-            }
-
-            if (!isVerified) {
-                logger.w(TAG, "REJECTED: Forged signature on broadcast/SOS message from 0x${String.format("%016X", packet.senderId)}")
-                return
-            }
-
-            val msg = DesktopMessage(
-                messageId = packet.messageId.toString(),
-                senderNodeId = packet.senderId,
-                recipientNodeId = MeshPacket.BROADCAST_RECIPIENT_ID,
-                text = text,
-                timestamp = packet.timestamp,
-                isIncoming = true,
-                ttlRemaining = packet.ttl,
-                isChannelBroadcast = true,
-                channelName = if (isSos) "SOS_EMERGENCY" else "public",
-                isEmergencySos = isSos
-            )
-            database.insertMessage(msg)
-            _incomingMessages.tryEmit(msg)
-            if (isSos) {
-                _sosAlerts.tryEmit(msg)
-            }
-            logger.i(TAG, "${if (isSos) "🚨 [SOS ALERT]" else "💬 [PUBLIC]"} from 0x${String.format("%016X", packet.senderId)}: $text")
-        } catch (e: Exception) {
-            logger.w(TAG, "AEAD auth failure on broadcast message from 0x${String.format("%016X", packet.senderId)}")
-        }
-    }
-
-    private fun handleDirectMessage(packet: MeshPacket) {
-        if (packet.recipientId != myNodeId) return
-
-        val peer = database.getPeer(packet.senderId)
-        val sessionKey = if (peer != null) {
-            val peerPubKey = PureCryptoEngine.hexToBytes(peer.publicKeyHex)
-            PureCryptoEngine.derivePeerSessionKey(myPrivateKey, peerPubKey, packet.timestamp)
+        val text = if (isSos) {
+            if (decryptedBytes.size >= 3) {
+                val textLen = ((decryptedBytes[1].toInt() and 0xFF) shl 8) or (decryptedBytes[2].toInt() and 0xFF)
+                val textEnd = minOf(3 + textLen, decryptedBytes.size)
+                String(decryptedBytes.copyOfRange(3, textEnd), Charsets.UTF_8)
+            } else ""
         } else {
-            null
+            if (decryptedBytes.size >= 2) {
+                val textLen = ((decryptedBytes[0].toInt() and 0xFF) shl 8) or (decryptedBytes[1].toInt() and 0xFF)
+                val textEnd = minOf(2 + textLen, decryptedBytes.size)
+                String(decryptedBytes.copyOfRange(2, textEnd), Charsets.UTF_8)
+            } else ""
         }
 
-        if (sessionKey != null) {
-            val aad = packet.getAuthenticatedHeaderBytes()
-            try {
-                val decrypted = PureCryptoEngine.decrypt(
-                    ciphertext = packet.payload,
-                    authTag = packet.authTag,
-                    messageId = packet.messageId,
-                    aesKey = sessionKey,
-                    aad = aad
-                )
-                val text = String(decrypted, Charsets.UTF_8)
-                val msg = DesktopMessage(
-                    messageId = packet.messageId.toString(),
-                    senderNodeId = packet.senderId,
-                    recipientNodeId = myNodeId,
-                    text = text,
-                    timestamp = packet.timestamp,
-                    isIncoming = true,
-                    isDelivered = true,
-                    ttlRemaining = packet.ttl
-                )
-                database.insertMessage(msg)
-                _incomingMessages.tryEmit(msg)
-                logger.i(TAG, "🔒 [DM] from 0x${String.format("%016X", packet.senderId)}: $text")
-
-                // Send authenticated ACK back
-                sendAck(packet.senderId, packet.messageId)
-            } catch (e: Exception) {
-                logger.w(TAG, "AEAD decryption failed for DM from 0x${String.format("%016X", packet.senderId)}")
-            }
+        val msg = DesktopMessage(
+            messageId = packet.messageId.toString(),
+            senderNodeId = packet.senderId,
+            recipientNodeId = MeshPacket.BROADCAST_RECIPIENT_ID,
+            text = text,
+            timestamp = packet.timestamp,
+            isIncoming = true,
+            ttlRemaining = packet.ttl,
+            isChannelBroadcast = true,
+            channelName = if (isSos) "SOS_EMERGENCY" else "public",
+            isEmergencySos = isSos
+        )
+        database.insertMessage(msg)
+        _incomingMessages.tryEmit(msg)
+        if (isSos) {
+            _sosAlerts.tryEmit(msg)
         }
+        logger.i(TAG, "${if (isSos) "🚨 [SOS ALERT]" else "💬 [PUBLIC]"} from 0x${String.format("%016X", packet.senderId)}: $text")
     }
 
-    private fun handleAck(packet: MeshPacket) {
+    private fun handleDirectMessage(authPacket: AuthenticatedPacket) {
+        val packet = authPacket.packet
         if (packet.recipientId != myNodeId) return
-        val peer = database.getPeer(packet.senderId) ?: return
-        val peerPubKey = PureCryptoEngine.hexToBytes(peer.publicKeyHex)
-        val sessionKey = PureCryptoEngine.derivePeerSessionKey(myPrivateKey, peerPubKey, packet.timestamp)
-        val aad = packet.getAuthenticatedHeaderBytes()
 
-        try {
-            val plain = PureCryptoEngine.decrypt(packet.payload, packet.authTag, packet.messageId, sessionKey, aad)
-            if (plain.size >= 16) {
-                val buf = ByteBuffer.wrap(plain)
-                val most = buf.getLong()
-                val least = buf.getLong()
-                val originalMsgId = UUID(most, least).toString()
-                logger.i(TAG, "✅ [ACK RECEIVED] for message $originalMsgId from 0x${String.format("%016X", packet.senderId)}")
-            }
-        } catch (_: Exception) {}
+        val text = String(authPacket.decryptedPayload, Charsets.UTF_8)
+        val msg = DesktopMessage(
+            messageId = packet.messageId.toString(),
+            senderNodeId = packet.senderId,
+            recipientNodeId = myNodeId,
+            text = text,
+            timestamp = packet.timestamp,
+            isIncoming = true,
+            isDelivered = true,
+            ttlRemaining = packet.ttl
+        )
+        database.insertMessage(msg)
+        _incomingMessages.tryEmit(msg)
+        logger.i(TAG, "🔒 [DM] from 0x${String.format("%016X", packet.senderId)}: $text")
+
+        // Send authenticated ACK back
+        sendAck(packet.senderId, packet.messageId)
     }
 
-    private fun handlePeerAnnounce(packet: MeshPacket) {
-        val publicChannelKey = PureCryptoEngine.derivePublicChannelKey()
-        val decryptedPayload = try {
-            PureCryptoEngine.decrypt(
-                ciphertext = packet.payload,
-                authTag = packet.authTag,
-                messageId = packet.messageId,
-                aesKey = publicChannelKey,
-                aad = packet.getAuthenticatedHeaderBytes()
-            )
-        } catch (_: Exception) {
-            packet.payload
+    private fun handleAck(authPacket: AuthenticatedPacket) {
+        val packet = authPacket.packet
+        if (packet.recipientId != myNodeId) return
+
+        if (authPacket.decryptedPayload.size >= 16) {
+            val buf = ByteBuffer.wrap(authPacket.decryptedPayload).order(ByteOrder.BIG_ENDIAN)
+            val most = buf.getLong()
+            val least = buf.getLong()
+            val originalMsgId = UUID(most, least).toString()
+            logger.i(TAG, "✅ [ACK RECEIVED] for message $originalMsgId from 0x${String.format("%016X", packet.senderId)}")
         }
+    }
 
-        if (decryptedPayload.size < 33) return
-
-        // Verify Ed25519 signature if present (Fix P0-1)
-        if (decryptedPayload.size >= 33 + 64) {
-            val unsigned = decryptedPayload.copyOfRange(0, decryptedPayload.size - 64)
-            val sig = decryptedPayload.copyOfRange(decryptedPayload.size - 64, decryptedPayload.size)
-            val tempBuf = ByteBuffer.wrap(unsigned)
-            val aLen = tempBuf.get().toInt() and 0xFF
-            if (tempBuf.remaining() >= aLen + 32) {
-                tempBuf.position(1 + aLen)
-                val pKey = ByteArray(32)
-                tempBuf.get(pKey)
-                val valid = PureCryptoEngine.verifySignature(pKey, unsigned, sig)
-                if (!valid) {
-                    logger.w(TAG, "REJECTED: Forged PEER_ANNOUNCE signature from 0x${String.format("%016X", packet.senderId)}")
-                    return
-                }
-            }
-        }
-
-        val buffer = ByteBuffer.wrap(decryptedPayload)
-        val aliasLen = buffer.get().toInt() and 0xFF
-        if (buffer.remaining() < aliasLen + 32) return
-
-        val aliasBytes = ByteArray(aliasLen)
-        buffer.get(aliasBytes)
-        val alias = String(aliasBytes, Charsets.UTF_8)
-
-        val pubKey = ByteArray(32)
-        buffer.get(pubKey)
-
-        val peerNodeId = PureCryptoEngine.deriveNodeId(pubKey)
-        if (peerNodeId != packet.senderId) return
+    private fun handlePeerAnnounce(authPacket: AuthenticatedPacket) {
+        val packet = authPacket.packet
+        val announce = PeerAnnouncePayload.deserialize(authPacket.decryptedPayload, packet.senderId, packet.ttl) ?: return
 
         val peer = DesktopPeer(
-            nodeId = peerNodeId,
-            publicKeyHex = PureCryptoEngine.bytesToHex(pubKey),
-            alias = alias,
+            nodeId = packet.senderId,
+            publicKeyHex = DesktopCryptoEngine.bytesToHex(announce.ekPub),
+            alias = announce.alias,
             rssi = -50,
             hops = maxOf(1, MeshPacket.DEFAULT_TTL - packet.ttl),
             lastSeen = System.currentTimeMillis(),
-            publicFingerprint = PureCryptoEngine.generateFingerprint(pubKey)
+            publicFingerprint = DesktopCryptoEngine.generateFingerprint(announce.ikPub)
         )
         database.upsertPeer(peer)
-        logger.i(TAG, "Discovered mesh peer: $alias (0x${String.format("%016X", peerNodeId)})")
+        logger.i(TAG, "Discovered mesh peer: ${announce.alias} (0x${String.format("%016X", packet.senderId)})")
     }
 
     fun sendPublicMessage(text: String, isSos: Boolean = false): String {
         val msgId = UUID.randomUUID()
         val timestamp = System.currentTimeMillis() / 1000L
-        val plainBytes = text.toByteArray(Charsets.UTF_8)
-        val signature = PureCryptoEngine.sign(myPrivateKey, plainBytes)
-        val signedPlain = ByteArray(plainBytes.size + signature.size)
-        System.arraycopy(plainBytes, 0, signedPlain, 0, plainBytes.size)
-        System.arraycopy(signature, 0, signedPlain, plainBytes.size, signature.size)
+        val textBytes = text.toByteArray(Charsets.UTF_8)
 
-        val publicChannelKey = PureCryptoEngine.derivePublicChannelKey()
+        val plainBytes = if (isSos) {
+            val buf = ByteBuffer.allocate(1 + 2 + textBytes.size).order(ByteOrder.BIG_ENDIAN)
+            buf.put(0x00.toByte()) // flags
+            buf.putShort(textBytes.size.toShort())
+            buf.put(textBytes)
+            buf.array()
+        } else {
+            val buf = ByteBuffer.allocate(2 + textBytes.size).order(ByteOrder.BIG_ENDIAN)
+            buf.putShort(textBytes.size.toShort())
+            buf.put(textBytes)
+            buf.array()
+        }
 
         val type = if (isSos) PacketType.SOS_MESSAGE else PacketType.BROADCAST_MESSAGE
-        val aad = MeshPacket.computeAad(
-            type = type,
-            messageId = msgId,
-            senderId = myNodeId,
-            recipientId = MeshPacket.BROADCAST_RECIPIENT_ID,
-            timestamp = timestamp
-        )
+        val publicChannelKey = DesktopCryptoEngine.derivePublicChannelKey()
+        val aad = MeshPacket.computeAad(type, msgId, myNodeId, MeshPacket.BROADCAST_RECIPIENT_ID, timestamp)
 
-        val encResult = PureCryptoEngine.encrypt(
-            plaintext = signedPlain,
+        val encResult = DesktopCryptoEngine.encrypt(plainBytes, msgId, publicChannelKey, aad)
+
+        val md = MessageDigest.getInstance("SHA-256")
+        md.update(encResult.ciphertext)
+        md.update(encResult.authTag)
+        val cipherHash = md.digest()
+
+        val transcript = MeshPacket.buildSigTranscript(
+            purposeTag = ResourceLimits.PURPOSE_CONTENT,
+            protocolVersion = ResourceLimits.PROTOCOL_VERSION.toByte(),
+            packetTypeByte = type.wireByte,
             messageId = msgId,
-            aesKey = publicChannelKey,
-            aad = aad
+            senderIdentityHash = myIdentityHash,
+            senderNodeId64 = myNodeId,
+            recipientNodeId64 = MeshPacket.BROADCAST_RECIPIENT_ID,
+            timestamp = timestamp,
+            payloadLenExcludingSig = encResult.ciphertext.size,
+            ciphertextAndTagHash = cipherHash
         )
+        val hopSig = DesktopCryptoEngine.sign(myPrivateKey, transcript)
+        val fullPayload = encResult.ciphertext + hopSig
 
         val packet = MeshPacket(
             type = type,
@@ -377,7 +354,7 @@ class DesktopMeshRouter(
             recipientId = MeshPacket.BROADCAST_RECIPIENT_ID,
             ttl = MeshPacket.DEFAULT_TTL,
             timestamp = timestamp,
-            payload = encResult.ciphertext,
+            payload = fullPayload,
             authTag = encResult.authTag
         )
 
@@ -411,8 +388,8 @@ class DesktopMeshRouter(
         val timestamp = System.currentTimeMillis() / 1000L
         val plainBytes = text.toByteArray(Charsets.UTF_8)
 
-        val peerPubKey = PureCryptoEngine.hexToBytes(peer.publicKeyHex)
-        val sessionKey = PureCryptoEngine.derivePeerSessionKey(myPrivateKey, peerPubKey, timestamp)
+        val peerPubKey = DesktopCryptoEngine.hexToBytes(peer.publicKeyHex)
+        val sessionKey = DesktopCryptoEngine.derivePeerSessionKey(myPrivateKey, peerPubKey, timestamp)
         val aad = MeshPacket.computeAad(
             type = PacketType.DIRECT_MESSAGE,
             messageId = msgId,
@@ -421,7 +398,28 @@ class DesktopMeshRouter(
             timestamp = timestamp
         )
 
-        val encResult = PureCryptoEngine.encrypt(plainBytes, msgId, sessionKey, aad)
+        val encResult = DesktopCryptoEngine.encrypt(plainBytes, msgId, sessionKey, aad)
+
+        val md = MessageDigest.getInstance("SHA-256")
+        md.update(encResult.ciphertext)
+        md.update(encResult.authTag)
+        val cipherHash = md.digest()
+
+        val transcript = MeshPacket.buildSigTranscript(
+            purposeTag = ResourceLimits.PURPOSE_CONTENT,
+            protocolVersion = ResourceLimits.PROTOCOL_VERSION.toByte(),
+            packetTypeByte = PacketType.DIRECT_MESSAGE.wireByte,
+            messageId = msgId,
+            senderIdentityHash = myIdentityHash,
+            senderNodeId64 = myNodeId,
+            recipientNodeId64 = recipientNodeId,
+            timestamp = timestamp,
+            payloadLenExcludingSig = encResult.ciphertext.size,
+            ciphertextAndTagHash = cipherHash
+        )
+        val hopSig = DesktopCryptoEngine.sign(myPrivateKey, transcript)
+        val fullPayload = encResult.ciphertext + hopSig
+
         val packet = MeshPacket(
             type = PacketType.DIRECT_MESSAGE,
             messageId = msgId,
@@ -429,7 +427,7 @@ class DesktopMeshRouter(
             recipientId = recipientNodeId,
             ttl = MeshPacket.DEFAULT_TTL,
             timestamp = timestamp,
-            payload = encResult.ciphertext,
+            payload = fullPayload,
             authTag = encResult.authTag
         )
 
@@ -445,19 +443,7 @@ class DesktopMeshRouter(
                 recipientNodeId = recipientNodeId,
                 text = text,
                 timestamp = timestamp,
-                isIncoming = false,
-                isDelivered = false
-            )
-        )
-
-        // Queue store & forward
-        database.insertStoreAndForward(
-            DesktopStoreForward(
-                messageId = msgId.toString(),
-                recipientId = recipientNodeId,
-                packetData = raw,
-                createdAt = System.currentTimeMillis(),
-                expiresAt = System.currentTimeMillis() + (24 * 3600 * 1000L)
+                isIncoming = false
             )
         )
 
@@ -466,16 +452,16 @@ class DesktopMeshRouter(
         } else {
             wifiEngine.broadcastPacket(raw)
         }
-        logPacket("TX", packet, raw.size, "DM to 0x${String.format("%016X", recipientNodeId)}")
+        logPacket("TX", packet, raw.size, "Sent DM to 0x${String.format("%016X", recipientNodeId)}")
         return msgId.toString()
     }
 
     private fun sendAck(recipientNodeId: Long, originalMsgId: UUID) {
         val peer = database.getPeer(recipientNodeId) ?: return
-        val timestamp = System.currentTimeMillis() / 1000L
         val ackPacketId = UUID.randomUUID()
+        val timestamp = System.currentTimeMillis() / 1000L
 
-        val plainPayload = ByteBuffer.allocate(16).apply {
+        val plainPayload = ByteBuffer.allocate(16).order(ByteOrder.BIG_ENDIAN).apply {
             putLong(originalMsgId.mostSignificantBits)
             putLong(originalMsgId.leastSignificantBits)
         }.array()
@@ -488,9 +474,29 @@ class DesktopMeshRouter(
             timestamp = timestamp
         )
 
-        val peerPubKey = PureCryptoEngine.hexToBytes(peer.publicKeyHex)
-        val sessionKey = PureCryptoEngine.derivePeerSessionKey(myPrivateKey, peerPubKey, timestamp)
-        val encResult = PureCryptoEngine.encrypt(plainPayload, ackPacketId, sessionKey, aad)
+        val peerPubKey = DesktopCryptoEngine.hexToBytes(peer.publicKeyHex)
+        val sessionKey = DesktopCryptoEngine.derivePeerSessionKey(myPrivateKey, peerPubKey, timestamp)
+        val encResult = DesktopCryptoEngine.encrypt(plainPayload, ackPacketId, sessionKey, aad)
+
+        val md = MessageDigest.getInstance("SHA-256")
+        md.update(encResult.ciphertext)
+        md.update(encResult.authTag)
+        val cipherHash = md.digest()
+
+        val transcript = MeshPacket.buildSigTranscript(
+            purposeTag = ResourceLimits.PURPOSE_CONTENT,
+            protocolVersion = ResourceLimits.PROTOCOL_VERSION.toByte(),
+            packetTypeByte = PacketType.ACK.wireByte,
+            messageId = ackPacketId,
+            senderIdentityHash = myIdentityHash,
+            senderNodeId64 = myNodeId,
+            recipientNodeId64 = recipientNodeId,
+            timestamp = timestamp,
+            payloadLenExcludingSig = encResult.ciphertext.size,
+            ciphertextAndTagHash = cipherHash
+        )
+        val hopSig = DesktopCryptoEngine.sign(myPrivateKey, transcript)
+        val fullPayload = encResult.ciphertext + hopSig
 
         val packet = MeshPacket(
             type = PacketType.ACK,
@@ -499,7 +505,7 @@ class DesktopMeshRouter(
             recipientId = recipientNodeId,
             ttl = MeshPacket.DEFAULT_TTL,
             timestamp = timestamp,
-            payload = encResult.ciphertext,
+            payload = fullPayload,
             authTag = encResult.authTag
         )
 
@@ -516,24 +522,30 @@ class DesktopMeshRouter(
     }
 
     fun announcePresence() {
-        val rawAliasBytes = myAlias.toByteArray(Charsets.UTF_8)
-        val aliasBytes = if (rawAliasBytes.size > 255) rawAliasBytes.copyOf(255) else rawAliasBytes
-        val unsignedPayload = ByteBuffer.allocate(1 + aliasBytes.size + 32 + 1 + 1).apply {
-            put((aliasBytes.size and 0xFF).toByte())
-            put(aliasBytes)
-            put(myPublicKey)
-            put(0.toByte()) // directNeighbors count = 0
-            put(0.toByte()) // avatarHash = 0
-        }.array()
+        val ikPub = DesktopCryptoEngine.deriveSigningPublicKey(myPrivateKey)
+        val ibcSig = DesktopCryptoEngine.signIbc(
+            identitySeed = myPrivateKey,
+            ekPub = myPublicKey,
+            keyVersion = currentKeyVersion,
+            notBefore = 0L
+        )
 
-        val sig = PureCryptoEngine.sign(myPrivateKey, unsignedPayload)
-        val signedPayload = ByteArray(unsignedPayload.size + sig.size)
-        System.arraycopy(unsignedPayload, 0, signedPayload, 0, unsignedPayload.size)
-        System.arraycopy(sig, 0, signedPayload, unsignedPayload.size, sig.size)
+        val announcePayload = PeerAnnouncePayload(
+            announceVersion = 0x02,
+            flags = 0x00,
+            ikPub = ikPub,
+            ekPub = myPublicKey,
+            keyVersion = currentKeyVersion,
+            notBefore = 0L,
+            ibcSignature = ibcSig,
+            announceCounter = ++currentAnnounceCounter,
+            alias = myAlias
+        )
+        val plainBytes = announcePayload.serialize()
 
         val msgId = UUID.randomUUID()
         val timestamp = System.currentTimeMillis() / 1000L
-        val publicChannelKey = PureCryptoEngine.derivePublicChannelKey()
+        val publicChannelKey = DesktopCryptoEngine.derivePublicChannelKey()
 
         val aad = MeshPacket.computeAad(
             type = PacketType.PEER_ANNOUNCE,
@@ -543,12 +555,32 @@ class DesktopMeshRouter(
             timestamp = timestamp
         )
 
-        val encResult = PureCryptoEngine.encrypt(
-            plaintext = signedPayload,
+        val encResult = DesktopCryptoEngine.encrypt(
+            plaintext = plainBytes,
             messageId = msgId,
             aesKey = publicChannelKey,
             aad = aad
         )
+
+        val md = MessageDigest.getInstance("SHA-256")
+        md.update(encResult.ciphertext)
+        md.update(encResult.authTag)
+        val cipherHash = md.digest()
+
+        val transcript = MeshPacket.buildSigTranscript(
+            purposeTag = ResourceLimits.PURPOSE_CONTENT,
+            protocolVersion = ResourceLimits.PROTOCOL_VERSION.toByte(),
+            packetTypeByte = PacketType.PEER_ANNOUNCE.wireByte,
+            messageId = msgId,
+            senderIdentityHash = myIdentityHash,
+            senderNodeId64 = myNodeId,
+            recipientNodeId64 = MeshPacket.BROADCAST_RECIPIENT_ID,
+            timestamp = timestamp,
+            payloadLenExcludingSig = encResult.ciphertext.size,
+            ciphertextAndTagHash = cipherHash
+        )
+        val hopSig = DesktopCryptoEngine.sign(myPrivateKey, transcript)
+        val fullPayload = encResult.ciphertext + hopSig
 
         val packet = MeshPacket(
             type = PacketType.PEER_ANNOUNCE,
@@ -557,7 +589,7 @@ class DesktopMeshRouter(
             recipientId = MeshPacket.BROADCAST_RECIPIENT_ID,
             ttl = MeshPacket.DEFAULT_TTL,
             timestamp = timestamp,
-            payload = encResult.ciphertext,
+            payload = fullPayload,
             authTag = encResult.authTag
         )
 
@@ -568,25 +600,26 @@ class DesktopMeshRouter(
     private fun drainStoreAndForward(peerNodeId: Long) {
         scope.launch {
             val pending = database.getPendingPacketsForPeer(peerNodeId)
-            for (item in pending) {
-                if (wifiEngine.sendDirectPacket(peerNodeId, item.packetData)) {
-                    database.deleteStoreAndForward(item.messageId)
-                    logger.i(TAG, "Drained Store&Forward message ${item.messageId} to peer 0x${String.format("%016X", peerNodeId)}")
+            for (sf in pending) {
+                if (wifiEngine.isPeerConnected(peerNodeId)) {
+                    wifiEngine.sendDirectPacket(peerNodeId, sf.packetData)
+                } else {
+                    wifiEngine.broadcastPacket(sf.packetData)
                 }
+                database.deleteStoreAndForward(sf.messageId)
             }
         }
     }
 
-    private fun logPacket(direction: String, packet: MeshPacket, size: Int, info: String) {
-        database.insertPacketLog(
-            DesktopPacketLog(
-                timestamp = System.currentTimeMillis(),
-                direction = direction,
-                type = packet.type.name,
-                messageIdHex = packet.messageId.toString(),
-                sizeBytes = size,
-                info = info
-            )
+    private fun logPacket(direction: String, packet: MeshPacket, rawByteCount: Int, info: String) {
+        val entry = DesktopPacketLog(
+            timestamp = packet.timestamp,
+            direction = direction,
+            type = packet.type.name,
+            messageIdHex = packet.messageId.toString(),
+            sizeBytes = rawByteCount,
+            info = info
         )
+        database.insertPacketLog(entry)
     }
 }

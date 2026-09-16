@@ -79,7 +79,9 @@ class MediaTransferManager(
     private val cryptoEngine: CryptoEngine,
     private val packetBroadcaster: suspend (ByteArray) -> Unit,
     private val ackSender: (recipientId: Long, messageId: UUID) -> Unit,
-    private val isDirectPeer: (nodeId: Long) -> Boolean = { true }
+    private val isDirectPeer: (nodeId: Long) -> Boolean = { true },
+    private val directPacketSender: (suspend (recipientId: Long, packetBytes: ByteArray) -> Boolean)? = null,
+    private val isWifiPeer: (nodeId: Long) -> Boolean = { false }
 ) {
     private val tag = "MediaTransferManager"
     private val exceptionHandler = kotlinx.coroutines.CoroutineExceptionHandler { _, throwable ->
@@ -307,6 +309,12 @@ class MediaTransferManager(
             return@withLock ""
         }
 
+        // Guard: reject media exceeding 20MB upper bound
+        if (mediaBytes.size > 20 * 1024 * 1024) {
+            Log.e(tag, "sendMedia() rejected: mediaBytes (${mediaBytes.size} bytes) exceeds 20MB upper bound")
+            return@withLock ""
+        }
+
         // Validate known recipient peer for direct 1-to-1 media
         if (!isBroadcast) {
             val peer = database.peerDao().getPeerById(recipientNodeId)
@@ -504,8 +512,13 @@ class MediaTransferManager(
             authTag = encryptedInit.authTag
         )
 
-        packetBroadcaster(MeshPacket.serialize(initPacket))
-        delay(70L)
+        val initRaw = MeshPacket.serialize(initPacket)
+        if (!isBroadcast && directPacketSender != null && isDirectPeer(recipientNodeId)) {
+            directPacketSender(recipientNodeId, initRaw)
+        } else {
+            packetBroadcaster(initRaw)
+        }
+        delay(40L)
 
         // 3. Send MEDIA_CHUNK packets with pacing
         val peerPubKey = if (!isBroadcast) {
@@ -516,6 +529,9 @@ class MediaTransferManager(
         val sessionKey = if (!isBroadcast && peerPubKey != null) {
             cryptoEngine.derivePeerSessionKey(peerPubKey, timestampSec)
         } else null
+
+        val isDirectWifi = !isBroadcast && isWifiPeer(recipientNodeId)
+        val pacingDelay = if (isDirectWifi) 12L else 55L
 
         for (chunkIndex in 0 until totalChunks) {
             if (session.isCancelled.get()) {
@@ -571,7 +587,7 @@ class MediaTransferManager(
                 )
             )
 
-            delay(70L)
+            delay(pacingDelay)
         }
 
         if (isBroadcast) {
@@ -632,7 +648,12 @@ class MediaTransferManager(
             authTag = encryptedChunk.authTag
         )
 
-        packetBroadcaster(MeshPacket.serialize(chunkPacket))
+        val chunkRaw = MeshPacket.serialize(chunkPacket)
+        if (!isBroadcast && directPacketSender != null && isDirectPeer(recipientNodeId)) {
+            directPacketSender(recipientNodeId, chunkRaw)
+        } else {
+            packetBroadcaster(chunkRaw)
+        }
     }
 
     // =========================================================================
@@ -681,8 +702,8 @@ class MediaTransferManager(
         val totalSizeBytes = buffer.getInt()
 
         // Bounds-check: reject absurd metadata that would cause excessive memory allocation.
-        // Max 4096 chunks (~1.6 MB at 400 B/chunk) and 20 MB total size are generous upper bounds.
-        if (totalChunks == 0 || totalChunks > 4096 || totalSizeBytes <= 0 || totalSizeBytes > 20 * 1024 * 1024) {
+        // Max 52430 chunks (~20 MB at 400 B/chunk) and 20 MB total size are generous upper bounds.
+        if (totalChunks == 0 || totalChunks > 52430 || totalSizeBytes <= 0 || totalSizeBytes > 20 * 1024 * 1024) {
             Log.w(tag, "MEDIA_INIT rejected from ${packet.senderId}: unreasonable metadata (chunks=$totalChunks, size=$totalSizeBytes). Possible malicious peer.")
             return
         }

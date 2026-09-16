@@ -1,189 +1,129 @@
 package com.meshwhisper.core
 
 import com.google.common.truth.Truth.assertThat
-import com.meshwhisper.core.crypto.PureCryptoEngine
 import com.meshwhisper.core.protocol.ProfilePayload
 import org.junit.Test
 import java.security.MessageDigest
+import java.util.Random
 
+/**
+ * Validates canonical MWP2 profile presentation payload serialization,
+ * strict bounds checking, exact-length enforcement, and fuzzer safety.
+ * Specified in NEXTGEN/01_VNEXT_PROTOCOL_FROZEN.md §3.10 and NEXTGEN/03_VNEXT_TESTS_AND_AGENT_RULES.md (T-FUZZ-02).
+ */
 class ProfilePayloadTest {
 
     @Test
-    fun testCanonicalBytesDeterminism() {
-        val nodeId = 0x0102030405060708L
-        val version = 42L
-        val name = "Alice Tactical"
-        val bio = "Mesh node deployed in Sector 4"
-        val avatarHash = MessageDigest.getInstance("SHA-256").digest("test_avatar".toByteArray())
-        val signingPub = ByteArray(32) { it.toByte() }
-
-        val bytes1 = ProfilePayload.computeCanonicalBytes(nodeId, version, name, bio, avatarHash, signingPub)
-        val bytes2 = ProfilePayload.computeCanonicalBytes(nodeId, version, name, bio, avatarHash, signingPub)
-
-        assertThat(bytes1).isEqualTo(bytes2)
-        assertThat(bytes1.size).isAtMost(280)
-        // Check domain tag "MWP1" at offset 0
-        assertThat(bytes1.copyOfRange(0, 4)).isEqualTo(ProfilePayload.DOMAIN_TAG)
-    }
-
-    @Test
-    fun testIdentityBindingValidation() {
-        val (priv, pub) = PureCryptoEngine.generateX25519KeyPair()
-        val derivedNodeId = PureCryptoEngine.deriveNodeId(pub)
-        val signingPub = PureCryptoEngine.deriveSigningPublicKey(priv)
-
-        val validPayload = ProfilePayload(
-            nodeId = derivedNodeId,
-            version = 1L,
-            displayName = "Valid Node",
-            bio = "Bound identity",
-            avatarHash = ProfilePayload.EMPTY_AVATAR_HASH,
-            signingPublicKey = signingPub,
-            signature = ByteArray(64)
-        )
-        assertThat(validPayload.isIdentityBoundToKey(pub)).isTrue()
-
-        // Test with different public key (spoof attempt)
-        val (_, otherPub) = PureCryptoEngine.generateX25519KeyPair()
-        assertThat(validPayload.isIdentityBoundToKey(otherPub)).isFalse()
-
-        // Test with invalid nodeId
-        val spoofedPayload = validPayload.copy(nodeId = 0x99999999L)
-        assertThat(spoofedPayload.isIdentityBoundToKey(pub)).isFalse()
-    }
-
-    @Test
-    fun testEd25519SigningAndVerification() {
-        val (identityPriv, identityPub) = PureCryptoEngine.generateX25519KeyPair()
-        val signingPub = PureCryptoEngine.deriveSigningPublicKey(identityPriv)
-        val nodeId = PureCryptoEngine.deriveNodeId(identityPub)
-
-        val avatarHash = MessageDigest.getInstance("SHA-256").digest("avatar_bytes".toByteArray())
-        val canonical = ProfilePayload.computeCanonicalBytes(
-            nodeId = nodeId,
-            version = 10L,
-            displayName = "Alpha Team Leader",
-            bio = "Tactical communications active",
-            avatarHash = avatarHash,
-            signingPublicKey = signingPub
-        )
-
-        val signature = PureCryptoEngine.sign(identityPriv, canonical)
-        assertThat(signature.size).isEqualTo(64)
-
-        val payload = ProfilePayload(
-            nodeId = nodeId,
-            version = 10L,
-            displayName = "Alpha Team Leader",
-            bio = "Tactical communications active",
-            avatarHash = avatarHash,
-            signingPublicKey = signingPub,
-            signature = signature
-        )
-
-        // Valid signature verification
-        assertThat(payload.verifySignature()).isTrue()
-        assertThat(payload.verifySignature(signingPub)).isTrue()
-
-        // Verification with wrong expected signing key must fail
-        val (otherPriv, _) = PureCryptoEngine.generateX25519KeyPair()
-        val otherSigningPub = PureCryptoEngine.deriveSigningPublicKey(otherPriv)
-        assertThat(payload.verifySignature(otherSigningPub)).isFalse()
-    }
-
-    @Test
-    fun testTamperingInvalidatesSignature() {
-        val (identityPriv, identityPub) = PureCryptoEngine.generateX25519KeyPair()
-        val signingPub = PureCryptoEngine.deriveSigningPublicKey(identityPriv)
-        val nodeId = PureCryptoEngine.deriveNodeId(identityPub)
-
-        val avatarHash = MessageDigest.getInstance("SHA-256").digest("avatar_bytes".toByteArray())
-        val canonical = ProfilePayload.computeCanonicalBytes(
-            nodeId = nodeId,
-            version = 1L,
-            displayName = "Legitimate Name",
-            bio = "Legitimate Bio",
-            avatarHash = avatarHash,
-            signingPublicKey = signingPub
-        )
-        val signature = PureCryptoEngine.sign(identityPriv, canonical)
-
-        val original = ProfilePayload(
-            nodeId = nodeId,
-            version = 1L,
-            displayName = "Legitimate Name",
-            bio = "Legitimate Bio",
-            avatarHash = avatarHash,
-            signingPublicKey = signingPub,
-            signature = signature
-        )
-        assertThat(original.verifySignature()).isTrue()
-
-        // 1. Tamper with version (attempted rollback or artificial increment)
-        val tamperedVersion = original.copy(version = 2L)
-        assertThat(tamperedVersion.verifySignature()).isFalse()
-
-        // 2. Tamper with display name
-        val tamperedName = original.copy(displayName = "Imposter Name")
-        assertThat(tamperedName.verifySignature()).isFalse()
-
-        // 3. Tamper with bio
-        val tamperedBio = original.copy(bio = "Malicious link injected")
-        assertThat(tamperedBio.verifySignature()).isFalse()
-
-        // 4. Tamper with avatar hash
-        val tamperedAvatar = original.copy(avatarHash = ByteArray(32) { 0xFF.toByte() })
-        assertThat(tamperedAvatar.verifySignature()).isFalse()
-
-        // 5. Tamper with signing public key (Mallory swapping Alice's key for her own)
-        val (malloryPriv, _) = PureCryptoEngine.generateX25519KeyPair()
-        val mallorySigningPub = PureCryptoEngine.deriveSigningPublicKey(malloryPriv)
-        val tamperedKey = original.copy(signingPublicKey = mallorySigningPub)
-        assertThat(tamperedKey.verifySignature()).isFalse()
-    }
-
-    @Test
     fun testWireSerializationRoundTrip() {
-        val avatarHash = ByteArray(32) { it.toByte() }
-        val signingPub = ByteArray(32) { (it + 5).toByte() }
-        val signature = ByteArray(64) { (it * 2).toByte() }
-
+        val avatarHash = ByteArray(32) { (it * 3).toByte() }
         val original = ProfilePayload(
             nodeId = 0x1122334455667788L,
-            version = 15L,
-            displayName = "Bravo Scout",
-            bio = "Recon unit online. Frequency clear.",
-            avatarHash = avatarHash,
-            signingPublicKey = signingPub,
-            signature = signature
+            version = 42L,
+            displayName = "Alice Tactical",
+            bio = "Mesh node deployed in Sector 4",
+            avatarHash = avatarHash
         )
 
         val wireBytes = original.serialize()
-        assertThat(wireBytes.size).isLessThan(310)
+        assertThat(wireBytes.size).isAtLeast(ProfilePayload.MIN_SIZE) // >= 55
+        assertThat(wireBytes.size).isAtMost(ProfilePayload.MAX_SIZE) // <= 207
+
+        // Domain tag is "MWP2"
+        assertThat(wireBytes.copyOfRange(0, 4)).isEqualTo(ProfilePayload.DOMAIN_TAG)
 
         val deserialized = ProfilePayload.deserialize(wireBytes)
         assertThat(deserialized).isNotNull()
         assertThat(deserialized).isEqualTo(original)
+        assertThat(deserialized!!.displayName).isEqualTo("Alice Tactical")
+        assertThat(deserialized.bio).isEqualTo("Mesh node deployed in Sector 4")
+        assertThat(deserialized.avatarHash).isEqualTo(avatarHash)
     }
 
     @Test
-    fun testMalformedWireDataHandling() {
-        // Truncated wire bytes
-        val truncated = byteArrayOf(0x4D, 0x57, 0x50, 0x31, 0x01, 0x02)
-        assertThat(ProfilePayload.deserialize(truncated)).isNull()
+    fun testMinAndMaxPayloadSizes() {
+        val avatarHash = ByteArray(32)
 
-        // Corrupted domain tag
-        val validPayload = ProfilePayload(
+        // Minimum payload: empty display name and empty bio
+        val minPayload = ProfilePayload(
+            nodeId = 1L,
+            version = 1L,
+            displayName = "",
+            bio = "",
+            avatarHash = avatarHash
+        )
+        val minBytes = minPayload.serialize()
+        assertThat(minBytes.size).isEqualTo(ProfilePayload.MIN_SIZE) // exactly 55
+        assertThat(ProfilePayload.deserialize(minBytes)).isEqualTo(minPayload)
+
+        // Maximum payload: 32 bytes display name and 120 bytes bio
+        val maxName = "A".repeat(32)
+        val maxBio = "B".repeat(120)
+        val maxPayload = ProfilePayload(
+            nodeId = Long.MAX_VALUE,
+            version = Long.MAX_VALUE,
+            displayName = maxName,
+            bio = maxBio,
+            avatarHash = avatarHash
+        )
+        val maxBytes = maxPayload.serialize()
+        assertThat(maxBytes.size).isEqualTo(ProfilePayload.MAX_SIZE) // exactly 207
+        assertThat(ProfilePayload.deserialize(maxBytes)).isEqualTo(maxPayload)
+    }
+
+    @Test
+    fun testRejectLegacyMwp1DomainTag() {
+        val payload = ProfilePayload(
             nodeId = 1L,
             version = 1L,
             displayName = "Test",
             bio = "Bio",
-            avatarHash = ProfilePayload.EMPTY_AVATAR_HASH,
-            signingPublicKey = ByteArray(32),
-            signature = ByteArray(64)
+            avatarHash = ByteArray(32)
         )
-        val wire = validPayload.serialize()
-        wire[0] = 0x00 // corrupt domain tag
+        val wire = payload.serialize()
+        // Corrupt domain tag to MWP1
+        wire[3] = '1'.code.toByte()
         assertThat(ProfilePayload.deserialize(wire)).isNull()
+    }
+
+    @Test
+    fun testExactLengthAndTrailingByteRejection() {
+        val payload = ProfilePayload(
+            nodeId = 1L,
+            version = 1L,
+            displayName = "Test",
+            bio = "Bio",
+            avatarHash = ByteArray(32)
+        )
+        val wire = payload.serialize()
+
+        // Trailing byte added
+        val withTrailing = ByteArray(wire.size + 1)
+        System.arraycopy(wire, 0, withTrailing, 0, wire.size)
+        withTrailing[withTrailing.size - 1] = 0x99.toByte()
+        assertThat(ProfilePayload.deserialize(withTrailing)).isNull()
+
+        // Truncated (missing 1 byte of avatar hash)
+        val truncated = wire.copyOf(wire.size - 1)
+        assertThat(ProfilePayload.deserialize(truncated)).isNull()
+    }
+
+    @Test
+    fun testFuzzParserNeverThrowsT_FUZZ_02() {
+        val random = Random(12345L)
+        // 10,000 cases of fuzz data
+        for (i in 0 until 10_000) {
+            val length = random.nextInt(300)
+            val randomBytes = ByteArray(length)
+            random.nextBytes(randomBytes)
+
+            // Must never throw an uncaught exception
+            val result = ProfilePayload.deserialize(randomBytes)
+            if (result != null) {
+                // If it successfully parsed, it must obey all MWP2 bounds
+                assertThat(result.displayName.toByteArray(Charsets.UTF_8).size).isAtMost(32)
+                assertThat(result.bio.toByteArray(Charsets.UTF_8).size).isAtMost(120)
+                assertThat(result.avatarHash.size).isEqualTo(32)
+            }
+        }
     }
 }

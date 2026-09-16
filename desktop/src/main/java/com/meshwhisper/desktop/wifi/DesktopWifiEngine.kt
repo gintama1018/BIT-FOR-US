@@ -207,48 +207,49 @@ class DesktopWifiEngine(
 
                 // 1. Send handshake frame
                 val myAliasBytes = myAlias.toByteArray(Charsets.UTF_8)
-                val handshakePayload = ByteBuffer.allocate(8 + 1 + myAliasBytes.size).apply {
-                    putLong(myNodeId)
-                    put(myAliasBytes.size.toByte())
-                    put(myAliasBytes)
-                }.array()
-
                 synchronized(outStream) {
-                    outStream.writeInt(handshakePayload.size)
-                    outStream.write(handshakePayload)
+                    outStream.writeLong(myNodeId)
+                    outStream.writeByte(myAliasBytes.size)
+                    outStream.write(myAliasBytes)
                     outStream.flush()
                 }
 
                 // 2. Read remote handshake frame
-                val remoteHandshakeLen = inStream.readInt()
-                if (remoteHandshakeLen in 9..256) {
-                    val remoteHandshakeBytes = ByteArray(remoteHandshakeLen)
-                    inStream.readFully(remoteHandshakeBytes)
-                    val buf = ByteBuffer.wrap(remoteHandshakeBytes)
-                    val remoteNodeId = buf.getLong()
-                    peerNodeId = remoteNodeId
+                val remoteNodeId = inStream.readLong()
+                val remoteAliasLen = inStream.readByte().toInt() and 0xFF
+                val remoteAliasBytes = ByteArray(remoteAliasLen)
+                inStream.readFully(remoteAliasBytes)
+                val remoteAlias = String(remoteAliasBytes, Charsets.UTF_8)
+                peerNodeId = remoteNodeId
 
-                    val session = PeerTcpSession(remoteNodeId, remoteIp, socket, outStream)
-                    activePeers[remoteNodeId] = session
-                    peerIpToNodeId[remoteIp] = remoteNodeId
-                    updatePeerStates()
-                    onPeerConnectedListener?.invoke(remoteNodeId, remoteIp)
-                    logger.i(TAG, "Registered peer session for 0x${String.format("%016X", remoteNodeId)} at $remoteIp")
+                val session = PeerTcpSession(remoteNodeId, remoteIp, socket, outStream)
+                val oldSession = activePeers.put(remoteNodeId, session)
+                if (oldSession != null && oldSession.socket != socket) {
+                    try { oldSession.socket.close() } catch (_: Exception) {}
+                }
+                peerIpToNodeId[remoteIp] = remoteNodeId
+                updatePeerStates()
+                onPeerConnectedListener?.invoke(remoteNodeId, remoteIp)
+                logger.i(TAG, "Registered peer session for 0x${String.format("%016X", remoteNodeId)} ($remoteAlias) at $remoteIp")
 
-                    // 3. Continuous frame read loop
-                    while (isActive && isEngineRunning) {
-                        val frameLen = inStream.readInt()
-                        if (frameLen in 1..65535) {
-                            val frameBytes = ByteArray(frameLen)
-                            inStream.readFully(frameBytes)
-                            onPacketReceivedListener?.invoke(frameBytes, "WIFI_TCP:$remoteIp")
-                        }
+                // 3. Continuous frame read loop
+                while (isActive && isEngineRunning) {
+                    val frameLen = inStream.readInt()
+                    if (frameLen in 1..65535) {
+                        val frameBytes = ByteArray(frameLen)
+                        inStream.readFully(frameBytes)
+                        onPacketReceivedListener?.invoke(frameBytes, "WIFI_TCP:$remoteIp")
                     }
                 }
             } catch (e: Exception) {
                 logger.d(TAG, "TCP session ended for $remoteIp: ${e.message}")
             } finally {
-                peerNodeId?.let { disconnectPeer(it) }
+                peerNodeId?.let { id ->
+                    val current = activePeers[id]
+                    if (current?.socket == socket) {
+                        disconnectPeer(id)
+                    }
+                }
                 try { socket.close() } catch (_: Exception) {}
             }
         }

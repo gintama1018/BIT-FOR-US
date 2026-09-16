@@ -1,8 +1,11 @@
 package com.meshwhisper.app.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -38,7 +41,9 @@ import com.meshwhisper.app.ui.components.VoiceNoteBubble
 import com.meshwhisper.app.ui.theme.*
 import com.meshwhisper.app.ui.viewmodel.MeshViewModel
 import com.meshwhisper.app.ui.viewmodel.QrScanResult
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.launch
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -214,7 +219,7 @@ fun DirectChatDetailScreen(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         if (uri != null) {
-            val tiledResult = MediaCompressor.compressImageAsTiles(context, uri, com.meshwhisper.app.media.ImageQuality.STANDARD, 3, 3)
+            val tiledResult = MediaCompressor.compressImageAsTiles(context, uri, com.meshwhisper.app.media.ImageQuality.STANDARD, 8, 8)
             if (tiledResult != null) {
                 viewModel.sendMediaDirect(
                     recipientNodeId = peerNodeId,
@@ -233,29 +238,76 @@ fun DirectChatDetailScreen(
         }
     }
 
+    // Voice recording states & permission launcher
+    var isRecordingVoice by remember { mutableStateOf(false) }
+    var recordingDurationSec by remember { mutableIntStateOf(0) }
+    var voiceRecordFile by remember { mutableStateOf<File?>(null) }
+
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            val cacheDir = File(context.cacheDir, "voice_notes").apply { mkdirs() }
+            val tempFile = File(cacheDir, "vn_${System.currentTimeMillis()}.m4a")
+            voiceRecordFile = tempFile
+            val started = viewModel.audioRecorder.startRecording(tempFile)
+            if (started) {
+                isRecordingVoice = true
+                recordingDurationSec = 0
+            } else {
+                android.widget.Toast.makeText(context, "Could not start voice recording", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            android.widget.Toast.makeText(context, "Microphone permission required for voice notes", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    LaunchedEffect(isRecordingVoice) {
+        if (isRecordingVoice) {
+            recordingDurationSec = 0
+            while (isRecordingVoice) {
+                kotlinx.coroutines.delay(1000L)
+                recordingDurationSec++
+                if (recordingDurationSec >= 30) {
+                    val durationMs = viewModel.audioRecorder.stopRecording()
+                    isRecordingVoice = false
+                    val file = voiceRecordFile
+                    voiceRecordFile = null
+                    if (file != null && file.exists() && durationMs >= 500L) {
+                        val audioBytes = file.readBytes()
+                        if (audioBytes.isNotEmpty()) {
+                            viewModel.sendMediaDirect(
+                                recipientNodeId = peerNodeId,
+                                mediaType = MediaType.VOICE,
+                                mediaBytes = audioBytes,
+                                caption = "",
+                                durationMs = durationMs,
+                                originalFileName = "voice_${System.currentTimeMillis()}.m4a"
+                            )
+                            android.widget.Toast.makeText(context, "Voice note sent (30s limit reached)", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                        file.delete()
+                    }
+                    break
+                }
+            }
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            if (isRecordingVoice) {
+                viewModel.audioRecorder.cancelRecording()
+                voiceRecordFile?.delete()
+            }
+        }
+    }
+
     // Auto-scroll on new message
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
             listState.animateScrollToItem(messages.size - 1)
         }
-    }
-
-    // Call Overlay Dialog for Active / Ringing Call
-    if (activeCallInfo != null && activeCallInfo?.peerNodeId == peerNodeId && callState != com.meshwhisper.app.voice.CallState.IDLE) {
-        CallOverlayDialog(
-            callInfo = activeCallInfo!!,
-            peerAlias = peerProfile?.displayName?.ifBlank { null } ?: peer?.alias ?: "Peer",
-            avatarUri = peerProfile?.avatarUri ?: peer?.avatarUri,
-            durationSeconds = callDurationSeconds,
-            isMuted = isCallMuted,
-            isSpeakerOn = isCallSpeakerOn,
-            onAccept = { viewModel.acceptVoiceCall() },
-            onDecline = { viewModel.declineVoiceCall() },
-            onEndCall = { viewModel.endVoiceCall() },
-            onToggleMute = { viewModel.toggleCallMute() },
-            onToggleSpeaker = { viewModel.toggleCallSpeaker() },
-            onDismiss = { viewModel.dismissEndedCall() }
-        )
     }
 
     Column(
@@ -466,6 +518,62 @@ fun DirectChatDetailScreen(
                     }
                 },
                 onAttachPhoto = { photoPickerLauncher.launch("image/*") },
+                isRecordingVoice = isRecordingVoice,
+                recordingDurationSec = recordingDurationSec,
+                onStartVoiceRecording = {
+                    val hasPermission = ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.RECORD_AUDIO
+                    ) == PackageManager.PERMISSION_GRANTED
+
+                    if (!hasPermission) {
+                        audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    } else {
+                        val cacheDir = File(context.cacheDir, "voice_notes").apply { mkdirs() }
+                        val tempFile = File(cacheDir, "vn_${System.currentTimeMillis()}.m4a")
+                        voiceRecordFile = tempFile
+                        val started = viewModel.audioRecorder.startRecording(tempFile)
+                        if (started) {
+                            isRecordingVoice = true
+                            recordingDurationSec = 0
+                        } else {
+                            android.widget.Toast.makeText(context, "Could not start voice recording", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                },
+                onCancelVoiceRecording = {
+                    viewModel.audioRecorder.cancelRecording()
+                    isRecordingVoice = false
+                    recordingDurationSec = 0
+                    voiceRecordFile?.delete()
+                    voiceRecordFile = null
+                },
+                onSendVoiceRecording = {
+                    val durationMs = viewModel.audioRecorder.stopRecording()
+                    isRecordingVoice = false
+                    val file = voiceRecordFile
+                    voiceRecordFile = null
+                    if (file != null && file.exists() && durationMs >= 500L) {
+                        val audioBytes = file.readBytes()
+                        if (audioBytes.isNotEmpty()) {
+                            viewModel.sendMediaDirect(
+                                recipientNodeId = peerNodeId,
+                                mediaType = MediaType.VOICE,
+                                mediaBytes = audioBytes,
+                                caption = "",
+                                durationMs = durationMs,
+                                originalFileName = "voice_${System.currentTimeMillis()}.m4a"
+                            )
+                            android.widget.Toast.makeText(context, "Sending voice note...", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                        file.delete()
+                    } else {
+                        file?.delete()
+                        if (durationMs < 500L) {
+                            android.widget.Toast.makeText(context, "Hold longer to record voice note", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                },
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .imePadding()
@@ -589,6 +697,11 @@ private fun SaharaDirectComposer(
     onTextChanged: (String) -> Unit,
     onSend: () -> Unit,
     onAttachPhoto: () -> Unit,
+    isRecordingVoice: Boolean,
+    recordingDurationSec: Int,
+    onStartVoiceRecording: () -> Unit,
+    onCancelVoiceRecording: () -> Unit,
+    onSendVoiceRecording: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Surface(
@@ -599,60 +712,171 @@ private fun SaharaDirectComposer(
             .fillMaxWidth()
             .shadow(6.dp, RoundedCornerShape(18.dp), spotColor = SaharaPrimary.copy(alpha = 0.15f))
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(
-                onClick = onAttachPhoto,
-                modifier = Modifier.size(36.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.AttachFile,
-                    contentDescription = "Attach",
-                    tint = SaharaOnSurfaceVariant,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-
-            TextField(
-                value = textInput,
-                onValueChange = onTextChanged,
-                placeholder = {
-                    Text(
-                        text = "Encrypted message...",
-                        color = SaharaOnSurfaceVariant.copy(alpha = 0.6f),
-                        fontSize = 15.sp,
-                        fontFamily = ManropeFamily
-                    )
-                },
-                colors = TextFieldDefaults.colors(
-                    focusedContainerColor = Color.Transparent,
-                    unfocusedContainerColor = Color.Transparent,
-                    focusedIndicatorColor = Color.Transparent,
-                    unfocusedIndicatorColor = Color.Transparent,
-                    focusedTextColor = SaharaOnSurface,
-                    unfocusedTextColor = SaharaOnSurface
+        if (isRecordingVoice) {
+            val infiniteTransition = rememberInfiniteTransition(label = "recordingPulse")
+            val pulseAlpha by infiniteTransition.animateFloat(
+                initialValue = 0.3f,
+                targetValue = 1.0f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(600, easing = LinearEasing),
+                    repeatMode = RepeatMode.Reverse
                 ),
-                maxLines = 4,
-                modifier = Modifier.weight(1f)
+                label = "pulseAlpha"
             )
 
-            IconButton(
-                onClick = onSend,
+            Row(
                 modifier = Modifier
-                    .size(40.dp)
-                    .clip(CircleShape)
-                    .background(if (textInput.isNotBlank()) SaharaPrimary else SaharaPrimary.copy(alpha = 0.4f))
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.Send,
-                    contentDescription = "Send",
-                    tint = Color.White,
-                    modifier = Modifier.size(18.dp)
+                // Cancel / Delete Recording Button
+                IconButton(
+                    onClick = onCancelVoiceRecording,
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(CircleShape)
+                        .background(SaharaErrorContainer.copy(alpha = 0.3f))
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = "Cancel Recording",
+                        tint = SaharaError,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+
+                // Live Timer & Status Indicator
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(horizontal = 8.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(10.dp)
+                            .clip(CircleShape)
+                            .background(SaharaError.copy(alpha = pulseAlpha))
+                    )
+                    val minutes = recordingDurationSec / 60
+                    val seconds = recordingDurationSec % 60
+                    Text(
+                        text = String.format(Locale.getDefault(), "%02d:%02d / 00:30", minutes, seconds),
+                        color = SaharaOnSurface,
+                        fontSize = 15.sp,
+                        fontFamily = ManropeFamily,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Recording voice...",
+                        color = SaharaOnSurfaceVariant.copy(alpha = 0.7f),
+                        fontSize = 12.sp,
+                        fontFamily = ManropeFamily
+                    )
+                }
+
+                // Send Voice Note Button
+                IconButton(
+                    onClick = onSendVoiceRecording,
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(SaharaPrimary)
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.Send,
+                        contentDescription = "Send Voice Note",
+                        tint = Color.White,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+        } else {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(
+                    onClick = onAttachPhoto,
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.AttachFile,
+                        contentDescription = "Attach Photo",
+                        tint = SaharaOnSurfaceVariant,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+
+                IconButton(
+                    onClick = onStartVoiceRecording,
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Mic,
+                        contentDescription = "Record Voice Note",
+                        tint = SaharaPrimary,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+
+                TextField(
+                    value = textInput,
+                    onValueChange = onTextChanged,
+                    placeholder = {
+                        Text(
+                            text = "Encrypted message...",
+                            color = SaharaOnSurfaceVariant.copy(alpha = 0.6f),
+                            fontSize = 15.sp,
+                            fontFamily = ManropeFamily
+                        )
+                    },
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = Color.Transparent,
+                        unfocusedContainerColor = Color.Transparent,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent,
+                        focusedTextColor = SaharaOnSurface,
+                        unfocusedTextColor = SaharaOnSurface
+                    ),
+                    maxLines = 4,
+                    modifier = Modifier.weight(1f)
                 )
+
+                if (textInput.isNotBlank()) {
+                    IconButton(
+                        onClick = onSend,
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .background(SaharaPrimary)
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.Send,
+                            contentDescription = "Send Message",
+                            tint = Color.White,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                } else {
+                    IconButton(
+                        onClick = onStartVoiceRecording,
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .background(SaharaPrimary)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Mic,
+                            contentDescription = "Record Voice Note",
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
             }
         }
     }

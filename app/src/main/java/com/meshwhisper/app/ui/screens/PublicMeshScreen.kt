@@ -1,8 +1,11 @@
 package com.meshwhisper.app.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -42,7 +45,9 @@ import androidx.compose.material.icons.filled.QrCodeScanner
 import com.meshwhisper.app.ui.components.CameraQrScannerDialog
 import com.meshwhisper.app.ui.util.QrCodeGenerator
 import com.meshwhisper.app.ui.viewmodel.QrScanResult
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.launch
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -74,7 +79,7 @@ fun PublicMeshScreen(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         if (uri != null) {
-            val tiledResult = MediaCompressor.compressImageAsTiles(context, uri, com.meshwhisper.app.media.ImageQuality.STANDARD, 3, 3)
+            val tiledResult = MediaCompressor.compressImageAsTiles(context, uri, com.meshwhisper.app.media.ImageQuality.STANDARD, 8, 8)
             if (tiledResult != null) {
                 viewModel.sendMediaBroadcast(
                     mediaType = MediaType.IMAGE,
@@ -88,6 +93,70 @@ fun PublicMeshScreen(
                     imageHeightPx = tiledResult.imageHeightPx,
                     paddedTileByteLengths = tiledResult.paddedTileByteLengths
                 )
+            }
+        }
+    }
+
+    // Voice recording states & permission launcher
+    var isRecordingVoice by remember { mutableStateOf(false) }
+    var recordingDurationSec by remember { mutableIntStateOf(0) }
+    var voiceRecordFile by remember { mutableStateOf<File?>(null) }
+
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            val cacheDir = File(context.cacheDir, "voice_notes").apply { mkdirs() }
+            val tempFile = File(cacheDir, "bvn_${System.currentTimeMillis()}.m4a")
+            voiceRecordFile = tempFile
+            val started = viewModel.audioRecorder.startRecording(tempFile)
+            if (started) {
+                isRecordingVoice = true
+                recordingDurationSec = 0
+            } else {
+                android.widget.Toast.makeText(context, "Could not start voice recording", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            android.widget.Toast.makeText(context, "Microphone permission required for voice notes", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    LaunchedEffect(isRecordingVoice) {
+        if (isRecordingVoice) {
+            recordingDurationSec = 0
+            while (isRecordingVoice) {
+                kotlinx.coroutines.delay(1000L)
+                recordingDurationSec++
+                if (recordingDurationSec >= 30) {
+                    val durationMs = viewModel.audioRecorder.stopRecording()
+                    isRecordingVoice = false
+                    val file = voiceRecordFile
+                    voiceRecordFile = null
+                    if (file != null && file.exists() && durationMs >= 500L) {
+                        val audioBytes = file.readBytes()
+                        if (audioBytes.isNotEmpty()) {
+                            viewModel.sendMediaBroadcast(
+                                mediaType = MediaType.VOICE,
+                                mediaBytes = audioBytes,
+                                caption = "",
+                                durationMs = durationMs,
+                                originalFileName = "broadcast_voice_${System.currentTimeMillis()}.m4a"
+                            )
+                            android.widget.Toast.makeText(context, "Voice note broadcasted (30s limit reached)", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                        file.delete()
+                    }
+                    break
+                }
+            }
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            if (isRecordingVoice) {
+                viewModel.audioRecorder.cancelRecording()
+                voiceRecordFile?.delete()
             }
         }
     }
@@ -326,6 +395,61 @@ fun PublicMeshScreen(
                 onAttachPhoto = { photoPickerLauncher.launch("image/*") },
                 onSosClick = { showSosDialog = true },
                 connectedNodes = connectedNodes,
+                isRecordingVoice = isRecordingVoice,
+                recordingDurationSec = recordingDurationSec,
+                onStartVoiceRecording = {
+                    val hasPermission = ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.RECORD_AUDIO
+                    ) == PackageManager.PERMISSION_GRANTED
+
+                    if (!hasPermission) {
+                        audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    } else {
+                        val cacheDir = File(context.cacheDir, "voice_notes").apply { mkdirs() }
+                        val tempFile = File(cacheDir, "bvn_${System.currentTimeMillis()}.m4a")
+                        voiceRecordFile = tempFile
+                        val started = viewModel.audioRecorder.startRecording(tempFile)
+                        if (started) {
+                            isRecordingVoice = true
+                            recordingDurationSec = 0
+                        } else {
+                            android.widget.Toast.makeText(context, "Could not start voice recording", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                },
+                onCancelVoiceRecording = {
+                    viewModel.audioRecorder.cancelRecording()
+                    isRecordingVoice = false
+                    recordingDurationSec = 0
+                    voiceRecordFile?.delete()
+                    voiceRecordFile = null
+                },
+                onSendVoiceRecording = {
+                    val durationMs = viewModel.audioRecorder.stopRecording()
+                    isRecordingVoice = false
+                    val file = voiceRecordFile
+                    voiceRecordFile = null
+                    if (file != null && file.exists() && durationMs >= 500L) {
+                        val audioBytes = file.readBytes()
+                        if (audioBytes.isNotEmpty()) {
+                            viewModel.sendMediaBroadcast(
+                                mediaType = MediaType.VOICE,
+                                mediaBytes = audioBytes,
+                                caption = "",
+                                durationMs = durationMs,
+                                originalFileName = "broadcast_voice_${System.currentTimeMillis()}.m4a"
+                            )
+                            android.widget.Toast.makeText(context, "Broadcasting voice note...", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                        file.delete()
+                    } else {
+                        file?.delete()
+                        if (durationMs < 500L) {
+                            android.widget.Toast.makeText(context, "Hold longer to record voice note", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                },
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .imePadding()
@@ -767,6 +891,11 @@ private fun SaharaPublicComposer(
     onAttachPhoto: () -> Unit,
     onSosClick: () -> Unit,
     connectedNodes: Int,
+    isRecordingVoice: Boolean,
+    recordingDurationSec: Int,
+    onStartVoiceRecording: () -> Unit,
+    onCancelVoiceRecording: () -> Unit,
+    onSendVoiceRecording: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Surface(
@@ -777,115 +906,214 @@ private fun SaharaPublicComposer(
             .fillMaxWidth()
             .shadow(6.dp, RoundedCornerShape(16.dp), spotColor = SaharaPrimary.copy(alpha = 0.15f))
     ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            // Text Input & Send FAB Row
+        if (isRecordingVoice) {
+            val infiniteTransition = rememberInfiniteTransition(label = "recordingPulse")
+            val pulseAlpha by infiniteTransition.animateFloat(
+                initialValue = 0.3f,
+                targetValue = 1.0f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(600, easing = LinearEasing),
+                    repeatMode = RepeatMode.Reverse
+                ),
+                label = "pulseAlpha"
+            )
+
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                TextField(
-                    value = textInput,
-                    onValueChange = onTextChanged,
-                    placeholder = {
-                        Text(
-                            text = "Broadcast to the mesh...",
-                            color = SaharaOnSurfaceVariant.copy(alpha = 0.6f),
-                            fontSize = 15.sp,
-                            fontFamily = ManropeFamily
-                        )
-                    },
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = Color.Transparent,
-                        unfocusedContainerColor = Color.Transparent,
-                        focusedIndicatorColor = Color.Transparent,
-                        unfocusedIndicatorColor = Color.Transparent,
-                        focusedTextColor = SaharaOnSurface,
-                        unfocusedTextColor = SaharaOnSurface
-                    ),
-                    maxLines = 3,
-                    modifier = Modifier.weight(1f)
-                )
-
+                // Cancel button
                 IconButton(
-                    onClick = onSend,
+                    onClick = onCancelVoiceRecording,
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(CircleShape)
+                        .background(SaharaErrorContainer.copy(alpha = 0.3f))
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = "Cancel Recording",
+                        tint = SaharaError,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+
+                // Status and Timer
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(horizontal = 8.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(10.dp)
+                            .clip(CircleShape)
+                            .background(SaharaError.copy(alpha = pulseAlpha))
+                    )
+                    val minutes = recordingDurationSec / 60
+                    val seconds = recordingDurationSec % 60
+                    Text(
+                        text = String.format(Locale.getDefault(), "%02d:%02d / 00:30", minutes, seconds),
+                        color = SaharaOnSurface,
+                        fontSize = 15.sp,
+                        fontFamily = ManropeFamily,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Broadcasting voice...",
+                        color = SaharaOnSurfaceVariant.copy(alpha = 0.7f),
+                        fontSize = 12.sp,
+                        fontFamily = ManropeFamily
+                    )
+                }
+
+                // Send button
+                IconButton(
+                    onClick = onSendVoiceRecording,
                     modifier = Modifier
                         .size(40.dp)
                         .clip(CircleShape)
-                        .background(if (textInput.isNotBlank()) SaharaPrimary else SaharaPrimary.copy(alpha = 0.4f))
+                        .background(SaharaPrimary)
                 ) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.Send,
-                        contentDescription = "Send",
+                        contentDescription = "Broadcast Voice Note",
                         tint = Color.White,
                         modifier = Modifier.size(18.dp)
                     )
                 }
             }
-
-            // Bottom Utility Toolbar
-            Surface(
-                color = SaharaSurfaceContainerLow,
-                modifier = Modifier.fillMaxWidth()
-            ) {
+        } else {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                // Text Input & Send FAB Row
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 6.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                        .padding(horizontal = 14.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
+                    TextField(
+                        value = textInput,
+                        onValueChange = onTextChanged,
+                        placeholder = {
+                            Text(
+                                text = "Broadcast to the mesh...",
+                                color = SaharaOnSurfaceVariant.copy(alpha = 0.6f),
+                                fontSize = 15.sp,
+                                fontFamily = ManropeFamily
+                            )
+                        },
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = Color.Transparent,
+                            unfocusedContainerColor = Color.Transparent,
+                            focusedIndicatorColor = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent,
+                            focusedTextColor = SaharaOnSurface,
+                            unfocusedTextColor = SaharaOnSurface
+                        ),
+                        maxLines = 3,
+                        modifier = Modifier.weight(1f)
+                    )
+
+                    if (textInput.isNotBlank()) {
                         IconButton(
-                            onClick = onAttachPhoto,
-                            modifier = Modifier.size(32.dp)
+                            onClick = onSend,
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(SaharaPrimary)
                         ) {
                             Icon(
-                                imageVector = Icons.Default.AttachFile,
-                                contentDescription = "Attach",
-                                tint = SaharaOnSurfaceVariant,
+                                imageVector = Icons.AutoMirrored.Filled.Send,
+                                contentDescription = "Send",
+                                tint = Color.White,
                                 modifier = Modifier.size(18.dp)
                             )
                         }
-
+                    } else {
                         IconButton(
-                            onClick = { /* Voice note trigger */ },
-                            modifier = Modifier.size(32.dp)
+                            onClick = onStartVoiceRecording,
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(SaharaPrimary)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Mic,
-                                contentDescription = "Voice",
-                                tint = SaharaOnSurfaceVariant,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-
-                        IconButton(
-                            onClick = onSosClick,
-                            modifier = Modifier
-                                .size(32.dp)
-                                .clip(CircleShape)
-                                .background(SaharaErrorContainer.copy(alpha = 0.5f))
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Emergency,
-                                contentDescription = "SOS",
-                                tint = SaharaError,
-                                modifier = Modifier.size(18.dp)
+                                contentDescription = "Record Voice",
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp)
                             )
                         }
                     }
+                }
 
-                    Text(
-                        text = "Public • Est. reach: ${maxOf(1, connectedNodes)} node(s)",
-                        color = SaharaOnSurfaceVariant.copy(alpha = 0.7f),
-                        fontSize = 11.sp,
-                        fontFamily = ManropeFamily
-                    )
+                // Bottom Utility Toolbar
+                Surface(
+                    color = SaharaSurfaceContainerLow,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            IconButton(
+                                onClick = onAttachPhoto,
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.AttachFile,
+                                    contentDescription = "Attach",
+                                    tint = SaharaOnSurfaceVariant,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+
+                            IconButton(
+                                onClick = onStartVoiceRecording,
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Mic,
+                                    contentDescription = "Record Voice Note",
+                                    tint = SaharaPrimary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+
+                            IconButton(
+                                onClick = onSosClick,
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .clip(CircleShape)
+                                    .background(SaharaErrorContainer.copy(alpha = 0.5f))
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Emergency,
+                                    contentDescription = "SOS",
+                                    tint = SaharaError,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+
+                        Text(
+                            text = "Public • Est. reach: ${maxOf(1, connectedNodes)} node(s)",
+                            color = SaharaOnSurfaceVariant.copy(alpha = 0.7f),
+                            fontSize = 11.sp,
+                            fontFamily = ManropeFamily
+                        )
+                    }
                 }
             }
         }

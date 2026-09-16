@@ -56,7 +56,11 @@ object PureCryptoEngine {
     private const val MAX_SESSION_KEY_CACHE_SIZE = 256
     private val sessionKeyEpochCache = object : java.util.LinkedHashMap<String, ByteArray>(128, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ByteArray>?): Boolean {
-            return size > MAX_SESSION_KEY_CACHE_SIZE
+            if (size > MAX_SESSION_KEY_CACHE_SIZE) {
+                eldest?.value?.let { java.util.Arrays.fill(it, 0.toByte()) }
+                return true
+            }
+            return false
         }
     }
 
@@ -132,7 +136,126 @@ object PureCryptoEngine {
     }
 
     /**
-     * Derives a 64-bit Long Node ID from public key bytes using first 8 bytes of SHA-256.
+     * Derives 32-byte identityHash according to NEXTGEN/01_VNEXT_PROTOCOL_FROZEN.md §2.2:
+     * identityHash = SHA-256("MW/NODE/v2" || 0x00 || IK_pk)
+     * Total preimage: 10 + 1 + 32 = 43 bytes.
+     */
+    fun deriveIdentityHash(ikPub: ByteArray): ByteArray {
+        require(ikPub.size == 32) { "ikPub must be exactly 32 bytes, got ${ikPub.size}" }
+        val md = MessageDigest.getInstance("SHA-256")
+        md.update("MW/NODE/v2".toByteArray(Charsets.UTF_8))
+        md.update(0x00.toByte())
+        md.update(ikPub)
+        return md.digest()
+    }
+
+    /**
+     * Derives 64-bit Long Node ID from identityHash according to §2.3:
+     * nodeId64 = big-endian u64 of identityHash[0..8]
+     */
+    fun deriveNodeId64(identityHash: ByteArray): Long {
+        require(identityHash.size >= 8) { "identityHash must be at least 8 bytes, got ${identityHash.size}" }
+        val buffer = ByteBuffer.wrap(identityHash, 0, 8)
+        return buffer.long
+    }
+
+    fun deriveNodeIdFromIdentityKey(ikPub: ByteArray): Long {
+        return deriveNodeId64(deriveIdentityHash(ikPub))
+    }
+
+    /**
+     * Builds the 83-byte IBC transcript according to §2.4:
+     * "MW/SIG/v2" (9 B) || 0x00 (1 B) || 0x03 (1 B) || IK_pk (32 B) || EK_pk (32 B) || u32 keyVersion (4 B) || u32 notBefore (4 B)
+     */
+    fun buildIbcTranscript(
+        ikPub: ByteArray,
+        ekPub: ByteArray,
+        keyVersion: Long,
+        notBefore: Long
+    ): ByteArray {
+        require(ikPub.size == 32) { "ikPub must be 32 bytes, got ${ikPub.size}" }
+        require(ekPub.size == 32) { "ekPub must be 32 bytes, got ${ekPub.size}" }
+        require(keyVersion in 1L..0xFFFFFFFFL) { "keyVersion must be in 1..0xFFFFFFFF, got $keyVersion" }
+        require(notBefore in 0L..0xFFFFFFFFL) { "notBefore must be in 0..0xFFFFFFFF, got $notBefore" }
+
+        val buf = ByteBuffer.allocate(83)
+        buf.put("MW/SIG/v2".toByteArray(Charsets.UTF_8)) // 9 B
+        buf.put(0x00.toByte())                           // 1 B
+        buf.put(0x03.toByte())                           // 1 B (IBC purpose tag)
+        buf.put(ikPub)                                   // 32 B
+        buf.put(ekPub)                                   // 32 B
+        buf.putInt(keyVersion.toInt())                   // 4 B big-endian
+        buf.putInt(notBefore.toInt())                    // 4 B big-endian
+        return buf.array()
+    }
+
+    /**
+     * Cryptographically signs an IBC transcript using the master identity seed (IK_sk).
+     * Produces a 64-byte Ed25519 digital signature.
+     */
+    fun signIbc(
+        identitySeed: ByteArray,
+        ekPub: ByteArray,
+        keyVersion: Long,
+        notBefore: Long
+    ): ByteArray {
+        val ikPub = deriveSigningPublicKey(identitySeed)
+        val transcript = buildIbcTranscript(ikPub, ekPub, keyVersion, notBefore)
+        return sign(identitySeed, transcript)
+    }
+
+    /**
+     * Pure signature verification of an Identity Binding Certificate (IBC).
+     * Enforces u32 bounds for keyVersion and notBefore, but does NOT validate protocol timestamp.
+     */
+    fun verifyIbcSignature(
+        ikPub: ByteArray,
+        ekPub: ByteArray,
+        keyVersion: Long,
+        notBefore: Long,
+        signature: ByteArray
+    ): Boolean {
+        if (ikPub.size != 32 || ekPub.size != 32 || signature.size != 64) return false
+        if (keyVersion < 1L || keyVersion > 0xFFFFFFFFL) return false
+        if (notBefore < 0L || notBefore > 0xFFFFFFFFL) return false
+
+        return try {
+            val transcript = buildIbcTranscript(ikPub, ekPub, keyVersion, notBefore)
+            verifySignature(ikPub, transcript, signature)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Full protocol validation of an Identity Binding Certificate (IBC) according to §2.4 & C-11.
+     * Always requires packetTimestamp. Enforces:
+     * - u32 bounds on keyVersion (1..0xFFFFFFFF), notBefore (0..0xFFFFFFFF), and packetTimestamp (0..0xFFFFFFFF)
+     * - notBefore <= packetTimestamp + 120
+     * - valid Ed25519 signature over IBC_transcript
+     */
+    fun validateIbc(
+        ikPub: ByteArray,
+        ekPub: ByteArray,
+        keyVersion: Long,
+        notBefore: Long,
+        signature: ByteArray,
+        packetTimestamp: Long
+    ): Boolean {
+        if (keyVersion < 1L || keyVersion > 0xFFFFFFFFL) return false
+        if (notBefore < 0L || notBefore > 0xFFFFFFFFL) return false
+        if (packetTimestamp < 0L || packetTimestamp > 0xFFFFFFFFL) return false
+
+        // Enforce notBefore <= packetTimestamp + 120 (C-11)
+        if (notBefore > packetTimestamp + 120L) {
+            return false
+        }
+
+        return verifyIbcSignature(ikPub, ekPub, keyVersion, notBefore, signature)
+    }
+
+    /**
+     * Derives a 64-bit Long Node ID from public key bytes using first 8 bytes of SHA-256 (v1 legacy).
      */
     fun deriveNodeId(publicKeyBytes: ByteArray): Long {
         val md = MessageDigest.getInstance("SHA-256")
@@ -249,21 +372,28 @@ object PureCryptoEngine {
     fun invalidateSessionKey(peerNodeId: Long) {
         val target = peerNodeId.toString()
         synchronized(sessionKeyEpochCache) {
-            val keysToRemove = sessionKeyEpochCache.keys.filter { key ->
-                val parts = key.split(":")
-                parts.size >= 2 && (parts[0] == target || parts[1] == target)
-            }
-            for (k in keysToRemove) {
-                sessionKeyEpochCache.remove(k)
+            val it = sessionKeyEpochCache.entries.iterator()
+            while (it.hasNext()) {
+                val entry = it.next()
+                val parts = entry.key.split(":")
+                if (parts.size >= 2 && (parts[0] == target || parts[1] == target)) {
+                    java.util.Arrays.fill(entry.value, 0.toByte())
+                    it.remove()
+                }
             }
         }
     }
 
     fun clearAllSessionKeys() {
         synchronized(sessionKeyEpochCache) {
+            for (key in sessionKeyEpochCache.values) {
+                java.util.Arrays.fill(key, 0.toByte())
+            }
             sessionKeyEpochCache.clear()
         }
     }
+
+    fun getSessionKeyCacheSize(): Int = synchronized(sessionKeyEpochCache) { sessionKeyEpochCache.size }
 
     /**
      * Encrypts plaintext using AES-256-GCM with a fresh CSPRNG 96-bit nonce (NIST SP 800-38D RBG Construction).
@@ -305,8 +435,8 @@ object PureCryptoEngine {
 
     /**
      * Decrypts ciphertext and verifies 128-bit AEAD tag + AAD header binding.
-     * Dual-Mode: Parses fresh 12-byte CSPRNG IV from ciphertext prefix, with automatic fallback
-     * to legacy UUID-derived IV for backward-compatibility with older packets and tests.
+     * Enforces NIST SP 800-38D: Parses fresh 12-byte CSPRNG IV from ciphertext prefix.
+     * Legacy UUID-derived IV fallback has been removed (Finding S-16).
      */
     fun decrypt(
         ciphertext: ByteArray,
@@ -315,37 +445,19 @@ object PureCryptoEngine {
         aesKey: ByteArray,
         aad: ByteArray? = null
     ): ByteArray {
-        val keySpec = SecretKeySpec(aesKey, "AES")
-
-        // 1. Primary: Extract prepended 12-byte CSPRNG IV (NIST SP 800-38D)
-        if (ciphertext.size >= 12) {
-            try {
-                val iv = ciphertext.copyOfRange(0, 12)
-                val rawCiphertext = ciphertext.copyOfRange(12, ciphertext.size)
-                val combined = ByteArray(rawCiphertext.size + authTag.size)
-                System.arraycopy(rawCiphertext, 0, combined, 0, rawCiphertext.size)
-                System.arraycopy(authTag, 0, combined, rawCiphertext.size, authTag.size)
-
-                val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-                val gcmSpec = GCMParameterSpec(128, iv)
-                cipher.init(Cipher.DECRYPT_MODE, keySpec, gcmSpec)
-                if (aad != null) {
-                    cipher.updateAAD(aad)
-                }
-                return cipher.doFinal(combined)
-            } catch (_: Exception) {
-                // Fallback to legacy UUID-derived IV below
-            }
+        if (ciphertext.size < 12) {
+            throw IllegalArgumentException("Ciphertext too short: missing 12-byte CSPRNG IV prefix (size=${ciphertext.size})")
         }
 
-        // 2. Legacy Fallback: Extract IV deterministically from UUID
-        val legacyIv = extractIvFromUuid(messageId)
-        val combined = ByteArray(ciphertext.size + authTag.size)
-        System.arraycopy(ciphertext, 0, combined, 0, ciphertext.size)
-        System.arraycopy(authTag, 0, combined, ciphertext.size, authTag.size)
+        val keySpec = SecretKeySpec(aesKey, "AES")
+        val iv = ciphertext.copyOfRange(0, 12)
+        val rawCiphertext = ciphertext.copyOfRange(12, ciphertext.size)
+        val combined = ByteArray(rawCiphertext.size + authTag.size)
+        System.arraycopy(rawCiphertext, 0, combined, 0, rawCiphertext.size)
+        System.arraycopy(authTag, 0, combined, rawCiphertext.size, authTag.size)
 
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        val gcmSpec = GCMParameterSpec(128, legacyIv)
+        val gcmSpec = GCMParameterSpec(128, iv)
         cipher.init(Cipher.DECRYPT_MODE, keySpec, gcmSpec)
         if (aad != null) {
             cipher.updateAAD(aad)

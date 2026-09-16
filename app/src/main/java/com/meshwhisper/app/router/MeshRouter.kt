@@ -24,20 +24,33 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import android.os.PowerManager
+import com.meshwhisper.app.telemetry.PeerLiveTelemetry
+import com.meshwhisper.app.telemetry.PacketJournalExporter
+import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
+import java.util.Locale
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
-import com.meshwhisper.core.protocol.ProfilePayload
+import com.meshwhisper.core.protocol.*
+import com.meshwhisper.app.crypto.AppPipelineFactory
 import com.meshwhisper.core.router.MeshRouteEngine
 import com.meshwhisper.core.router.RouteLookupResult
 import com.meshwhisper.core.router.RouteEdge
+import com.meshwhisper.core.util.Clock
+import com.meshwhisper.core.util.SystemClock
+import com.meshwhisper.core.util.RandomSource
+import com.meshwhisper.core.util.DefaultRandomSource
 
 class MeshRouter(
     private val context: Context,
     private val bleEngine: MeshBleEngine,
     val wifiEngine: com.meshwhisper.app.wifi.MeshWifiEngine,
     private val cryptoEngine: CryptoEngine,
-    private val database: MeshDatabase
+    private val database: MeshDatabase,
+    val clock: Clock = SystemClock(),
+    val randomSource: RandomSource = DefaultRandomSource()
 ) {
     private val tag = "MeshRouter"
     private val exceptionHandler = kotlinx.coroutines.CoroutineExceptionHandler { _, throwable ->
@@ -47,9 +60,19 @@ class MeshRouter(
 
     // Deduplication Cache (Capacity: 4000 keys) - Keyed by messageId:packetType to prevent ACK/DM collision
     private val dedupCache = LruDedupCache<String, Long>(4000)
+    private val peerPublicKeyCache = ConcurrentHashMap<Long, ByteArray>()
+    val packetStore: PacketStore = RoomPacketStore(database.processedPacketDao())
+    val pipeline: PacketPipeline = AppPipelineFactory.create(
+        cryptoEngine = cryptoEngine,
+        database = database,
+        packetStore = packetStore,
+        clock = clock,
+        dedupCache = dedupCache,
+        peerPublicKeyCache = peerPublicKeyCache
+    )
 
     // QoS Traffic Controller (4-tier bounded priority queues, anti-starvation scheduling)
-    val trafficController = MeshTrafficController(maxQueuePerTier = 100, maxPacketLifetimeMs = 30_000L)
+    val trafficController = MeshTrafficController(maxQueuePerTier = 500, maxPacketLifetimeMs = 60_000L)
 
     // Statistics
     private val _relayedPacketsCount = MutableStateFlow(0)
@@ -57,6 +80,19 @@ class MeshRouter(
 
     private val _totalPacketsReceived = MutableStateFlow(0)
     val totalPacketsReceived: StateFlow<Int> = _totalPacketsReceived.asStateFlow()
+
+    // Live empirical peer telemetry (Phase 0)
+    private val _peerTelemetry = MutableStateFlow<List<PeerLiveTelemetry>>(emptyList())
+    val peerTelemetry: StateFlow<List<PeerLiveTelemetry>> = _peerTelemetry.asStateFlow()
+
+    private data class PeerTrafficStats(
+        var lastHopCount: Int = 1,
+        var lastPacketType: String = "NONE",
+        var lastPacketTimestamp: Long = 0L,
+        var packetsReceived: Int = 0,
+        var packetsSent: Int = 0
+    )
+    private val peerTrafficStats = ConcurrentHashMap<Long, PeerTrafficStats>()
 
     /**
      * Checks if the target peer is directly connected over local Wi-Fi TCP or BLE GATT.
@@ -76,15 +112,23 @@ class MeshRouter(
                 return true
             }
         }
-        if (bleEngine.isDirectlyConnected(nodeId)) {
-            if (bleEngine.sendDirectPacket(nodeId, rawBytes)) {
-                return true
-            }
+        if (bleEngine.sendDirectPacket(nodeId, rawBytes)) {
+            return true
         }
         return false
     }
 
     suspend fun broadcastPacket(rawBytes: ByteArray, ingressAddress: String? = null) {
+        val type = if (rawBytes.isNotEmpty()) PacketType.fromCode(rawBytes[0]) ?: PacketType.BROADCAST_MESSAGE else PacketType.BROADCAST_MESSAGE
+        val priority = TrafficPriority.fromPacketType(type)
+        if (priority != TrafficPriority.BULK_TRANSFER) {
+            broadcastPacketDirect(rawBytes, ingressAddress)
+        } else {
+            trafficController.enqueue(rawBytes, type, targetNodeId = null, excludeAddress = ingressAddress)
+        }
+    }
+
+    suspend fun broadcastPacketDirect(rawBytes: ByteArray, ingressAddress: String? = null) {
         bleEngine.broadcastPacket(rawBytes, ingressAddress)
         wifiEngine.broadcastPacket(rawBytes, ingressAddress)
     }
@@ -99,7 +143,9 @@ class MeshRouter(
                 sendAck(recipientId, msgId)
             }
         },
-        isDirectPeer = { bleEngine.isDirectlyConnected(it) || wifiEngine.isPeerConnected(it) }
+        isDirectPeer = { bleEngine.isDirectlyConnected(it) || wifiEngine.isPeerConnected(it) },
+        directPacketSender = { recipientId, bytes -> sendDirectToNode(recipientId, bytes) },
+        isWifiPeer = { wifiEngine.isPeerConnected(it) }
     )
 
     val routeEngine = MeshRouteEngine(cryptoEngine.nodeId)
@@ -132,12 +178,22 @@ class MeshRouter(
 
     private val lastDrainTimes = java.util.concurrent.ConcurrentHashMap<Long, Long>()
     private val logCounter = java.util.concurrent.atomic.AtomicInteger(0)
+    private val voiceSessionKeyCache = java.util.concurrent.ConcurrentHashMap<Long, ByteArray>()
 
     var onTypingIndicatorListener: ((senderId: Long, isTyping: Boolean) -> Unit)? = null
     var onIncomingMessageListener: ((senderId: Long, senderAlias: String, text: String, isBroadcast: Boolean) -> Unit)? = null
     var onSosAlertReceivedListener: ((senderId: Long, senderAlias: String, text: String, lat: Double?, lon: Double?, fixTimestamp: Long?) -> Unit)? = null
 
     init {
+        scope.launch {
+            try {
+                val peers = database.peerDao().getAllPeersList()
+                for (peer in peers) {
+                    peerPublicKeyCache[peer.nodeId] = CryptoEngine.hexToBytes(peer.publicKeyHex)
+                }
+            } catch (_: Exception) {}
+        }
+
         bleEngine.onPacketReceivedListener = { packetBytes, ingressAddress ->
             handleIncomingPacket(packetBytes, ingressAddress)
         }
@@ -146,6 +202,9 @@ class MeshRouter(
             // Exchange identity upon established BLE link and immediately drain S&F
             scope.launch {
                 syncDirectNeighbors()
+                announcePresence()
+                // Scheduled presence retry to ensure reception once link parameters stabilize
+                delay(1200L)
                 announcePresence()
                 val directNodeId = bleEngine.getDirectNodeId(address)
                 if (directNodeId != null && directNodeId != 0L) {
@@ -170,7 +229,50 @@ class MeshRouter(
                 val directNodeId = bleEngine.getDirectNodeId(address)
                 if (directNodeId != null && directNodeId != 0L) {
                     database.peerDao().updateRssi(directNodeId, rssi)
+                    updatePeerTelemetry()
                 }
+            }
+        }
+
+        bleEngine.onRssiUpdatedListener = { nodeId, rssi ->
+            scope.launch {
+                database.peerDao().updateRssi(nodeId, rssi)
+                updatePeerTelemetry()
+            }
+        }
+
+        bleEngine.onChunkSessionDroppedListener = { addr, sessId, recv, total, reason ->
+            val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+            val isInteractive = powerManager?.isInteractive ?: true
+            PacketJournalExporter.logChunkTimeout(
+                context = context,
+                deviceAddress = addr,
+                sessionId = sessId,
+                receivedChunks = recv,
+                totalChunks = total,
+                reason = reason,
+                isScreenInteractive = isInteractive
+            )
+            logPacket("DROP", null, 0, "ChunkSession $sessId dropped on $addr: $recv/$total chunks ($reason)")
+        }
+
+        bleEngine.onBackgroundScanMatchListener = { addr, rssi ->
+            PacketJournalExporter.logScanMatch(
+                context = context,
+                deviceAddress = addr,
+                rssi = rssi,
+                isScreenInteractive = false
+            )
+        }
+
+        // Periodic live telemetry poller & logcat dumper loop (Phase 0)
+        scope.launch {
+            while (isActive) {
+                delay(2500L)
+                try {
+                    updatePeerTelemetry()
+                    dumpTelemetryLogcat()
+                } catch (_: Exception) {}
             }
         }
 
@@ -208,395 +310,201 @@ class MeshRouter(
                 }
             }
         }
+
+        // QoS Egress Dispatcher: 4-tier starvation-free transmission scheduler
+        scope.launch {
+            while (isActive) {
+                val next = trafficController.pollNext()
+                if (next != null) {
+                    try {
+                        val target = next.targetNodeId
+                        if (target != null) {
+                            sendDirectToNode(target, next.rawBytes)
+                        } else {
+                            broadcastPacketDirect(next.rawBytes, next.excludeAddress)
+                        }
+                    } catch (e: Exception) {
+                        Log.d(tag, "Egress dispatcher error: ${e.message}")
+                    }
+                } else {
+                    delay(10L)
+                }
+            }
+        }
     }
 
     /**
-     * Entry point for incoming raw packets from BLE.
+     * Entry point for incoming raw packets from BLE / Wi-Fi.
+     * Single mandatory production authentication chokepoint through PacketPipeline.
      */
     fun handleIncomingPacket(rawBytes: ByteArray, ingressAddress: String? = null) {
-        val packet = MeshPacket.deserialize(rawBytes) ?: run {
-            Log.w(tag, "Failed to deserialize packet (${rawBytes.size} bytes)")
-            return
-        }
+        val linkContext = LinkContext(
+            linkHandle = ingressAddress ?: "local",
+            transport = TransportType.BLE,
+            boundIdentity = null,
+            state = LinkState.AUTHENTICATED
+        )
 
+        when (val result = pipeline.ingest(rawBytes, linkContext)) {
+            is IngestResult.Accepted -> {
+                dispatchAuthenticatedPacket(result.packet, ingressAddress)
+            }
+            is IngestResult.Admitted -> {
+                scope.launch {
+                    mediaTransferManager.handleMediaChunk(result.chunk.packet, result.chunk.isBroadcast)
+                }
+            }
+            is IngestResult.Dropped -> {
+                val dup = result.duplicateDmPacket
+                if (result.isDuplicateDmForUs && dup != null) {
+                    scope.launch {
+                        sendAck(dup.senderId, dup.messageId)
+                    }
+                }
+                logPacket("DROP", null, rawBytes.size, "Dropped incoming packet at ${result.stage}: ${result.reason}")
+            }
+        }
+    }
+
+    private fun dispatchAuthenticatedPacket(authPacket: AuthenticatedPacket, ingressAddress: String?) {
+        val packet = authPacket.packet
         _totalPacketsReceived.value += 1
 
-        // Ignore own echoes
         if (packet.senderId == cryptoEngine.nodeId) {
             return
         }
 
-        // Fast-path: Real-time voice frames bypass persistent Room dedup, S&F, and relaying
-        if (packet.type == PacketType.VOICE_FRAME) {
-            if (packet.recipientId == cryptoEngine.nodeId) {
-                val framePayload = com.meshwhisper.app.voice.VoiceFramePayload.deserialize(packet.payload)
-                if (framePayload != null) {
-                    voiceCallManager.handleIncomingVoiceFrame(packet.senderId, framePayload)
-                }
-            }
-            return
+        if (packet.senderId != 0L) {
+            val hopCount = maxOf(1, MeshPacket.DEFAULT_TTL - packet.ttl)
+            val stats = peerTrafficStats.computeIfAbsent(packet.senderId) { PeerTrafficStats() }
+            stats.lastHopCount = hopCount
+            stats.lastPacketType = packet.type.name
+            stats.lastPacketTimestamp = System.currentTimeMillis()
+            stats.packetsReceived++
         }
 
-        // Anti-Replay: Timestamp freshness window check
-        // Direct messages can be stored-and-forwarded for up to 24 hours (86,400s).
-        // Live broadcast, announce, and media packets enforce a strict 10-minute window.
-        val nowSec = System.currentTimeMillis() / 1000L
-        val packetAge = nowSec - packet.timestamp
-        val maxPastAgeSec = if (packet.type == PacketType.DIRECT_MESSAGE) 86400L else 600L
-        if (packetAge > maxPastAgeSec || packetAge < -300) {
-            logPacket("DROP", packet, rawBytes.size, "Packet dropped: timestamp outside validity window (age: ${packetAge}s)")
-            return
-        }
-
-        // Register direct node link strictly if packet originated directly (0 relay hops)
-        if (ingressAddress != null && packet.ttl == MeshPacket.DEFAULT_TTL) {
+        if (ingressAddress != null && packet.senderId != 0L) {
             bleEngine.registerDirectNode(ingressAddress, packet.senderId)
         }
 
-        // Fast Layer 1 Deduplication Check: In-memory LRU Cache (keyed by msgId:type)
-        val dedupKey = "${packet.messageId}:${packet.type.code}"
-        if (dedupCache.containsKey(dedupKey)) {
-            // Lost-ACK Recovery: If sender retransmitted this DM because our delivery ACK was dropped,
-            // re-emit the delivery ACK so the sender can mark the message DELIVERED.
-            if (packet.type == PacketType.DIRECT_MESSAGE && packet.recipientId == cryptoEngine.nodeId) {
-                scope.launch {
-                    logPacket("ACK_RETRY", packet, rawBytes.size, "Re-emitting delivery ACK for duplicate DM ${packet.messageId}")
-                    sendAck(packet.senderId, packet.messageId)
-                }
-            }
-            logPacket("DROP", packet, rawBytes.size, "Duplicate packet dropped (fast RAM cache)")
-            return
-        }
-
         scope.launch {
-            // Atomic dedup: INSERT OR IGNORE returns -1 if the row already existed.
-            // This eliminates the hasSeen()/markSeen() race where two concurrent arrivals
-            // both see hasSeen==false before either writes the row.
-            val inserted = database.processedPacketDao().markSeen(
-                com.meshwhisper.app.data.model.ProcessedPacketEntity(dedupKey, packet.timestamp)
-            )
-            if (inserted == -1L) {
-                if (packet.type == PacketType.DIRECT_MESSAGE && packet.recipientId == cryptoEngine.nodeId) {
-                    logPacket("ACK_RETRY", packet, rawBytes.size, "Re-emitting delivery ACK for duplicate DM ${packet.messageId}")
-                    sendAck(packet.senderId, packet.messageId)
-                }
-                logPacket("DROP", packet, rawBytes.size, "Duplicate packet dropped (persistent replay DB)")
-                return@launch
-            }
-            dedupCache.put(dedupKey, System.currentTimeMillis())
-
-            when (packet.type) {
-                PacketType.PEER_ANNOUNCE, PacketType.KEY_EXCHANGE -> {
-                    handlePeerAnnounce(packet, ingressAddress)
-                }
-                PacketType.BROADCAST_MESSAGE -> {
-                    handleBroadcastMessage(packet, rawBytes, ingressAddress)
-                }
-                PacketType.DIRECT_MESSAGE -> {
-                    handleDirectMessage(packet, rawBytes, ingressAddress)
-                }
-                PacketType.ACK -> {
-                    handleAck(packet, rawBytes, ingressAddress)
-                }
-                PacketType.MEDIA_INIT -> {
-                    handleMediaInit(packet, rawBytes, ingressAddress)
-                }
-                PacketType.MEDIA_CHUNK -> {
-                    handleMediaChunk(packet, rawBytes, ingressAddress)
-                }
-                PacketType.MEDIA_NACK -> {
-                    handleMediaNack(packet, rawBytes, ingressAddress)
-                }
-                PacketType.MEDIA_ACK -> {
-                    handleMediaAck(packet, rawBytes, ingressAddress)
-                }
-                PacketType.MEDIA_ABORT -> {
-                    handleMediaAbort(packet, rawBytes, ingressAddress)
-                }
-                PacketType.AVATAR_REQUEST -> {
-                    handleAvatarRequest(packet, rawBytes, ingressAddress)
-                }
-                PacketType.TYPING_INDICATOR -> {
-                    handleTypingIndicator(packet, rawBytes, ingressAddress)
-                }
-                PacketType.SOS_MESSAGE -> {
-                    handleSosMessage(packet, rawBytes, ingressAddress)
-                }
-                PacketType.PROFILE_UPDATE -> {
-                    handleProfileUpdate(packet, rawBytes, ingressAddress)
-                }
-                PacketType.PROFILE_REQUEST -> {
-                    handleProfileRequest(packet, rawBytes, ingressAddress)
-                }
-                PacketType.VOICE_CALL_SIGNAL -> {
-                    handleVoiceCallSignal(packet, rawBytes, ingressAddress)
-                }
-                PacketType.VOICE_FRAME -> {
-                    // Handled in fast-path above
-                }
-            }
-        }
-    }
-
-    // =========================================================================
-    // PACKET HANDLERS
-    // =========================================================================
-
-    private suspend fun handlePeerAnnounce(packet: MeshPacket, ingressAddress: String?) {
-        val decryptedPayload = try {
-            cryptoEngine.decrypt(
-                ciphertext = packet.payload,
-                authTag = packet.authTag,
-                messageId = packet.messageId,
-                aesKey = cryptoEngine.publicChannelKey,
-                aad = packet.getAuthenticatedHeaderBytes()
-            )
-        } catch (_: Exception) {
-            packet.payload
-        }
-
-        if (decryptedPayload.size < 32) return
-
-        // Cryptographic Signature Verification for PEER_ANNOUNCE (Anti-Spoofing P0-1 Fix)
-        if (decryptedPayload.size >= 32 + 64) {
-            val unsignedData = decryptedPayload.copyOfRange(0, decryptedPayload.size - 64)
-            val signature = decryptedPayload.copyOfRange(decryptedPayload.size - 64, decryptedPayload.size)
-
-            val tempBuffer = ByteBuffer.wrap(unsignedData)
-            val tempAliasLen = tempBuffer.get().toInt() and 0xFF
-            if (tempBuffer.remaining() >= tempAliasLen + 32) {
-                tempBuffer.position(1 + tempAliasLen)
-                val tempPubKey = ByteArray(32)
-                tempBuffer.get(tempPubKey)
-
-                val isSigValid = cryptoEngine.verifySignature(tempPubKey, unsignedData, signature)
-                if (!isSigValid) {
-                    logPacket("DROP", packet, packet.payload.size + MeshPacket.OVERHEAD_SIZE, "REJECTED: Forged / Invalid Ed25519 signature in PEER_ANNOUNCE from ${packet.senderId}")
-                    Log.w(tag, "SECURITY ALERT: Dropped forged PEER_ANNOUNCE from ${packet.senderId} (signature verification failed)")
-                    return
-                }
-            }
-        }
-
-        val buffer = ByteBuffer.wrap(decryptedPayload)
-        val aliasLen = buffer.get().toInt() and 0xFF
-        if (buffer.remaining() < aliasLen + 32) return
-
-        val aliasBytes = ByteArray(aliasLen)
-        buffer.get(aliasBytes)
-        val alias = String(aliasBytes, Charsets.UTF_8)
-
-        val pubKeyBytes = ByteArray(32)
-        buffer.get(pubKeyBytes)
-
-        val derivedId = CryptoEngine.deriveNodeId(pubKeyBytes)
-        if (derivedId != packet.senderId) {
-            Log.w(tag, "Sender ID mismatch with public key")
-            return
-        }
-
-        val fingerprint = CryptoEngine.generateFingerprint(pubKeyBytes)
-        val pubHex = CryptoEngine.bytesToHex(pubKeyBytes)
-
-        // Parse direct neighbor list from gossip extension
-        val neighborNodeIds = mutableListOf<Long>()
-        if (buffer.hasRemaining()) {
-            val neighborCount = buffer.get().toInt() and 0xFF
-            for (i in 0 until neighborCount) {
-                if (buffer.remaining() >= 8) {
-                    neighborNodeIds.add(buffer.long)
-                }
-            }
-        }
-
-        // Upsert reported topology edges into database and routing engine
-        val now = System.currentTimeMillis()
-        val freshEdges = mutableListOf<com.meshwhisper.core.router.RouteEdge>()
-        for (neighborId in neighborNodeIds) {
+            // Post-auth: record topology edge
             database.topologyEdgeDao().insertOrUpdate(
                 com.meshwhisper.app.data.model.TopologyEdgeEntity(
                     fromNode = packet.senderId,
-                    toNode = neighborId,
-                    rssi = 0,
-                    lastSeen = now
+                    toNode = cryptoEngine.nodeId,
+                    rssi = -55,
+                    lastSeen = System.currentTimeMillis()
                 )
             )
-            freshEdges.add(com.meshwhisper.core.router.RouteEdge(packet.senderId, neighborId, 1, now))
-        }
 
-        val isDirectLink = (packet.ttl == MeshPacket.DEFAULT_TTL)
-        if (isDirectLink) {
-            database.topologyEdgeDao().insertOrUpdate(
-                com.meshwhisper.app.data.model.TopologyEdgeEntity(
-                    fromNode = cryptoEngine.nodeId,
-                    toNode = packet.senderId,
-                    rssi = 0,
-                    lastSeen = now
-                )
-            )
-            freshEdges.add(com.meshwhisper.core.router.RouteEdge(cryptoEngine.nodeId, packet.senderId, 1, now))
-        }
-        routeEngine.updateEdges(freshEdges)
+            logPacket("RX", packet, packet.payload.size, "From $ingressAddress (TTL=${packet.ttl})")
 
-        var peerAvatarHash: Byte = 0
-        if (buffer.hasRemaining()) {
-            peerAvatarHash = buffer.get()
-        }
+            when (packet.type) {
+                PacketType.PEER_ANNOUNCE -> handlePeerAnnounce(authPacket, ingressAddress)
+                PacketType.BROADCAST_MESSAGE -> handleBroadcastMessage(authPacket, ingressAddress)
+                PacketType.DIRECT_MESSAGE -> handleDirectMessage(authPacket, ingressAddress)
+                PacketType.ACK -> handleAck(authPacket, ingressAddress)
+                PacketType.SOS_MESSAGE -> handleSosMessage(authPacket, ingressAddress)
+                PacketType.MEDIA_INIT -> handleMediaInit(authPacket, ingressAddress)
+                PacketType.MEDIA_NACK -> handleMediaNack(authPacket, ingressAddress)
+                PacketType.MEDIA_ACK -> handleMediaAck(authPacket, ingressAddress)
+                PacketType.MEDIA_ABORT -> handleMediaAbort(authPacket, ingressAddress)
+                PacketType.AVATAR_REQUEST -> handleAvatarRequest(authPacket, ingressAddress)
+                PacketType.TYPING_INDICATOR -> handleTypingIndicator(authPacket, ingressAddress)
+                PacketType.PROFILE_UPDATE -> handleProfileUpdate(authPacket, ingressAddress)
+                PacketType.PROFILE_REQUEST -> handleProfileRequest(authPacket, ingressAddress)
+                PacketType.VOICE_CALL_SIGNAL -> handleVoiceCallSignal(authPacket, ingressAddress)
+                PacketType.VOICE_FRAME -> handleVoiceFrame(authPacket, ingressAddress)
+                else -> {}
+            }
 
-        // Parse optional location extension (0x4C + 8B lat + 8B lon + 4B accuracy + 8B timestamp = 29 bytes)
-        if (buffer.remaining() >= 29) {
-            val marker = buffer.get()
-            if (marker == 0x4C.toByte()) {
-                val lat = buffer.double
-                val lon = buffer.double
-                val accuracy = buffer.float
-                val locTimestamp = buffer.long
-                database.locationDao().insertOrUpdate(
-                    com.meshwhisper.app.data.model.LastKnownLocationEntity(
-                        nodeId = packet.senderId,
-                        alias = alias,
-                        latitude = lat,
-                        longitude = lon,
-                        accuracyMeters = accuracy,
-                        timestamp = locTimestamp
-                    )
+            // Post-auth flood relay
+            if (packet.ttl > 1 && packet.senderId != cryptoEngine.nodeId && packet.recipientId != cryptoEngine.nodeId) {
+                val relayedPacket = packet.decrementTtl()
+                val isPrioritySos = (packet.type == PacketType.SOS_MESSAGE)
+                relayPacketWithJitter(
+                    relayedPacket,
+                    ingressAddress,
+                    "Relaying ${packet.type.name} msg",
+                    isPrioritySos = isPrioritySos
                 )
             }
-        }
-
-        // Check if existing peer has rotated or changed public key (TOFU safety check)
-        val existingPeer = database.peerDao().getPeerById(packet.senderId)
-        val hasKeyChanged = (existingPeer != null && existingPeer.publicKeyHex != pubHex)
-        val prevFp = if (hasKeyChanged) existingPeer?.fingerprint else existingPeer?.previousFingerprint
-        val isBlocked = existingPeer?.isBlocked ?: false
-
-        if (hasKeyChanged) {
-            Log.w(tag, "SECURITY ALERT: Safety number / Public key changed for peer ${packet.senderId}! (Old: ${existingPeer?.fingerprint}, New: $fingerprint)")
-            cryptoEngine.invalidateSessionKey(packet.senderId)
-        }
-
-        val peer = PeerEntity(
-            nodeId = packet.senderId,
-            alias = alias,
-            publicKeyHex = pubHex,
-            fingerprint = fingerprint,
-            lastSeen = System.currentTimeMillis(),
-            isDirect = isDirectLink,
-            hopCount = maxOf(1, MeshPacket.DEFAULT_TTL - packet.ttl),
-            isBlocked = isBlocked,
-            hasKeyChanged = hasKeyChanged || (existingPeer?.hasKeyChanged ?: false),
-            previousFingerprint = prevFp,
-            avatarUri = existingPeer?.avatarUri,
-            avatarHash = if (peerAvatarHash != 0.toByte()) peerAvatarHash else (existingPeer?.avatarHash ?: 0),
-            isMuted = existingPeer?.isMuted ?: false,
-            isVerified = if (hasKeyChanged) false else (existingPeer?.isVerified ?: false)
-        )
-        database.peerDao().insertOrUpdate(peer)
-
-        // If peer announced a new/updated avatar hash, trigger unicast avatar request
-        if (peerAvatarHash != 0.toByte() && peerAvatarHash != existingPeer?.avatarHash) {
-            scope.launch {
-                requestAvatar(packet.senderId)
-            }
-        }
-
-        // Drain store-and-forward queue for this newly available peer
-        drainStoreAndForwardQueueForPeer(packet.senderId)
-
-        // Request profile if not yet known locally
-        if (database.profileDao().getProfile(packet.senderId) == null) {
-            scope.launch {
-                requestProfile(packet.senderId)
-            }
-        }
-
-        // Multi-hop flood relay for peer discovery
-        if (packet.ttl > 1 && packet.senderId != cryptoEngine.nodeId) {
-            val relayedPacket = packet.decrementTtl()
-            val relayedBytes = MeshPacket.serialize(relayedPacket)
-            broadcastPacket(relayedBytes, ingressAddress)
-            _relayedPacketsCount.value += 1
-            logPacket("RELAY", relayedPacket, relayedBytes.size, "Relaying peer announce for ${packet.senderId}")
         }
     }
 
-    private suspend fun handleBroadcastMessage(
-        packet: MeshPacket,
-        rawBytes: ByteArray,
-        ingressAddress: String?
-    ) {
-        logPacket("RX", packet, rawBytes.size, "Broadcast msg from ${packet.senderId}")
+    private suspend fun handlePeerAnnounce(authPacket: AuthenticatedPacket, ingressAddress: String?) {
+        val packet = authPacket.packet
+        val announce = PeerAnnouncePayload.deserialize(authPacket.decryptedPayload, packet.senderId, packet.ttl) ?: return
 
-        // Decrypt broadcast payload with AAD header verification and Ed25519 sender authentication
-        try {
-            val decryptedBytes = try {
-                cryptoEngine.decrypt(
-                    ciphertext = packet.payload,
-                    authTag = packet.authTag,
-                    messageId = packet.messageId,
-                    aesKey = cryptoEngine.getActiveBroadcastKey(),
-                    aad = packet.getAuthenticatedHeaderBytes()
+        peerPublicKeyCache[packet.senderId] = announce.ekPub
+
+        val peerEntity = PeerEntity(
+            nodeId = packet.senderId,
+            alias = announce.alias,
+            publicKeyHex = CryptoEngine.bytesToHex(announce.ekPub),
+            fingerprint = CryptoEngine.generateFingerprint(announce.ikPub),
+            lastSeen = packet.timestamp * 1000L,
+            isDirect = (packet.ttl == MeshPacket.DEFAULT_TTL),
+            rssi = -50,
+            hopCount = MeshPacket.DEFAULT_TTL - packet.ttl
+        )
+        database.peerDao().insertOrUpdate(peerEntity)
+
+        val loc = announce.location
+        if (announce.hasLocation && loc != null) {
+            database.locationDao().insertOrUpdate(
+                com.meshwhisper.app.data.model.LastKnownLocationEntity(
+                    nodeId = packet.senderId,
+                    alias = announce.alias,
+                    latitude = loc.latitude,
+                    longitude = loc.longitude,
+                    accuracyMeters = loc.accuracy,
+                    timestamp = loc.fixTime
                 )
-            } catch (teamEx: Exception) {
-                if (cryptoEngine.isCurrentChannelConfidential()) {
-                    cryptoEngine.decrypt(
-                        ciphertext = packet.payload,
-                        authTag = packet.authTag,
-                        messageId = packet.messageId,
-                        aesKey = cryptoEngine.publicChannelKey,
-                        aad = packet.getAuthenticatedHeaderBytes()
-                    )
-                } else {
-                    throw teamEx
-                }
-            }
-
-            val sender = database.peerDao().getPeerById(packet.senderId)
-            val (text, isValidSender) = if (decryptedBytes.size >= 64) {
-                val tBytes = decryptedBytes.copyOfRange(0, decryptedBytes.size - 64)
-                val signature = decryptedBytes.copyOfRange(decryptedBytes.size - 64, decryptedBytes.size)
-                val valid = if (sender != null) {
-                    val pubKey = CryptoEngine.hexToBytes(sender.publicKeyHex)
-                    cryptoEngine.verifySignature(pubKey, tBytes, signature)
-                } else true
-                Pair(String(tBytes, Charsets.UTF_8), valid)
-            } else {
-                Pair(String(decryptedBytes, Charsets.UTF_8), true)
-            }
-
-            if (!isValidSender) {
-                logPacket("DROP", packet, rawBytes.size, "REJECTED: Forged broadcast signature from ${packet.senderId}")
-                Log.w(tag, "SECURITY ALERT: Dropped forged broadcast from ${packet.senderId} (Ed25519 signature verification failed)")
-                return
-            }
-
-            val senderAlias = sender?.alias ?: "Node-${String.format("%016X", packet.senderId).takeLast(4)}"
-
-            val messageEntity = MessageEntity(
-                messageId = packet.messageId.toString(),
-                senderId = packet.senderId,
-                recipientId = MeshPacket.BROADCAST_RECIPIENT_ID,
-                senderAlias = senderAlias,
-                text = text,
-                timestamp = packet.timestamp * 1000L,
-                isOutgoing = false,
-                isBroadcast = true,
-                status = MessageStatus.DELIVERED,
-                hopCount = MeshPacket.DEFAULT_TTL - packet.ttl
             )
-            database.messageDao().insert(messageEntity)
-
-            if (packet.senderId != cryptoEngine.nodeId) {
-                onIncomingMessageListener?.invoke(packet.senderId, senderAlias, text, true)
-            }
-        } catch (e: Exception) {
-            Log.e(tag, "Failed to decrypt or authenticate broadcast packet (AEAD header mismatch / corrupt): ${e.message}")
         }
 
-        // Flood relay if hops remain (with Software CSMA Jitter)
-        if (packet.ttl > 1 && packet.senderId != cryptoEngine.nodeId) {
-            val relayedPacket = packet.decrementTtl()
-            relayPacketWithJitter(relayedPacket, ingressAddress, "Relaying broadcast msg")
+        logPacket("PEER_ANNOUNCE", packet, packet.payload.size, "Authenticated announce from ${announce.alias} (${packet.senderId})")
+    }
+
+    private suspend fun handleBroadcastMessage(
+        authPacket: AuthenticatedPacket,
+        ingressAddress: String?
+    ) {
+        val packet = authPacket.packet
+        val decryptedBytes = authPacket.decryptedPayload
+
+        val text = if (decryptedBytes.size >= 2) {
+            val textLen = ((decryptedBytes[0].toInt() and 0xFF) shl 8) or (decryptedBytes[1].toInt() and 0xFF)
+            if (textLen in 0..decryptedBytes.size - 2) {
+                String(decryptedBytes.copyOfRange(2, 2 + textLen), Charsets.UTF_8)
+            } else {
+                String(decryptedBytes, Charsets.UTF_8)
+            }
+        } else {
+            String(decryptedBytes, Charsets.UTF_8)
+        }
+
+        val sender = database.peerDao().getPeerById(packet.senderId)
+        val senderAlias = sender?.alias ?: "Node-${String.format("%016X", packet.senderId).takeLast(4)}"
+
+        val messageEntity = MessageEntity(
+            messageId = packet.messageId.toString(),
+            senderId = packet.senderId,
+            recipientId = MeshPacket.BROADCAST_RECIPIENT_ID,
+            senderAlias = senderAlias,
+            text = text,
+            timestamp = packet.timestamp * 1000L,
+            isOutgoing = false,
+            isBroadcast = true,
+            status = MessageStatus.DELIVERED,
+            hopCount = MeshPacket.DEFAULT_TTL - packet.ttl
+        )
+        database.messageDao().insert(messageEntity)
+
+        if (packet.senderId != cryptoEngine.nodeId) {
+            onIncomingMessageListener?.invoke(packet.senderId, senderAlias, text, true)
         }
     }
 
@@ -606,7 +514,6 @@ class MeshRouter(
         logDescription: String,
         isPrioritySos: Boolean = false
     ) {
-        // Software CSMA / Collision Avoidance Jitter (15ms - 75ms for normal, 5ms - 20ms for SOS)
         val jitterMs = if (isPrioritySos) {
             java.util.concurrent.ThreadLocalRandom.current().nextLong(5L, 20L)
         } else {
@@ -621,63 +528,33 @@ class MeshRouter(
     }
 
     private suspend fun handleDirectMessage(
-        packet: MeshPacket,
-        rawBytes: ByteArray,
+        authPacket: AuthenticatedPacket,
         ingressAddress: String?
     ) {
+        val packet = authPacket.packet
         if (packet.recipientId == cryptoEngine.nodeId) {
-            // DIRECT MESSAGE IS FOR US!
-            logPacket("RX", packet, rawBytes.size, "Private DM for THIS device from ${packet.senderId}")
-
             val senderPeer = database.peerDao().getPeerById(packet.senderId)
-            if (senderPeer != null) {
-                // Ingress check: Drop if peer is blocked
-                if (senderPeer.isBlocked) {
-                    logPacket("DROP", packet, rawBytes.size, "Dropped direct message from BLOCKED peer ${packet.senderId}")
-                    return
-                }
+            val senderAlias = senderPeer?.alias ?: "Node-${String.format("%016X", packet.senderId).takeLast(4)}"
+            val text = String(authPacket.decryptedPayload, Charsets.UTF_8)
 
-                try {
-                    val peerPubKey = CryptoEngine.hexToBytes(senderPeer.publicKeyHex)
-                    val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey, packet.timestamp)
-                    val decryptedBytes = cryptoEngine.decrypt(
-                        ciphertext = packet.payload,
-                        authTag = packet.authTag,
-                        messageId = packet.messageId,
-                        aesKey = sessionKey,
-                        aad = packet.getAuthenticatedHeaderBytes()
-                    )
-                    val text = String(decryptedBytes, Charsets.UTF_8)
+            val messageEntity = MessageEntity(
+                messageId = packet.messageId.toString(),
+                senderId = packet.senderId,
+                recipientId = cryptoEngine.nodeId,
+                senderAlias = senderAlias,
+                text = text,
+                timestamp = packet.timestamp * 1000L,
+                isOutgoing = false,
+                isBroadcast = false,
+                status = MessageStatus.DELIVERED,
+                hopCount = MeshPacket.DEFAULT_TTL - packet.ttl
+            )
+            database.messageDao().insert(messageEntity)
 
-                    val messageEntity = MessageEntity(
-                        messageId = packet.messageId.toString(),
-                        senderId = packet.senderId,
-                        recipientId = cryptoEngine.nodeId,
-                        senderAlias = senderPeer.alias,
-                        text = text,
-                        timestamp = packet.timestamp * 1000L,
-                        isOutgoing = false,
-                        isBroadcast = false,
-                        status = MessageStatus.DELIVERED,
-                        hopCount = MeshPacket.DEFAULT_TTL - packet.ttl
-                    )
-                    database.messageDao().insert(messageEntity)
+            onIncomingMessageListener?.invoke(packet.senderId, senderAlias, text, false)
 
-                    onIncomingMessageListener?.invoke(packet.senderId, senderPeer.alias, text, false)
-
-                    // Send Delivery ACK back to sender
-                    sendAck(packet.senderId, packet.messageId)
-                } catch (e: Exception) {
-                    Log.e(tag, "Failed to decrypt private DM (AEAD auth tag failure or header tampered): ${e.message}")
-                }
-            } else {
-                Log.w(tag, "Received DM from unknown peer ${packet.senderId}, requesting announce...")
-                announcePresence()
-            }
+            sendAck(packet.senderId, packet.messageId)
         } else {
-            // MULTI-HOP RELAY FOR ANOTHER NODE
-            logPacket("RELAY", packet, rawBytes.size, "Relaying private DM for ${packet.recipientId}")
-
             syncDirectNeighbors()
             val routeResult = routeEngine.resolveRoute(packet.recipientId)
             var directDelivered = false
@@ -698,20 +575,18 @@ class MeshRouter(
                         val nextHop = routeResult.nextHopNodeId
                         val forwarded = sendDirectToNode(nextHop, relayedBytes)
                         if (forwarded) {
-                            directDelivered = true // successfully handed off to next relay
+                            directDelivered = true
                             _relayedPacketsCount.value += 1
                             logPacket("RELAY_NEXTHOP", relayedPacket, relayedBytes.size, "Forwarded DM for ${packet.recipientId} to next-hop $nextHop (hops=${routeResult.hopCount})")
                         } else {
                             routeEngine.markLinkFailed(cryptoEngine.nodeId, nextHop)
                         }
                     }
-                    RouteLookupResult.Unreachable -> {
-                        // No route known, will buffer and broadcast below
-                    }
+                    RouteLookupResult.Unreachable -> {}
                 }
 
                 if (!directDelivered) {
-                    // Buffer in store-and-forward queue for offline peer
+                    val rawBytes = MeshPacket.serialize(packet)
                     val sfEntity = StoreForwardEntity(
                         messageId = packet.messageId.toString(),
                         recipientId = packet.recipientId,
@@ -722,53 +597,26 @@ class MeshRouter(
                     database.storeForwardDao().insert(sfEntity)
                     database.storeForwardDao().trimRecipientQueue(packet.recipientId, MAX_STORE_FORWARD_PER_RECIPIENT)
 
-                    // Flood relay forward with jitter as fallback
                     relayPacketWithJitter(relayedPacket, ingressAddress, "Relaying private DM for ${packet.recipientId}")
                 }
             }
         }
     }
 
-    private suspend fun handleAck(packet: MeshPacket, rawBytes: ByteArray, ingressAddress: String?) {
+    private suspend fun handleAck(authPacket: AuthenticatedPacket, ingressAddress: String?) {
+        val packet = authPacket.packet
         if (packet.recipientId == cryptoEngine.nodeId) {
-            // ACK reached the original sender!
-            val senderPeer = database.peerDao().getPeerById(packet.senderId)
-
-            if (senderPeer == null) {
-                logPacket("DROP", packet, rawBytes.size, "Dropped ACK from unknown peer ${packet.senderId}")
-                return
+            val decryptedPayload = authPacket.decryptedPayload
+            val originalMsgId: String = if (decryptedPayload.size >= 16) {
+                val buf = ByteBuffer.wrap(decryptedPayload)
+                UUID(buf.long, buf.long).toString()
+            } else {
+                packet.messageId.toString()
             }
 
-            // Cryptographically verify the ACK proof-of-origin via AEAD auth tag.
-            // NOTE: packet.messageId is the unique ackPacketId (not the original message ID).
-            // The original messageId is decoded from the decrypted 16-byte payload.
-            try {
-                val peerPubKey = CryptoEngine.hexToBytes(senderPeer.publicKeyHex)
-                val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey, packet.timestamp)
-                val decryptedPayload = cryptoEngine.decrypt(
-                    ciphertext = packet.payload,
-                    authTag = packet.authTag,
-                    messageId = packet.messageId,  // ackPacketId used as nonce
-                    aesKey = sessionKey,
-                    aad = packet.getAuthenticatedHeaderBytes()
-                )
-
-                // Recover the original message ID from the 16-byte decrypted payload
-                val originalMsgId: String = if (decryptedPayload.size >= 16) {
-                    val buf = java.nio.ByteBuffer.wrap(decryptedPayload)
-                    UUID(buf.long, buf.long).toString()
-                } else {
-                    // Fallback for ACKs from older protocol versions (empty payload)
-                    packet.messageId.toString()
-                }
-
-                logPacket("ACK_RX", packet, rawBytes.size, "Authenticated delivery ACK received for msg $originalMsgId (ackId=${packet.messageId})")
-                database.messageDao().updateStatus(originalMsgId, MessageStatus.DELIVERED)
-                database.storeForwardDao().delete(originalMsgId)
-            } catch (e: Exception) {
-                logPacket("DROP", packet, rawBytes.size, "Rejected unauthenticated/forged ACK (ackId=${packet.messageId})")
-                Log.w(tag, "Rejected forged ACK: auth tag mismatch from ${packet.senderId}")
-            }
+            logPacket("ACK_RX", packet, packet.payload.size, "Authenticated delivery ACK received for msg $originalMsgId (ackId=${packet.messageId})")
+            database.messageDao().updateStatus(originalMsgId, MessageStatus.DELIVERED)
+            database.storeForwardDao().delete(originalMsgId)
         } else if (packet.ttl > 1) {
             val relayedPacket = packet.decrementTtl()
             val relayedBytes = MeshPacket.serialize(relayedPacket)
@@ -793,7 +641,8 @@ class MeshRouter(
         }
     }
 
-    private suspend fun handleMediaInit(packet: MeshPacket, rawBytes: ByteArray, ingressAddress: String?) {
+    private suspend fun handleMediaInit(authPacket: AuthenticatedPacket, ingressAddress: String?) {
+        val packet = authPacket.packet
         val isForMe = (packet.recipientId == cryptoEngine.nodeId || packet.recipientId == MeshPacket.BROADCAST_RECIPIENT_ID)
         val isBroadcast = (packet.recipientId == MeshPacket.BROADCAST_RECIPIENT_ID)
 
@@ -801,121 +650,75 @@ class MeshRouter(
             val peer = database.peerDao().getPeerById(packet.senderId)
             val senderAlias = peer?.alias ?: "Node-${String.format("%016X", packet.senderId).takeLast(4)}"
             mediaTransferManager.handleMediaInit(packet, senderAlias, isBroadcast)
-            logPacket("RX", packet, rawBytes.size, "Received MEDIA_INIT from $senderAlias")
-        }
-
-        // Live flood relay (EXCLUDED from StoreForwardDao to protect DB footprint)
-        if (packet.ttl > 1 && (!isForMe || isBroadcast)) {
-            val relayedPacket = packet.decrementTtl()
-            relayPacketWithJitter(relayedPacket, ingressAddress, "Relaying MEDIA_INIT from ${packet.senderId}")
+            logPacket("RX", packet, packet.payload.size, "Received MEDIA_INIT from $senderAlias")
         }
     }
 
-    private suspend fun handleMediaChunk(packet: MeshPacket, rawBytes: ByteArray, ingressAddress: String?) {
-        val isForMe = (packet.recipientId == cryptoEngine.nodeId || packet.recipientId == MeshPacket.BROADCAST_RECIPIENT_ID)
-        val isBroadcast = (packet.recipientId == MeshPacket.BROADCAST_RECIPIENT_ID)
-
-        if (isForMe) {
-            mediaTransferManager.handleMediaChunk(packet, isBroadcast)
-            logPacket("RX", packet, rawBytes.size, "Received MEDIA_CHUNK from ${packet.senderId}")
-        }
-
-        // Live flood relay (EXCLUDED from StoreForwardDao to protect DB footprint)
-        if (packet.ttl > 1 && (!isForMe || isBroadcast)) {
-            val relayedPacket = packet.decrementTtl()
-            relayPacketWithJitter(relayedPacket, ingressAddress, "Relaying MEDIA_CHUNK from ${packet.senderId}")
-        }
-    }
-
-    private suspend fun handleMediaNack(packet: MeshPacket, rawBytes: ByteArray, ingressAddress: String?) {
+    private suspend fun handleMediaNack(authPacket: AuthenticatedPacket, ingressAddress: String?) {
+        val packet = authPacket.packet
         val isForMe = (packet.recipientId == cryptoEngine.nodeId || packet.recipientId == MeshPacket.BROADCAST_RECIPIENT_ID)
         if (isForMe) {
             mediaTransferManager.handleMediaNack(packet)
-            logPacket("NACK_RX", packet, rawBytes.size, "Received MEDIA_NACK from ${packet.senderId}")
-        }
-
-        // Relay NACK along mesh path towards sender
-        if (packet.ttl > 1 && !isForMe) {
-            val relayedPacket = packet.decrementTtl()
-            relayPacketWithJitter(relayedPacket, ingressAddress, "Relaying MEDIA_NACK for ${packet.recipientId}")
+            logPacket("NACK_RX", packet, packet.payload.size, "Received MEDIA_NACK from ${packet.senderId}")
         }
     }
 
-    private suspend fun handleMediaAck(packet: MeshPacket, rawBytes: ByteArray, ingressAddress: String?) {
+    private suspend fun handleMediaAck(authPacket: AuthenticatedPacket, ingressAddress: String?) {
+        val packet = authPacket.packet
         val isForMe = (packet.recipientId == cryptoEngine.nodeId)
         if (isForMe) {
             mediaTransferManager.handleMediaAck(packet)
-            logPacket("MEDIA_ACK_RX", packet, rawBytes.size, "Received MEDIA_ACK from ${packet.senderId}")
-        }
-
-        // Relay ACK back towards sender
-        if (packet.ttl > 1 && !isForMe) {
-            val relayedPacket = packet.decrementTtl()
-            relayPacketWithJitter(relayedPacket, ingressAddress, "Relaying MEDIA_ACK for ${packet.recipientId}")
+            logPacket("MEDIA_ACK_RX", packet, packet.payload.size, "Received MEDIA_ACK from ${packet.senderId}")
         }
     }
 
-    private suspend fun handleMediaAbort(packet: MeshPacket, rawBytes: ByteArray, ingressAddress: String?) {
+    private suspend fun handleMediaAbort(authPacket: AuthenticatedPacket, ingressAddress: String?) {
+        val packet = authPacket.packet
         val isForMe = (packet.recipientId == cryptoEngine.nodeId || packet.recipientId == MeshPacket.BROADCAST_RECIPIENT_ID)
         if (isForMe) {
             mediaTransferManager.handleMediaAbort(packet)
-            logPacket("ABORT_RX", packet, rawBytes.size, "Received MEDIA_ABORT from ${packet.senderId}")
-        }
-
-        // Relay ABORT along mesh path
-        if (packet.ttl > 1 && !isForMe) {
-            val relayedPacket = packet.decrementTtl()
-            relayPacketWithJitter(relayedPacket, ingressAddress, "Relaying MEDIA_ABORT for ${packet.recipientId}")
+            logPacket("ABORT_RX", packet, packet.payload.size, "Received MEDIA_ABORT from ${packet.senderId}")
         }
     }
 
     suspend fun announcePresence(latitude: Double? = null, longitude: Double? = null, accuracyMeters: Float = 0f) {
-        val rawAliasBytes = cryptoEngine.alias.toByteArray(Charsets.UTF_8)
-        val aliasBytes = if (rawAliasBytes.size > 255) rawAliasBytes.copyOf(255) else rawAliasBytes
-        val pubKeyBytes = cryptoEngine.publicKeyBytes
-
-        // Collect live direct neighbor node IDs (strictly from active GATT links)
         val directNeighbors = bleEngine.connectedNodeIds.value
             .filter { it != cryptoEngine.nodeId && it != 0L }
+            .sorted()
             .take(10)
             .toList()
 
-        // Read local avatar hash
-        val avatarFile = java.io.File(context.filesDir, "avatars/my_avatar.jpg")
-        val avatarHash = if (avatarFile.exists()) {
-            val bytes = avatarFile.readBytes()
-            (bytes.fold(0) { acc, b -> (acc * 31 + b.toInt()) } and 0xFF).toByte()
-        } else {
-            0.toByte()
-        }
-
         val hasLocation = (latitude != null && longitude != null)
-        val locationBytes = if (hasLocation) 1 + 8 + 8 + 4 + 8 else 0 // 29 bytes
-        val payload = ByteArray(1 + aliasBytes.size + pubKeyBytes.size + 1 + (directNeighbors.size * 8) + 1 + locationBytes)
-        val buffer = ByteBuffer.wrap(payload)
-        buffer.put((aliasBytes.size and 0xFF).toByte())
-        buffer.put(aliasBytes)
-        buffer.put(pubKeyBytes)
-        buffer.put(directNeighbors.size.toByte())
-        for (nId in directNeighbors) {
-            buffer.putLong(nId)
-        }
-        buffer.put(avatarHash)
-        if (hasLocation) {
-            buffer.put(0x4C.toByte()) // 'L'
-            buffer.putDouble(latitude!!)
-            buffer.putDouble(longitude!!)
-            buffer.putFloat(accuracyMeters)
-            buffer.putLong(System.currentTimeMillis())
-        }
+        val loc = if (hasLocation) {
+            AnnounceLocation(
+                latitude = latitude!!,
+                longitude = longitude!!,
+                accuracy = accuracyMeters,
+                fixTime = System.currentTimeMillis()
+            )
+        } else null
 
-        // Generate Ed25519 digital signature over the announcement data (Anti-Spoofing P0-1 Fix)
-        val unsignedPayload = buffer.array()
-        val signature = cryptoEngine.sign(unsignedPayload)
-        val signedPayload = ByteArray(unsignedPayload.size + signature.size)
-        System.arraycopy(unsignedPayload, 0, signedPayload, 0, unsignedPayload.size)
-        System.arraycopy(signature, 0, signedPayload, unsignedPayload.size, signature.size)
+        val hasNeighbors = directNeighbors.isNotEmpty()
+        var flagsInt = 0
+        if (hasLocation) flagsInt = flagsInt or 0x01
+        if (hasNeighbors) flagsInt = flagsInt or 0x02
+        val flags = flagsInt.toByte()
+        val announceCounter = System.currentTimeMillis()
 
+        val announcePayload = PeerAnnouncePayload(
+            announceVersion = 0x02,
+            flags = flags,
+            ikPub = cryptoEngine.ikPublicKeyBytes,
+            ekPub = cryptoEngine.ekPublicKeyBytes,
+            keyVersion = cryptoEngine.keyVersion,
+            notBefore = 0L,
+            ibcSignature = cryptoEngine.ibcSignature,
+            announceCounter = announceCounter,
+            alias = cryptoEngine.alias,
+            neighbors = directNeighbors.map { NeighborEntry(it, 100.toByte()) },
+            location = loc
+        )
+        val plainBytes = announcePayload.serialize()
         val msgId = UUID.randomUUID()
         val timestamp = System.currentTimeMillis() / 1000L
 
@@ -928,38 +731,59 @@ class MeshRouter(
         )
 
         val encResult = cryptoEngine.encrypt(
-            plaintext = signedPayload,
+            plaintext = plainBytes,
             messageId = msgId,
             aesKey = cryptoEngine.publicChannelKey,
             aad = aad
         )
+
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        md.update(encResult.ciphertext)
+        md.update(encResult.authTag)
+        val cipherHash = md.digest()
+
+        val transcript = MeshPacket.buildSigTranscript(
+            purposeTag = com.meshwhisper.core.protocol.ResourceLimits.PURPOSE_CONTENT,
+            protocolVersion = com.meshwhisper.core.protocol.ResourceLimits.PROTOCOL_VERSION.toByte(),
+            packetTypeByte = PacketType.PEER_ANNOUNCE.wireByte,
+            messageId = msgId,
+            senderIdentityHash = cryptoEngine.identityHash,
+            senderNodeId64 = cryptoEngine.nodeId,
+            recipientNodeId64 = MeshPacket.BROADCAST_RECIPIENT_ID,
+            timestamp = timestamp,
+            payloadLenExcludingSig = encResult.ciphertext.size,
+            ciphertextAndTagHash = cipherHash
+        )
+        val hopSig = cryptoEngine.sign(transcript)
+        val fullPayload = encResult.ciphertext + hopSig
 
         val packet = MeshPacket(
             type = PacketType.PEER_ANNOUNCE,
             messageId = msgId,
             senderId = cryptoEngine.nodeId,
             recipientId = MeshPacket.BROADCAST_RECIPIENT_ID,
-            ttl = MeshPacket.DEFAULT_TTL,
+            ttl = if (hasLocation) 1 else MeshPacket.DEFAULT_TTL,
             timestamp = timestamp,
-            payload = encResult.ciphertext,
+            payload = fullPayload,
             authTag = encResult.authTag
         )
 
         val raw = MeshPacket.serialize(packet)
-        val dedupKey = "${packet.messageId}:${PacketType.PEER_ANNOUNCE.code}"
-        val nowSec = System.currentTimeMillis() / 1000L
-        dedupCache.put(dedupKey, System.currentTimeMillis())
+        packetStore.commitSeen(msgId, PacketType.PEER_ANNOUNCE.code, timestamp)
+        dedupCache.put("${msgId}:${PacketType.PEER_ANNOUNCE.code}", System.currentTimeMillis())
+
         try {
+            val nowSec = System.currentTimeMillis() / 1000L
             database.processedPacketDao().purgeOld(nowSec - 86400L)
             database.storeForwardDao().purgeExpired(System.currentTimeMillis())
             database.storeForwardDao().trimTotalQueue(MAX_TOTAL_STORE_FORWARD)
-            // Prune topology edges older than 2 minutes (live mesh dynamic graph)
             database.topologyEdgeDao().pruneStaleEdges(System.currentTimeMillis() - 120_000L)
         } catch (e: Exception) {
             Log.e(tag, "Failed to purge old records: ${e.message}")
         }
+
         broadcastPacket(raw)
-        logPacket("TX", packet, raw.size, "Broadcasted local peer announce (${directNeighbors.size} neighbors)")
+        logPacket("TX", packet, raw.size, "Broadcasted peer announce (${directNeighbors.size} neighbors)")
 
         if (hasLocation) {
             database.locationDao().insertOrUpdate(
@@ -987,9 +811,9 @@ class MeshRouter(
         val timestamp = System.currentTimeMillis() / 1000L
 
         val hasLocation = (latitude != null && longitude != null)
-        val locationSize = if (hasLocation) 8 + 8 + 4 + 8 else 0 // 28 bytes
+        val locationSize = if (hasLocation) 8 + 8 + 4 + 8 else 0
         val payloadBuf = ByteBuffer.allocate(1 + 2 + textBytes.size + locationSize)
-        payloadBuf.put(if (hasLocation) 0x01.toByte() else 0x00.toByte()) // flags (0x01 = hasLocation, 0x00 = no location)
+        payloadBuf.put(if (hasLocation) 0x01.toByte() else 0x00.toByte())
         payloadBuf.putShort((textBytes.size and 0xFFFF).toShort())
         payloadBuf.put(textBytes)
         if (hasLocation) {
@@ -998,11 +822,7 @@ class MeshRouter(
             payloadBuf.putFloat(accuracyMeters)
             payloadBuf.putLong(locationFixTimestamp)
         }
-        val payloadBytes = payloadBuf.array()
-        val signature = cryptoEngine.sign(payloadBytes)
-        val signedPlaintext = ByteArray(payloadBytes.size + signature.size)
-        System.arraycopy(payloadBytes, 0, signedPlaintext, 0, payloadBytes.size)
-        System.arraycopy(signature, 0, signedPlaintext, payloadBytes.size, signature.size)
+        val plainBytes = payloadBuf.array()
 
         val aad = MeshPacket.computeAad(
             type = PacketType.SOS_MESSAGE,
@@ -1012,12 +832,32 @@ class MeshRouter(
             timestamp = timestamp
         )
 
-        val (ciphertext, authTag) = cryptoEngine.encrypt(
-            plaintext = signedPlaintext,
+        val encResult = cryptoEngine.encrypt(
+            plaintext = plainBytes,
             messageId = msgId,
             aesKey = cryptoEngine.publicChannelKey,
             aad = aad
         )
+
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        md.update(encResult.ciphertext)
+        md.update(encResult.authTag)
+        val cipherHash = md.digest()
+
+        val transcript = MeshPacket.buildSigTranscript(
+            purposeTag = com.meshwhisper.core.protocol.ResourceLimits.PURPOSE_CONTENT,
+            protocolVersion = com.meshwhisper.core.protocol.ResourceLimits.PROTOCOL_VERSION.toByte(),
+            packetTypeByte = PacketType.SOS_MESSAGE.wireByte,
+            messageId = msgId,
+            senderIdentityHash = cryptoEngine.identityHash,
+            senderNodeId64 = cryptoEngine.nodeId,
+            recipientNodeId64 = MeshPacket.BROADCAST_RECIPIENT_ID,
+            timestamp = timestamp,
+            payloadLenExcludingSig = encResult.ciphertext.size,
+            ciphertextAndTagHash = cipherHash
+        )
+        val hopSig = cryptoEngine.sign(transcript)
+        val fullPayload = encResult.ciphertext + hopSig
 
         val packet = MeshPacket(
             type = PacketType.SOS_MESSAGE,
@@ -1026,19 +866,13 @@ class MeshRouter(
             recipientId = MeshPacket.BROADCAST_RECIPIENT_ID,
             ttl = MeshPacket.DEFAULT_TTL,
             timestamp = timestamp,
-            payload = ciphertext,
-            authTag = authTag
+            payload = fullPayload,
+            authTag = encResult.authTag
         )
 
         val raw = MeshPacket.serialize(packet)
-        val dedupKey = "${packet.messageId}:${PacketType.SOS_MESSAGE.code}"
-        dedupCache.put(dedupKey, System.currentTimeMillis())
-        database.processedPacketDao().markSeen(
-            com.meshwhisper.app.data.model.ProcessedPacketEntity(
-                messageId = packet.messageId.toString(),
-                timestamp = System.currentTimeMillis()
-            )
-        )
+        packetStore.commitSeen(msgId, PacketType.SOS_MESSAGE.code, timestamp)
+        dedupCache.put("${msgId}:${PacketType.SOS_MESSAGE.code}", System.currentTimeMillis())
 
         val messageEntity = MessageEntity(
             messageId = msgId.toString(),
@@ -1054,7 +888,6 @@ class MeshRouter(
         )
         database.messageDao().insert(messageEntity)
 
-        // Out-of-band immediate priority broadcast
         broadcastPacket(raw)
         logPacket("TX", packet, raw.size, "PRIORITY_SOS_BROADCAST: Emergency SOS transmitted")
 
@@ -1070,118 +903,77 @@ class MeshRouter(
                 )
             )
         }
-
         return msgId.toString()
     }
 
-    private suspend fun handleSosMessage(packet: MeshPacket, rawBytes: ByteArray, ingressAddress: String?) {
-        logPacket("RX", packet, rawBytes.size, "EMERGENCY SOS broadcast from ${packet.senderId}")
+    private suspend fun handleSosMessage(authPacket: AuthenticatedPacket, ingressAddress: String?) {
+        val packet = authPacket.packet
+        logPacket("RX", packet, packet.payload.size, "EMERGENCY SOS broadcast from ${packet.senderId}")
 
-        try {
-            val decryptedBytes = cryptoEngine.decrypt(
-                ciphertext = packet.payload,
-                authTag = packet.authTag,
-                messageId = packet.messageId,
-                aesKey = cryptoEngine.publicChannelKey,
-                aad = packet.getAuthenticatedHeaderBytes()
-            )
+        val decryptedBytes = authPacket.decryptedPayload
+        var sosText = ""
+        var lat: Double? = null
+        var lon: Double? = null
+        var fixTimestamp: Long? = null
 
-            val sender = database.peerDao().getPeerById(packet.senderId)
+        val buf = ByteBuffer.wrap(decryptedBytes)
+        if (buf.remaining() >= 3) {
+            val flags = buf.get().toInt() and 0xFF
+            val textLen = buf.short.toInt() and 0xFFFF
+            if (buf.remaining() >= textLen) {
+                val tBytes = ByteArray(textLen)
+                buf.get(tBytes)
+                sosText = String(tBytes, Charsets.UTF_8)
 
-            val (sosPayload, isSenderVerified) = if (decryptedBytes.size >= 64 + 3) {
-                val unsigned = decryptedBytes.copyOfRange(0, decryptedBytes.size - 64)
-                val sig = decryptedBytes.copyOfRange(decryptedBytes.size - 64, decryptedBytes.size)
-                val valid = if (sender != null) {
-                    val pubKey = CryptoEngine.hexToBytes(sender.publicKeyHex)
-                    cryptoEngine.verifySignature(pubKey, unsigned, sig)
-                } else true
-                Pair(unsigned, valid)
-            } else {
-                Pair(decryptedBytes, true)
-            }
+                if (flags == 0x01 && buf.remaining() >= 20) {
+                    lat = buf.double
+                    lon = buf.double
+                    val accuracy = buf.float
+                    fixTimestamp = if (buf.remaining() >= 8) buf.long else (packet.timestamp * 1000L)
 
-            if (!isSenderVerified) {
-                logPacket("DROP", packet, rawBytes.size, "REJECTED: Forged SOS alert signature from ${packet.senderId}")
-                Log.w(tag, "SECURITY ALERT: Dropped forged SOS alert from ${packet.senderId} (Ed25519 signature verification failed)")
-                return
-            }
-
-            var sosText = ""
-            var lat: Double? = null
-            var lon: Double? = null
-            var fixTimestamp: Long? = null
-
-            val buf = ByteBuffer.wrap(sosPayload)
-            if (buf.remaining() >= 3) {
-                val flags = buf.get().toInt() and 0xFF
-                val textLen = buf.short.toInt() and 0xFFFF
-                if (buf.remaining() >= textLen) {
-                    val tBytes = ByteArray(textLen)
-                    buf.get(tBytes)
-                    sosText = String(tBytes, Charsets.UTF_8)
-
-                    if (flags == 0x01 && buf.remaining() >= 20) {
-                        lat = buf.double
-                        lon = buf.double
-                        val accuracy = buf.float
-                        fixTimestamp = if (buf.remaining() >= 8) buf.long else (packet.timestamp * 1000L)
-
-                        val senderAlias = sender?.alias ?: "Node-${String.format("%016X", packet.senderId).takeLast(4)}"
-                        database.locationDao().insertOrUpdate(
-                            com.meshwhisper.app.data.model.LastKnownLocationEntity(
-                                nodeId = packet.senderId,
-                                alias = senderAlias,
-                                latitude = lat,
-                                longitude = lon,
-                                accuracyMeters = accuracy,
-                                timestamp = fixTimestamp
-                            )
+                    val sender = database.peerDao().getPeerById(packet.senderId)
+                    val senderAlias = sender?.alias ?: "Node-${String.format("%016X", packet.senderId).takeLast(4)}"
+                    database.locationDao().insertOrUpdate(
+                        com.meshwhisper.app.data.model.LastKnownLocationEntity(
+                            nodeId = packet.senderId,
+                            alias = senderAlias,
+                            latitude = lat,
+                            longitude = lon,
+                            accuracyMeters = accuracy,
+                            timestamp = fixTimestamp
                         )
-                    }
+                    )
                 }
-            } else {
-                // Fallback for legacy plain text
-                sosText = String(sosPayload, Charsets.UTF_8)
             }
-
-            val senderAlias = sender?.alias ?: "Node-${String.format("%016X", packet.senderId).takeLast(4)}"
-
-            val messageEntity = MessageEntity(
-                messageId = packet.messageId.toString(),
-                senderId = packet.senderId,
-                recipientId = MeshPacket.BROADCAST_RECIPIENT_ID,
-                senderAlias = senderAlias,
-                text = sosText,
-                timestamp = packet.timestamp * 1000L,
-                isOutgoing = false,
-                isBroadcast = true,
-                status = MessageStatus.DELIVERED,
-                hopCount = MeshPacket.DEFAULT_TTL - packet.ttl,
-                isSos = true
-            )
-            database.messageDao().insert(messageEntity)
-
-            onIncomingMessageListener?.invoke(packet.senderId, senderAlias, sosText, true)
-            onSosAlertReceivedListener?.invoke(packet.senderId, senderAlias, sosText, lat, lon, fixTimestamp)
-        } catch (e: Exception) {
-            Log.e(tag, "Failed to decrypt SOS packet: ${e.message}")
+        } else {
+            sosText = String(decryptedBytes, Charsets.UTF_8)
         }
 
-        // Out-of-band Priority flood relay: bypass normal queues & rebroadcast immediately (with minimal SOS jitter)
-        if (packet.ttl > 1 && packet.senderId != cryptoEngine.nodeId) {
-            val relayedPacket = packet.decrementTtl()
-            relayPacketWithJitter(relayedPacket, ingressAddress, "PRIORITY_SOS_RELAY: Forwarded emergency SOS across mesh", isPrioritySos = true)
-        }
+        val sender = database.peerDao().getPeerById(packet.senderId)
+        val senderAlias = sender?.alias ?: "Node-${String.format("%016X", packet.senderId).takeLast(4)}"
+
+        val messageEntity = MessageEntity(
+            messageId = packet.messageId.toString(),
+            senderId = packet.senderId,
+            recipientId = MeshPacket.BROADCAST_RECIPIENT_ID,
+            senderAlias = senderAlias,
+            text = sosText,
+            timestamp = packet.timestamp * 1000L,
+            isOutgoing = false,
+            isBroadcast = true,
+            status = MessageStatus.DELIVERED,
+            hopCount = MeshPacket.DEFAULT_TTL - packet.ttl,
+            isSos = true
+        )
+        database.messageDao().insert(messageEntity)
+
+        onIncomingMessageListener?.invoke(packet.senderId, senderAlias, sosText, true)
+        onSosAlertReceivedListener?.invoke(packet.senderId, senderAlias, sosText, lat, lon, fixTimestamp)
     }
 
     suspend fun sendBroadcastMessage(text: String): String {
         val msgId = UUID.randomUUID()
         val textBytes = text.toByteArray(Charsets.UTF_8)
-        val signature = cryptoEngine.sign(textBytes)
-        val signedPlaintext = ByteArray(textBytes.size + signature.size)
-        System.arraycopy(textBytes, 0, signedPlaintext, 0, textBytes.size)
-        System.arraycopy(signature, 0, signedPlaintext, textBytes.size, signature.size)
-
         val timestamp = System.currentTimeMillis() / 1000L
 
         val aad = MeshPacket.computeAad(
@@ -1193,11 +985,31 @@ class MeshRouter(
         )
 
         val encResult = cryptoEngine.encrypt(
-            plaintext = signedPlaintext,
+            plaintext = textBytes,
             messageId = msgId,
             aesKey = cryptoEngine.getActiveBroadcastKey(),
             aad = aad
         )
+
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        md.update(encResult.ciphertext)
+        md.update(encResult.authTag)
+        val cipherHash = md.digest()
+
+        val transcript = MeshPacket.buildSigTranscript(
+            purposeTag = com.meshwhisper.core.protocol.ResourceLimits.PURPOSE_CONTENT,
+            protocolVersion = com.meshwhisper.core.protocol.ResourceLimits.PROTOCOL_VERSION.toByte(),
+            packetTypeByte = PacketType.BROADCAST_MESSAGE.wireByte,
+            messageId = msgId,
+            senderIdentityHash = cryptoEngine.identityHash,
+            senderNodeId64 = cryptoEngine.nodeId,
+            recipientNodeId64 = MeshPacket.BROADCAST_RECIPIENT_ID,
+            timestamp = timestamp,
+            payloadLenExcludingSig = encResult.ciphertext.size,
+            ciphertextAndTagHash = cipherHash
+        )
+        val hopSig = cryptoEngine.sign(transcript)
+        val fullPayload = encResult.ciphertext + hopSig
 
         val packet = MeshPacket(
             type = PacketType.BROADCAST_MESSAGE,
@@ -1206,7 +1018,7 @@ class MeshRouter(
             recipientId = MeshPacket.BROADCAST_RECIPIENT_ID,
             ttl = MeshPacket.DEFAULT_TTL,
             timestamp = timestamp,
-            payload = encResult.ciphertext,
+            payload = fullPayload,
             authTag = encResult.authTag
         )
 
@@ -1225,14 +1037,11 @@ class MeshRouter(
         database.messageDao().insert(entity)
 
         val raw = MeshPacket.serialize(packet)
-        val dedupKey = "$msgId:${PacketType.BROADCAST_MESSAGE.code}"
-        dedupCache.put(dedupKey, System.currentTimeMillis())
-        database.processedPacketDao().markSeen(
-            com.meshwhisper.app.data.model.ProcessedPacketEntity(dedupKey, timestamp)
-        )
+        packetStore.commitSeen(msgId, PacketType.BROADCAST_MESSAGE.code, timestamp)
+        dedupCache.put("$msgId:${PacketType.BROADCAST_MESSAGE.code}", System.currentTimeMillis())
+
         broadcastPacket(raw)
         logPacket("TX", packet, raw.size, "Sent broadcast msg (${text.length} chars)")
-
         return msgId.toString()
     }
 
@@ -1265,6 +1074,26 @@ class MeshRouter(
             aad = aad
         )
 
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        md.update(encResult.ciphertext)
+        md.update(encResult.authTag)
+        val cipherHash = md.digest()
+
+        val transcript = MeshPacket.buildSigTranscript(
+            purposeTag = com.meshwhisper.core.protocol.ResourceLimits.PURPOSE_CONTENT,
+            protocolVersion = com.meshwhisper.core.protocol.ResourceLimits.PROTOCOL_VERSION.toByte(),
+            packetTypeByte = PacketType.DIRECT_MESSAGE.wireByte,
+            messageId = msgId,
+            senderIdentityHash = cryptoEngine.identityHash,
+            senderNodeId64 = cryptoEngine.nodeId,
+            recipientNodeId64 = recipientNodeId,
+            timestamp = timestamp,
+            payloadLenExcludingSig = encResult.ciphertext.size,
+            ciphertextAndTagHash = cipherHash
+        )
+        val hopSig = cryptoEngine.sign(transcript)
+        val fullPayload = encResult.ciphertext + hopSig
+
         val packet = MeshPacket(
             type = PacketType.DIRECT_MESSAGE,
             messageId = msgId,
@@ -1272,7 +1101,7 @@ class MeshRouter(
             recipientId = recipientNodeId,
             ttl = MeshPacket.DEFAULT_TTL,
             timestamp = timestamp,
-            payload = encResult.ciphertext,
+            payload = fullPayload,
             authTag = encResult.authTag
         )
 
@@ -1291,13 +1120,9 @@ class MeshRouter(
         database.messageDao().insert(entity)
 
         val raw = MeshPacket.serialize(packet)
-        val dedupKey = "$msgId:${PacketType.DIRECT_MESSAGE.code}"
-        dedupCache.put(dedupKey, System.currentTimeMillis())
-        database.processedPacketDao().markSeen(
-            com.meshwhisper.app.data.model.ProcessedPacketEntity(dedupKey, timestamp)
-        )
+        packetStore.commitSeen(msgId, PacketType.DIRECT_MESSAGE.code, timestamp)
+        dedupCache.put("$msgId:${PacketType.DIRECT_MESSAGE.code}", System.currentTimeMillis())
 
-        // Store-and-forward queue entry
         val sf = StoreForwardEntity(
             messageId = msgId.toString(),
             recipientId = recipientNodeId,
@@ -1308,7 +1133,6 @@ class MeshRouter(
         database.storeForwardDao().insert(sf)
         database.storeForwardDao().trimRecipientQueue(recipientNodeId, MAX_STORE_FORWARD_PER_RECIPIENT)
 
-        // Directed Unicast Next-Hop Dispatch with Automatic Failover
         syncDirectNeighbors()
         val routeResult = routeEngine.resolveRoute(recipientNodeId)
         var dispatched = false
@@ -1316,9 +1140,6 @@ class MeshRouter(
         when (routeResult) {
             is RouteLookupResult.Direct -> {
                 dispatched = sendDirectToNode(recipientNodeId, raw)
-                if (!dispatched) {
-                    routeEngine.markLinkFailed(cryptoEngine.nodeId, recipientNodeId)
-                }
             }
             is RouteLookupResult.NextHop -> {
                 val nextHop = routeResult.nextHopNodeId
@@ -1328,7 +1149,6 @@ class MeshRouter(
                     logPacket("TX_RELAY_HOP", packet, raw.size, "Forwarded DM for $recipientNodeId via next-hop $nextHop (hops=${routeResult.hopCount})")
                 } else {
                     routeEngine.markLinkFailed(cryptoEngine.nodeId, nextHop)
-                    // Immediate failover to alternate route if available
                     val altRoute = routeEngine.resolveRoute(recipientNodeId)
                     if (altRoute is RouteLookupResult.NextHop) {
                         dispatched = sendDirectToNode(altRoute.nextHopNodeId, raw)
@@ -1340,41 +1160,30 @@ class MeshRouter(
                 }
             }
             RouteLookupResult.Unreachable -> {
-                // Route not yet discovered, fall through to broadcast below
+                dispatched = sendDirectToNode(recipientNodeId, raw)
             }
         }
 
         if (!dispatched) {
-            if (wifiEngine.isPeerConnected(recipientNodeId)) {
-                wifiEngine.sendDirectPacket(recipientNodeId, raw)
-                bleEngine.broadcastPacket(raw)
-            } else {
-                broadcastPacket(raw)
-            }
+            broadcastPacketDirect(raw)
         }
         logPacket("TX", packet, raw.size, "Sent direct DM to $recipientNodeId (${text.length} chars)")
-
         return msgId.toString()
     }
 
     private suspend fun sendAck(recipientNodeId: Long, originalMsgId: UUID) {
         val peer = database.peerDao().getPeerById(recipientNodeId) ?: return
         val timestamp = System.currentTimeMillis() / 1000L
-
-        // SECURITY: Use a fresh unique ID as the packet nonce — NEVER reuse the originalMsgId as GCM IV.
-        // The original messageId is embedded as plaintext inside the encrypted payload so the receiver
-        // can recover which message is being ACKed without any nonce reuse.
         val ackPacketId = UUID.randomUUID()
 
-        // Encode originalMsgId (16 bytes) as the ACK payload so the receiver knows what was delivered
-        val plainPayload = java.nio.ByteBuffer.allocate(16).apply {
+        val plainPayload = ByteBuffer.allocate(16).apply {
             putLong(originalMsgId.mostSignificantBits)
             putLong(originalMsgId.leastSignificantBits)
         }.array()
 
         val aad = MeshPacket.computeAad(
             type = PacketType.ACK,
-            messageId = ackPacketId,  // AAD bound to unique ACK packet identity
+            messageId = ackPacketId,
             senderId = cryptoEngine.nodeId,
             recipientId = recipientNodeId,
             timestamp = timestamp
@@ -1384,10 +1193,30 @@ class MeshRouter(
         val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey, timestamp)
         val encResult = cryptoEngine.encrypt(
             plaintext = plainPayload,
-            messageId = ackPacketId,  // Fresh nonce — unique per ACK, no reuse
+            messageId = ackPacketId,
             aesKey = sessionKey,
             aad = aad
         )
+
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        md.update(encResult.ciphertext)
+        md.update(encResult.authTag)
+        val cipherHash = md.digest()
+
+        val transcript = MeshPacket.buildSigTranscript(
+            purposeTag = com.meshwhisper.core.protocol.ResourceLimits.PURPOSE_CONTENT,
+            protocolVersion = com.meshwhisper.core.protocol.ResourceLimits.PROTOCOL_VERSION.toByte(),
+            packetTypeByte = PacketType.ACK.wireByte,
+            messageId = ackPacketId,
+            senderIdentityHash = cryptoEngine.identityHash,
+            senderNodeId64 = cryptoEngine.nodeId,
+            recipientNodeId64 = recipientNodeId,
+            timestamp = timestamp,
+            payloadLenExcludingSig = encResult.ciphertext.size,
+            ciphertextAndTagHash = cipherHash
+        )
+        val hopSig = cryptoEngine.sign(transcript)
+        val fullPayload = encResult.ciphertext + hopSig
 
         val ackPacket = MeshPacket(
             type = PacketType.ACK,
@@ -1396,16 +1225,14 @@ class MeshRouter(
             recipientId = recipientNodeId,
             ttl = MeshPacket.DEFAULT_TTL,
             timestamp = timestamp,
-            payload = encResult.ciphertext,
+            payload = fullPayload,
             authTag = encResult.authTag
         )
 
         val raw = MeshPacket.serialize(ackPacket)
-        val dedupKey = "${ackPacketId}:${PacketType.ACK.code}"
-        dedupCache.put(dedupKey, System.currentTimeMillis())
-        database.processedPacketDao().markSeen(
-            com.meshwhisper.app.data.model.ProcessedPacketEntity(dedupKey, timestamp)
-        )
+        packetStore.commitSeen(ackPacketId, PacketType.ACK.code, timestamp)
+        dedupCache.put("${ackPacketId}:${PacketType.ACK.code}", System.currentTimeMillis())
+
         syncDirectNeighbors()
         val routeResult = routeEngine.resolveRoute(recipientNodeId)
         var ackDelivered = false
@@ -1422,12 +1249,7 @@ class MeshRouter(
             RouteLookupResult.Unreachable -> {}
         }
         if (!ackDelivered) {
-            if (wifiEngine.isPeerConnected(recipientNodeId)) {
-                wifiEngine.sendDirectPacket(recipientNodeId, raw)
-                bleEngine.broadcastPacket(raw)
-            } else {
-                broadcastPacket(raw)
-            }
+            broadcastPacketDirect(raw)
         }
         logPacket("ACK_TX", ackPacket, raw.size, "Sent authenticated ACK for msg $originalMsgId to $recipientNodeId (ackId=$ackPacketId)")
     }
@@ -1527,46 +1349,19 @@ class MeshRouter(
         logPacket("TX", packet, raw.size, "Requested avatar from $peerNodeId")
     }
 
-    private suspend fun handleAvatarRequest(packet: MeshPacket, rawBytes: ByteArray, ingressAddress: String?) {
+    private suspend fun handleAvatarRequest(authPacket: AuthenticatedPacket, ingressAddress: String?) {
+        val packet = authPacket.packet
         if (packet.recipientId == cryptoEngine.nodeId) {
-            val senderPeer = database.peerDao().getPeerById(packet.senderId)
-            if (senderPeer == null) {
-                logPacket("DROP", packet, rawBytes.size, "Dropped avatar request from unknown peer ${packet.senderId}")
-                return
-            }
-
-            // Cryptographically verify origin proof using AEAD auth tag
-            try {
-                val peerPubKey = CryptoEngine.hexToBytes(senderPeer.publicKeyHex)
-                val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey, packet.timestamp)
-                cryptoEngine.decrypt(
-                    ciphertext = packet.payload,
-                    authTag = packet.authTag,
-                    messageId = packet.messageId,
-                    aesKey = sessionKey,
-                    aad = packet.getAuthenticatedHeaderBytes()
+            logPacket("RX", packet, packet.payload.size, "Authenticated avatar request from ${packet.senderId}")
+            val avatarFile = java.io.File(context.filesDir, "avatars/my_avatar.jpg")
+            if (avatarFile.exists()) {
+                val avatarBytes = avatarFile.readBytes()
+                mediaTransferManager.sendMedia(
+                    recipientNodeId = packet.senderId,
+                    mediaType = com.meshwhisper.app.data.model.MediaType.AVATAR,
+                    mediaBytes = avatarBytes
                 )
-
-                logPacket("RX", packet, rawBytes.size, "Authenticated avatar request from ${packet.senderId}")
-                val avatarFile = java.io.File(context.filesDir, "avatars/my_avatar.jpg")
-                if (avatarFile.exists()) {
-                    val avatarBytes = avatarFile.readBytes()
-                    mediaTransferManager.sendMedia(
-                        recipientNodeId = packet.senderId,
-                        mediaType = com.meshwhisper.app.data.model.MediaType.AVATAR,
-                        mediaBytes = avatarBytes
-                    )
-                }
-            } catch (e: Exception) {
-                logPacket("DROP", packet, rawBytes.size, "Rejected forged/unauthenticated avatar request from ${packet.senderId}")
-                Log.w(tag, "Rejected forged avatar request: auth tag mismatch from ${packet.senderId}")
             }
-        } else if (packet.ttl > 1) {
-            val relayedPacket = packet.decrementTtl()
-            val relayedBytes = MeshPacket.serialize(relayedPacket)
-            broadcastPacket(relayedBytes, ingressAddress)
-            _relayedPacketsCount.value += 1
-            logPacket("RELAY", relayedPacket, relayedBytes.size, "Relaying avatar request for ${packet.recipientId}")
         }
     }
 
@@ -1589,9 +1384,10 @@ class MeshRouter(
         bleEngine.broadcastPacket(raw)
     }
 
-    private fun handleTypingIndicator(packet: MeshPacket, rawBytes: ByteArray, ingressAddress: String?) {
+    private fun handleTypingIndicator(authPacket: AuthenticatedPacket, ingressAddress: String?) {
+        val packet = authPacket.packet
         if (packet.recipientId == cryptoEngine.nodeId || packet.recipientId == MeshPacket.BROADCAST_RECIPIENT_ID) {
-            val isTyping = packet.payload.isNotEmpty() && packet.payload[0] == 1.toByte()
+            val isTyping = authPacket.decryptedPayload.isNotEmpty() && authPacket.decryptedPayload[0] == 1.toByte()
             onTypingIndicatorListener?.invoke(packet.senderId, isTyping)
         }
     }
@@ -1679,31 +1475,25 @@ class MeshRouter(
         logPacket("TX", packet, raw.size, "Requested profile from $peerNodeId")
     }
 
-    private suspend fun handleProfileUpdate(packet: MeshPacket, rawBytes: ByteArray, ingressAddress: String?) {
-        val payload = ProfilePayload.deserialize(packet.payload)
+    private suspend fun handleProfileUpdate(authPacket: AuthenticatedPacket, ingressAddress: String?) {
+        val packet = authPacket.packet
+        val payload = ProfilePayload.deserialize(authPacket.decryptedPayload)
         if (payload == null) {
-            logPacket("DROP", packet, rawBytes.size, "REJECTED: Malformed ProfilePayload from ${packet.senderId}")
+            logPacket("DROP", packet, packet.payload.size, "REJECTED: Malformed ProfilePayload from ${packet.senderId}")
             return
         }
 
         // Strict Key-to-Identity Binding
         if (payload.nodeId != packet.senderId) {
-            logPacket("DROP", packet, rawBytes.size, "SECURITY ALERT: Dropped forged profile - sender ${packet.senderId} claimed node ${payload.nodeId}")
+            logPacket("DROP", packet, packet.payload.size, "SECURITY ALERT: Dropped forged profile - sender ${packet.senderId} claimed node ${payload.nodeId}")
             Log.w(tag, "SECURITY ALERT: Profile senderId ${packet.senderId} does not match payload nodeId ${payload.nodeId}")
-            return
-        }
-
-        // Cryptographic Ed25519 Signature Verification
-        if (!payload.verifySignature()) {
-            logPacket("DROP", packet, rawBytes.size, "SECURITY ALERT: Invalid Ed25519 signature in profile from ${packet.senderId}")
-            Log.w(tag, "SECURITY ALERT: Dropped profile from ${packet.senderId} (Ed25519 signature invalid)")
             return
         }
 
         // Anti-Rollback & Conflict Resolution (Strict Monotonicity: version > cached.version)
         val existing = database.profileDao().getProfile(payload.nodeId)
         if (existing != null && payload.version <= existing.version) {
-            logPacket("DROP", packet, rawBytes.size, "REJECTED: Stale/duplicate profile version ${payload.version} <= ${existing.version} from ${payload.nodeId}")
+            logPacket("DROP", packet, packet.payload.size, "REJECTED: Stale/duplicate profile version ${payload.version} <= ${existing.version} from ${payload.nodeId}")
             Log.d(tag, "Dropped stale/duplicate profile v${payload.version} from ${payload.nodeId} (cached v${existing.version})")
             return
         }
@@ -1719,11 +1509,11 @@ class MeshRouter(
             avatarHashHex = avatarHashHex,
             avatarUri = if (isNewAvatar) null else existing?.avatarUri,
             version = payload.version,
-            signature = payload.signature,
+            signature = existing?.signature,
             updatedAt = System.currentTimeMillis()
         )
         database.profileDao().upsertProfile(newProfile)
-        logPacket("RX", packet, rawBytes.size, "Applied verified profile v${payload.version} for '${payload.displayName}' (${payload.nodeId})")
+        logPacket("RX", packet, packet.payload.size, "Applied verified profile v${payload.version} for '${payload.displayName}' (${payload.nodeId})")
 
         // Keep legacy PeerEntity alias in sync for backward compatibility
         val existingPeer = database.peerDao().getPeerById(payload.nodeId)
@@ -1737,18 +1527,10 @@ class MeshRouter(
                 requestAvatar(payload.nodeId)
             }
         }
-
-        // Multi-hop flood relay for profile discovery
-        if (packet.ttl > 1 && packet.senderId != cryptoEngine.nodeId && packet.recipientId == MeshPacket.BROADCAST_RECIPIENT_ID) {
-            val relayedPacket = packet.decrementTtl()
-            val relayedBytes = MeshPacket.serialize(relayedPacket)
-            broadcastPacket(relayedBytes, ingressAddress)
-            _relayedPacketsCount.value += 1
-            logPacket("RELAY", relayedPacket, relayedBytes.size, "Relaying profile update for ${packet.senderId} (v${payload.version})")
-        }
     }
 
-    private suspend fun handleProfileRequest(packet: MeshPacket, rawBytes: ByteArray, ingressAddress: String?) {
+    private suspend fun handleProfileRequest(authPacket: AuthenticatedPacket, ingressAddress: String?) {
+        val packet = authPacket.packet
         if (packet.recipientId == cryptoEngine.nodeId) {
             val myProfile = database.profileDao().getProfile(cryptoEngine.nodeId)
             if (myProfile != null) {
@@ -1762,9 +1544,7 @@ class MeshRouter(
                     version = myProfile.version,
                     displayName = myProfile.displayName,
                     bio = myProfile.bio,
-                    avatarHash = avatarHashBytes,
-                    signingPublicKey = cryptoEngine.signingPublicKey,
-                    signature = myProfile.signature ?: ByteArray(64)
+                    avatarHash = avatarHashBytes
                 )
                 val responsePacket = MeshPacket(
                     type = PacketType.PROFILE_UPDATE,
@@ -1804,25 +1584,12 @@ class MeshRouter(
             ProfilePayload.EMPTY_AVATAR_HASH
         }
 
-        val signingPub = cryptoEngine.signingPublicKey
-        val canonical = ProfilePayload.computeCanonicalBytes(
-            nodeId = cryptoEngine.nodeId,
-            version = nextVersion,
-            displayName = displayName,
-            bio = bio,
-            avatarHash = avatarHash,
-            signingPublicKey = signingPub
-        )
-        val signature = cryptoEngine.sign(canonical)
-
         val payload = ProfilePayload(
             nodeId = cryptoEngine.nodeId,
             version = nextVersion,
             displayName = displayName,
             bio = bio,
-            avatarHash = avatarHash,
-            signingPublicKey = signingPub,
-            signature = signature
+            avatarHash = avatarHash
         )
 
         val profileEntity = com.meshwhisper.app.data.model.ProfileEntity(
@@ -1832,7 +1599,7 @@ class MeshRouter(
             avatarHashHex = CryptoEngine.bytesToHex(avatarHash),
             avatarUri = if (avatarFile.exists()) avatarFile.absolutePath else null,
             version = nextVersion,
-            signature = signature,
+            signature = null,
             updatedAt = System.currentTimeMillis()
         )
         database.profileDao().upsertProfile(profileEntity)
@@ -1869,21 +1636,173 @@ class MeshRouter(
             if (logCounter.incrementAndGet() % 50 == 0) {
                 database.packetLogDao().trimOldLogs(500)
             }
+
+            // Stream to persistent CSV journal file (survives app restarts & log trims)
+            try {
+                val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+                val isInteractive = powerManager?.isInteractive ?: true
+                val hopCount = if (packet != null) maxOf(1, MeshPacket.DEFAULT_TTL - packet.ttl) else 0
+                val peerRssi = if (packet != null && packet.senderId != 0L) {
+                    val directAddr = bleEngine.getAllConnectedAddresses().find { bleEngine.getDirectNodeId(it) == packet.senderId }
+                    if (directAddr != null) bleEngine.getPeerRssi(directAddr).first else null
+                } else null
+
+                PacketJournalExporter.logEvent(
+                    context = context,
+                    eventType = direction,
+                    packetType = packet?.type?.name ?: "EVENT",
+                    messageId = packet?.messageId?.toString() ?: "",
+                    senderId = packet?.senderId ?: 0L,
+                    recipientId = packet?.recipientId ?: 0L,
+                    ttl = packet?.ttl ?: 0,
+                    hopCount = hopCount,
+                    bytes = size,
+                    rssi = peerRssi,
+                    isScreenInteractive = isInteractive,
+                    details = details
+                )
+            } catch (e: Exception) {
+                Log.w(tag, "Journal log failed: ${e.message}")
+            }
         }
     }
 
-    private fun handleVoiceCallSignal(packet: MeshPacket, rawBytes: ByteArray, ingressAddress: String?) {
+    suspend fun updatePeerTelemetry() = withContext(Dispatchers.IO) {
+        val list = mutableListOf<PeerLiveTelemetry>()
+        val connectedAddresses = bleEngine.getAllConnectedAddresses()
+
+        for (addr in connectedAddresses) {
+            val nodeId = bleEngine.getDirectNodeId(addr) ?: 0L
+            val peer = if (nodeId != 0L) database.peerDao().getPeerById(nodeId) else null
+            val alias = peer?.alias ?: if (nodeId != 0L) "Node-${String.format(Locale.US, "%04X", nodeId and 0xFFFF)}" else "Peer-$addr"
+            val role = bleEngine.getPeerRole(addr)
+            val mtu = bleEngine.getPeerMtu(addr)
+            val (rssi, rssiSource) = bleEngine.getPeerRssi(addr)
+            val stats = if (nodeId != 0L) peerTrafficStats[nodeId] else null
+
+            list.add(
+                PeerLiveTelemetry(
+                    nodeId = nodeId,
+                    alias = alias,
+                    address = addr,
+                    isDirect = true,
+                    role = role,
+                    rssi = rssi,
+                    rssiSource = rssiSource,
+                    mtu = mtu,
+                    lastHopCount = stats?.lastHopCount ?: 1,
+                    lastPacketType = stats?.lastPacketType ?: "IDLE",
+                    lastPacketTimestamp = stats?.lastPacketTimestamp ?: 0L,
+                    packetsReceived = stats?.packetsReceived ?: 0,
+                    packetsSent = stats?.packetsSent ?: 0
+                )
+            )
+        }
+        _peerTelemetry.value = list
+    }
+
+    private fun dumpTelemetryLogcat() {
+        val list = _peerTelemetry.value
+        if (list.isEmpty()) return
+        val sb = StringBuilder()
+        sb.append("\n===================== [MESH_TELEMETRY] =====================\n")
+        sb.append("Connected Peers: ").append(list.size)
+            .append(" | Relayed Total: ").append(relayedPacketsCount.value)
+            .append(" | Total RX: ").append(totalPacketsReceived.value).append("\n")
+        for (peer in list) {
+            sb.append("  * Node: ").append(peer.alias)
+                .append(" (0x").append(String.format(Locale.US, "%04X", peer.nodeId and 0xFFFF)).append(")")
+                .append(" | Role: ").append(peer.role.name)
+                .append(" | RSSI: ").append(peer.rssi).append(" dBm [").append(peer.rssiSource.name).append("]")
+                .append(" | MTU: ").append(peer.mtu).append("B")
+                .append(" | LastHop: ").append(peer.lastHopCount)
+                .append(" (").append(peer.lastPacketType).append(")")
+                .append(" | RX/TX: ").append(peer.packetsReceived).append("/").append(peer.packetsSent)
+                .append("\n")
+        }
+        sb.append("============================================================\n")
+        Log.i(tag, sb.toString())
+    }
+
+    suspend fun exportJournal(context: Context): Pair<java.io.File, android.net.Uri>? {
+        return PacketJournalExporter.exportJournal(context)
+    }
+
+    fun clearJournal(context: Context) {
+        PacketJournalExporter.clearJournal(context)
+    }
+
+    private suspend fun handleVoiceCallSignal(authPacket: AuthenticatedPacket, ingressAddress: String?) {
+        val packet = authPacket.packet
         if (packet.recipientId != cryptoEngine.nodeId) {
             // Strict 1-hop: never forward voice call signals
             return
         }
-        val signalPayload = com.meshwhisper.app.voice.VoiceSignalPayload.deserialize(packet.payload) ?: return
+        val plainBytes = authPacket.decryptedPayload
+        if (plainBytes.isEmpty()) {
+            Log.w(tag, "Empty decrypted payload for voice call signal from ${packet.senderId}")
+            return
+        }
+        val signalPayload = com.meshwhisper.app.voice.VoiceSignalPayload.deserialize(plainBytes) ?: return
+        val peer = database.peerDao().getPeerById(packet.senderId)
+
+        when (signalPayload.action) {
+            com.meshwhisper.app.voice.CallAction.OFFER -> {
+                val alias = peer?.alias ?: "Node-${String.format("%016X", packet.senderId).takeLast(4)}"
+                if (!com.meshwhisper.app.service.MeshForegroundService.isActivityInForeground) {
+                    com.meshwhisper.app.service.MessageNotifier.showIncomingCallNotification(context, packet.senderId, alias)
+                }
+            }
+            com.meshwhisper.app.voice.CallAction.HANGUP,
+            com.meshwhisper.app.voice.CallAction.DECLINE,
+            com.meshwhisper.app.voice.CallAction.BUSY,
+            com.meshwhisper.app.voice.CallAction.ANSWER -> {
+                com.meshwhisper.app.service.MessageNotifier.clearCallNotification(context)
+            }
+        }
+
         voiceCallManager.handleIncomingSignal(packet.senderId, signalPayload)
+    }
+
+    private suspend fun handleVoiceFrame(authPacket: AuthenticatedPacket, ingressAddress: String?) {
+        val packet = authPacket.packet
+        if (packet.recipientId != cryptoEngine.nodeId) {
+            // Strict 1-hop: never forward voice frames
+            return
+        }
+        val plainBytes = authPacket.decryptedPayload
+        if (plainBytes.isEmpty()) return
+        val framePayload = com.meshwhisper.app.voice.VoiceFramePayload.deserialize(plainBytes) ?: return
+        voiceCallManager.handleIncomingVoiceFrame(packet.senderId, framePayload)
     }
 
     suspend fun sendVoiceCallSignalPacket(recipientId: Long, signalBytes: ByteArray): Boolean {
         val msgId = UUID.randomUUID()
         val timestamp = System.currentTimeMillis() / 1000L
+
+        val peer = database.peerDao().getPeerById(recipientId)
+        val peerPubKey = if (peer != null) CryptoEngine.hexToBytes(peer.publicKeyHex) else peerPublicKeyCache[recipientId]
+        val (ciphertext, authTag) = if (peerPubKey != null) {
+            try {
+                val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey, timestamp)
+                voiceSessionKeyCache[recipientId] = sessionKey
+                val aad = MeshPacket.computeAad(
+                    type = PacketType.VOICE_CALL_SIGNAL,
+                    messageId = msgId,
+                    senderId = cryptoEngine.nodeId,
+                    recipientId = recipientId,
+                    timestamp = timestamp
+                )
+                val enc = cryptoEngine.encrypt(signalBytes, msgId, sessionKey, aad)
+                Pair(enc.ciphertext, enc.authTag)
+            } catch (e: Exception) {
+                Log.w(tag, "Voice signal encryption fallback: ${e.message}")
+                Pair(signalBytes, ByteArray(16))
+            }
+        } else {
+            Pair(signalBytes, ByteArray(16))
+        }
+
         val packet = MeshPacket(
             type = PacketType.VOICE_CALL_SIGNAL,
             messageId = msgId,
@@ -1891,15 +1810,44 @@ class MeshRouter(
             recipientId = recipientId,
             ttl = 1,
             timestamp = timestamp,
-            payload = signalBytes
+            payload = ciphertext,
+            authTag = authTag
         )
         val rawBytes = MeshPacket.serialize(packet)
-        return sendDirectToNode(recipientId, rawBytes)
+        val delivered = sendDirectToNode(recipientId, rawBytes)
+        if (!delivered) {
+            Log.w(tag, "sendDirectToNode failed for voice call signal to $recipientId; dispatching via broadcastPacketDirect fallback")
+            broadcastPacketDirect(rawBytes)
+        }
+        return true
     }
 
     suspend fun sendVoiceFramePacket(recipientId: Long, frameBytes: ByteArray): Boolean {
         val msgId = UUID.randomUUID()
         val timestamp = System.currentTimeMillis() / 1000L
+
+        val peer = database.peerDao().getPeerById(recipientId)
+        val peerPubKey = if (peer != null) CryptoEngine.hexToBytes(peer.publicKeyHex) else peerPublicKeyCache[recipientId]
+        val (ciphertext, authTag) = if (peerPubKey != null) {
+            try {
+                val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey, timestamp)
+                voiceSessionKeyCache[recipientId] = sessionKey
+                val aad = MeshPacket.computeAad(
+                    type = PacketType.VOICE_FRAME,
+                    messageId = msgId,
+                    senderId = cryptoEngine.nodeId,
+                    recipientId = recipientId,
+                    timestamp = timestamp
+                )
+                val enc = cryptoEngine.encrypt(frameBytes, msgId, sessionKey, aad)
+                Pair(enc.ciphertext, enc.authTag)
+            } catch (e: Exception) {
+                Pair(frameBytes, ByteArray(16))
+            }
+        } else {
+            Pair(frameBytes, ByteArray(16))
+        }
+
         val packet = MeshPacket(
             type = PacketType.VOICE_FRAME,
             messageId = msgId,
@@ -1907,10 +1855,15 @@ class MeshRouter(
             recipientId = recipientId,
             ttl = 1,
             timestamp = timestamp,
-            payload = frameBytes
+            payload = ciphertext,
+            authTag = authTag
         )
         val rawBytes = MeshPacket.serialize(packet)
-        return sendDirectToNode(recipientId, rawBytes)
+        val delivered = sendDirectToNode(recipientId, rawBytes)
+        if (!delivered) {
+            broadcastPacketDirect(rawBytes)
+        }
+        return true
     }
 
     companion object {

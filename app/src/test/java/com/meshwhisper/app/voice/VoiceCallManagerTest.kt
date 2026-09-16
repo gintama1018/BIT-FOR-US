@@ -288,6 +288,57 @@ class VoiceCallManagerTest {
     }
 
     @Test
+    fun testVoiceFrameWhileOutgoingRingingAutoAnswersCall() = testScope.runTest {
+        val started = callManager.startCall(peerDirectId)
+        assertTrue(started)
+        assertEquals(CallState.OUTGOING_RINGING, callManager.callState.value)
+        val sessionId = callManager.activeCallInfo.value!!.sessionId
+
+        // Peer answered but ANSWER signal was dropped over lossy radio;
+        // peer starts streaming audio frame with matching sessionId
+        val dummyAudio = ByteArray(80) { 0x33 }
+        val frame = VoiceFramePayload(sessionId, sequenceNumber = 1, timestamp = 2000L, audioData = dummyAudio)
+        callManager.handleIncomingVoiceFrame(peerDirectId, frame)
+        testDispatcher.scheduler.runCurrent()
+
+        // Caller should automatically transition to CONNECTED and play audio
+        assertEquals(CallState.CONNECTED, callManager.callState.value)
+        assertTrue(fakeAudioStreamer.isStreaming)
+        assertEquals(1, fakeAudioStreamer.inboundFrames.size)
+        assertArrayEquals(dummyAudio, fakeAudioStreamer.inboundFrames[0])
+
+        callManager.endCall()
+        callManager.dismissEndedCall()
+    }
+
+    @Test
+    fun testDuplicateOfferIgnored() = testScope.runTest {
+        val sessionId = UUID.randomUUID()
+        val offerSignal = VoiceSignalPayload(
+            action = CallAction.OFFER,
+            sessionId = sessionId,
+            timestamp = 1000L
+        )
+
+        callManager.handleIncomingSignal(peerDirectId, offerSignal)
+        assertEquals(CallState.INCOMING_RINGING, callManager.callState.value)
+
+        // Duplicate OFFER with same sessionId arrives (retransmission)
+        callManager.handleIncomingSignal(peerDirectId, offerSignal)
+        testDispatcher.scheduler.runCurrent()
+
+        // Should still be ringing and NOT sent BUSY
+        assertEquals(CallState.INCOMING_RINGING, callManager.callState.value)
+        val busySignals = sentSignals.filter {
+            VoiceSignalPayload.deserialize(it.second)?.action == CallAction.BUSY
+        }
+        assertEquals(0, busySignals.size)
+
+        callManager.declineCall()
+        callManager.dismissEndedCall()
+    }
+
+    @Test
     fun testOutgoingRingingTimeout() = testScope.runTest {
         callManager.startCall(peerDirectId)
         testDispatcher.scheduler.runCurrent()

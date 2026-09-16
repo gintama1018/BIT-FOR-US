@@ -24,6 +24,7 @@ import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.SocketTimeoutException
 import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
 
@@ -71,7 +72,7 @@ class MeshWifiEngine(private val context: Context) {
 
     private fun isRateLimitExceeded(ip: String): Boolean {
         val now = System.currentTimeMillis()
-        val timestamps = ipRateLimits.getOrPut(ip) { mutableListOf() }
+        val timestamps = ipRateLimits.computeIfAbsent(ip) { mutableListOf() }
         synchronized(timestamps) {
             timestamps.removeAll { now - it > 1000L }
             if (timestamps.size >= MAX_WIFI_PACKETS_PER_SEC) {
@@ -297,19 +298,26 @@ class MeshWifiEngine(private val context: Context) {
 
                 peerNodeId = remoteNodeId
                 val session = PeerTcpSession(remoteNodeId, remoteIp, socket, outStream)
-                activePeers[remoteNodeId] = session
+                val oldSession = activePeers.put(remoteNodeId, session)
+                if (oldSession != null && oldSession.socket != socket) {
+                    try { oldSession.socket.close() } catch (_: Exception) {}
+                }
                 peerIpToNodeId[remoteIp] = remoteNodeId
                 updatePeerStates()
 
-                // Reset timeout for persistent mesh streaming after handshake completes
-                socket.soTimeout = 0
+                socket.keepAlive = true
+                socket.soTimeout = 45000
 
                 Log.i(tag, "TCP Handshake established with 0x${String.format("%016X", remoteNodeId)} ($remoteAlias) at $remoteIp")
                 onPeerConnectedListener?.invoke(remoteNodeId, remoteIp)
 
                 // Continuous packet read loop
                 while (isActive && isEngineRunning) {
-                    val frameLen = inStream.readInt()
+                    val frameLen = try {
+                        inStream.readInt()
+                    } catch (te: SocketTimeoutException) {
+                        if (!socket.isClosed && socket.isConnected) continue else break
+                    }
                     if (frameLen <= 0 || frameLen > MAX_PACKET_SIZE) {
                         Log.w(tag, "Invalid frame length from $remoteIp: $frameLen bytes")
                         break
@@ -326,7 +334,12 @@ class MeshWifiEngine(private val context: Context) {
             } catch (e: Exception) {
                 Log.d(tag, "TCP connection ended for $remoteIp: ${e.message}")
             } finally {
-                peerNodeId?.let { disconnectPeer(it) }
+                peerNodeId?.let { id ->
+                    val current = activePeers[id]
+                    if (current?.socket == socket) {
+                        disconnectPeer(id)
+                    }
+                }
                 try {
                     socket.close()
                 } catch (_: Exception) {}

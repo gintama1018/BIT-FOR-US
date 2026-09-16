@@ -257,4 +257,17 @@ class CryptoTest {
             cipherVerifyForged.doFinal(forgedTag)
         }
     }
+
+    @Test
+    fun testCryptoEngineVNextIdentityDerivation() {
+        val (seed, _) = generateKeyPair()
+        val ikPub = com.meshwhisper.core.crypto.PureCryptoEngine.deriveSigningPublicKey(seed)
+
+        val idHash = CryptoEngine.deriveIdentityHash(ikPub)
+        assertThat(idHash.size).isEqualTo(32)
+
+        val nodeId64 = CryptoEngine.deriveNodeId64(idHash)
+        val expectedLong = java.nio.ByteBuffer.wrap(idHash, 0, 8).long
+        assertThat(nodeId64).isEqualTo(expectedLong)
+    }
 }

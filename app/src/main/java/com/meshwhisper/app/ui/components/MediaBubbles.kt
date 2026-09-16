@@ -354,8 +354,8 @@ fun TiledImageCanvas(
     modifier: Modifier = Modifier
 ) {
     val receivedTiles = remember(mediaId) { androidx.compose.runtime.mutableStateMapOf<Int, android.graphics.Bitmap>() }
-    var gridCols by remember(mediaId) { mutableStateOf(3) }
-    var gridRows by remember(mediaId) { mutableStateOf(3) }
+    var gridCols by remember(mediaId) { mutableStateOf(8) }
+    var gridRows by remember(mediaId) { mutableStateOf(8) }
 
     LaunchedEffect(mediaId, tileUpdates) {
         if (mediaId != null && tileUpdates != null) {
@@ -395,6 +395,21 @@ fun TiledImageCanvas(
                 val cellW = canvasWidth / gridCols
                 val cellH = canvasHeight / gridRows
 
+                // Draw 8x8 blueprint grid lines for unrevealed tiles
+                for (r in 0 until gridRows) {
+                    for (c in 0 until gridCols) {
+                        val tileIdx = r * gridCols + c
+                        if (!receivedTiles.containsKey(tileIdx)) {
+                            drawRect(
+                                color = Color.White.copy(alpha = 0.08f),
+                                topLeft = androidx.compose.ui.geometry.Offset(c * cellW, r * cellH),
+                                size = androidx.compose.ui.geometry.Size(cellW, cellH),
+                                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1f)
+                            )
+                        }
+                    }
+                }
+
                 for ((tileIdx, tileBmp) in receivedTiles) {
                     val r = tileIdx / gridCols
                     val c = tileIdx % gridCols
@@ -423,8 +438,8 @@ fun TiledImageCanvas(
 @Composable
 fun ImageMessageBubble(
     message: MessageEntity,
-    isOutgoing: Boolean,
     tileUpdates: kotlinx.coroutines.flow.SharedFlow<com.meshwhisper.app.media.TileUpdate>? = null,
+    isOutgoing: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     var isFullscreenOpen by remember { mutableStateOf(false) }
@@ -474,30 +489,31 @@ fun ImageMessageBubble(
             )
 
             if (bitmap == null) {
-                // Incoming photo receiving chunks over mesh
+                // Incoming photo receiving chunks over mesh - sleek corner badge so 8x8 tiles animate cleanly
                 Box(
                     modifier = Modifier
-                        .fillMaxSize()
-                        .background(Color.Black.copy(alpha = 0.45f)),
-                    contentAlignment = Alignment.Center
+                        .align(Alignment.BottomEnd)
+                        .padding(8.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color.Black.copy(alpha = 0.70f))
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
                 ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
                         CircularProgressIndicator(
                             progress = { message.mediaProgress.coerceIn(0.05f, 1.0f) },
-                            modifier = Modifier.size(38.dp),
+                            modifier = Modifier.size(12.dp),
                             color = SaharaPrimary,
-                            strokeWidth = 3.dp
+                            strokeWidth = 2.dp
                         )
-                        Spacer(modifier = Modifier.height(8.dp))
                         Text(
                             text = "Receiving ${(message.mediaProgress * 100).toInt()}%",
-                            fontSize = 12.sp,
+                            fontSize = 10.sp,
                             fontFamily = ManropeFamily,
                             color = Color.White,
-                            fontWeight = FontWeight.SemiBold
+                            fontWeight = FontWeight.Medium
                         )
                     }
                 }
@@ -522,11 +538,11 @@ fun ImageMessageBubble(
                             strokeWidth = 2.dp
                         )
                         Text(
-                            text = "${(message.mediaProgress * 100).toInt()}%",
+                            text = "Sending ${(message.mediaProgress * 100).toInt()}%",
                             fontSize = 10.sp,
                             fontFamily = ManropeFamily,
                             color = Color.White,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Medium
                         )
                     }
                 }

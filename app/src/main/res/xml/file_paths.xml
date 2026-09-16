@@ -2,4 +2,6 @@
 <paths>
     <files-path name="media_files" path="media/" />
     <files-path name="avatar_files" path="avatars/" />
+    <files-path name="journal_files" path="journals/" />
+    <external-files-path name="ext_journal_files" path="journals/" />
 </paths>

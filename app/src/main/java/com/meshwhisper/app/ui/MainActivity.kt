@@ -183,6 +183,20 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Wake screen and display incoming call even if device is locked
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        } else {
+            @Suppress("DEPRECATION")
+            window.addFlags(
+                android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+            )
+        }
+
         handleDeepLink(intent)
         isPermissionsGrantedState.value = checkHasPermissions()
         if (isPermissionsGrantedState.value) {
@@ -199,6 +213,13 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                 val isAppLockEnabled by viewModel.isAppLockEnabled.collectAsState()
                 var isUnlocked by remember { mutableStateOf(!isAppLockEnabled) }
                 val hasPermissions by remember { isPermissionsGrantedState }
+
+                val activeCallInfo by viewModel.activeCallInfo.collectAsState()
+                val callState by viewModel.callState.collectAsState()
+                val isCallMuted by viewModel.isCallMuted.collectAsState()
+                val isCallSpeakerOn by viewModel.isCallSpeakerOn.collectAsState()
+                val callDurationSeconds by viewModel.callDurationSeconds.collectAsState()
+                val peers by viewModel.peers.collectAsState()
 
                 val biometricLauncher = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.StartActivityForResult()
@@ -237,6 +258,40 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                         ) {
                             MainScreen(viewModel = viewModel)
                         }
+                    }
+
+                    // Global Call Overlay Dialog: Displays across ALL screens and lock screen for incoming / active calls
+                    if (activeCallInfo != null && callState != com.meshwhisper.app.voice.CallState.IDLE) {
+                        val callerPeer = peers.find { it.nodeId == activeCallInfo?.peerNodeId }
+                        val callerAlias = callerPeer?.alias ?: "Node-${String.format("%016X", activeCallInfo?.peerNodeId ?: 0L).takeLast(4)}"
+                        val callerAvatar = callerPeer?.avatarUri
+
+                        com.meshwhisper.app.ui.components.CallOverlayDialog(
+                            callInfo = activeCallInfo!!,
+                            peerAlias = callerAlias,
+                            avatarUri = callerAvatar,
+                            durationSeconds = callDurationSeconds,
+                            isMuted = isCallMuted,
+                            isSpeakerOn = isCallSpeakerOn,
+                            onAccept = {
+                                com.meshwhisper.app.service.MessageNotifier.clearCallNotification(this@MainActivity)
+                                viewModel.acceptVoiceCall()
+                            },
+                            onDecline = {
+                                com.meshwhisper.app.service.MessageNotifier.clearCallNotification(this@MainActivity)
+                                viewModel.declineVoiceCall()
+                            },
+                            onEndCall = {
+                                com.meshwhisper.app.service.MessageNotifier.clearCallNotification(this@MainActivity)
+                                viewModel.endVoiceCall()
+                            },
+                            onToggleMute = { viewModel.toggleCallMute() },
+                            onToggleSpeaker = { viewModel.toggleCallSpeaker() },
+                            onDismiss = {
+                                com.meshwhisper.app.service.MessageNotifier.clearCallNotification(this@MainActivity)
+                                viewModel.dismissEndedCall()
+                            }
+                        )
                     }
                 }
             }

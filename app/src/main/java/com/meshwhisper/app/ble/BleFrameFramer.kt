@@ -20,6 +20,12 @@ class BleFrameFramer {
     private val sessions = ConcurrentHashMap<String, ChunkSession>()
 
     /**
+     * Listener invoked whenever a ChunkSession is dropped due to timeout, capacity eviction, or corruption.
+     * Essential for Phase 0 chunk-level packet loss tracking.
+     */
+    var onChunkSessionDroppedListener: ((deviceAddress: String, sessionId: Short, receivedChunks: Int, totalChunks: Int, reason: String) -> Unit)? = null
+
+    /**
      * Splits a raw packet byte array into transmit frames according to negotiated MTU.
      */
     fun fragment(packetBytes: ByteArray, maxTransmissionUnit: Int): List<ByteArray> {
@@ -91,8 +97,20 @@ class BleFrameFramer {
             // Bound active chunk sessions per remote MAC address (max 4)
             val peerSessions = sessions.keys.filter { it.startsWith("$deviceAddress-") }
             if (peerSessions.size >= 4 && !sessions.containsKey(sessionKey)) {
-                val oldest = peerSessions.minByOrNull { sessions[it]?.createdAt ?: 0L }
-                if (oldest != null) sessions.remove(oldest)
+                val oldestKey = peerSessions.minByOrNull { sessions[it]?.createdAt ?: 0L }
+                if (oldestKey != null) {
+                    val dropped = sessions.remove(oldestKey)
+                    if (dropped != null) {
+                        val sessId = oldestKey.substringAfterLast("-").toShortOrNull() ?: 0
+                        onChunkSessionDroppedListener?.invoke(
+                            deviceAddress,
+                            sessId,
+                            dropped.chunks.size,
+                            dropped.totalChunks,
+                            "SESSION_EVICTION_LRU"
+                        )
+                    }
+                }
             }
 
             // If session already exists with mismatched totalChunks, evict and start fresh
@@ -100,6 +118,15 @@ class BleFrameFramer {
             val session = if (existing != null && existing.totalChunks == totalChunks) {
                 existing
             } else {
+                if (existing != null) {
+                    onChunkSessionDroppedListener?.invoke(
+                        deviceAddress,
+                        sessionId,
+                        existing.chunks.size,
+                        existing.totalChunks,
+                        "SESSION_MISMATCHED_TOTAL_CHUNKS"
+                    )
+                }
                 ChunkSession(totalChunks = totalChunks).also { sessions[sessionKey] = it }
             }
 
@@ -108,7 +135,21 @@ class BleFrameFramer {
 
                 // Prune expired sessions older than 30 seconds
                 val now = System.currentTimeMillis()
-                sessions.entries.removeIf { now - it.value.createdAt > 30000 }
+                val expiredKeys = sessions.entries.filter { now - it.value.createdAt > 30000 }.map { it.key }
+                for (expKey in expiredKeys) {
+                    val expired = sessions.remove(expKey)
+                    if (expired != null) {
+                        val expDevAddr = expKey.substringBeforeLast("-")
+                        val expSessId = expKey.substringAfterLast("-").toShortOrNull() ?: 0
+                        onChunkSessionDroppedListener?.invoke(
+                            expDevAddr,
+                            expSessId,
+                            expired.chunks.size,
+                            expired.totalChunks,
+                            "SESSION_TIMEOUT_30S"
+                        )
+                    }
+                }
 
                 if (session.chunks.size == session.totalChunks) {
                     // Reassemble complete packet

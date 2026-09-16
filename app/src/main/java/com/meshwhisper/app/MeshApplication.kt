@@ -90,12 +90,33 @@ class MeshApplication : Application() {
                 enableLights(true)
             }
             manager.createNotificationChannel(messagesChannel)
+
+            // 3. Maximum priority incoming voice call channel (Full-screen incoming call alert)
+            val callsChannel = NotificationChannel(
+                CALLS_CHANNEL_ID,
+                "Mesh Voice Calls",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Incoming real-time peer voice call alerts"
+                enableVibration(true)
+                enableLights(true)
+                val ringtoneUri = android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_RINGTONE)
+                setSound(
+                    ringtoneUri,
+                    android.media.AudioAttributes.Builder()
+                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .setUsage(android.media.AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                        .build()
+                )
+            }
+            manager.createNotificationChannel(callsChannel)
         }
     }
 
     companion object {
         const val CHANNEL_ID = "mesh_service_channel"
         const val MESSAGES_CHANNEL_ID = "mesh_messages_channel"
+        const val CALLS_CHANNEL_ID = "mesh_calls_channel"
         lateinit var instance: MeshApplication private set
     }
 }

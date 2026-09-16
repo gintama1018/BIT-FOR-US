@@ -13,8 +13,8 @@ import java.util.concurrent.atomic.AtomicInteger
  * 4. Lock-Free Ingress: Uses ConcurrentLinkedQueue per priority tier for non-blocking concurrent enqueueing.
  */
 class MeshTrafficController(
-    val maxQueuePerTier: Int = 100,
-    val maxPacketLifetimeMs: Long = 30_000L
+    val maxQueuePerTier: Int = 500,
+    val maxPacketLifetimeMs: Long = 60_000L
 ) {
     private val criticalQueue = ConcurrentLinkedQueue<PrioritizedPacket>()
     private val highQueue = ConcurrentLinkedQueue<PrioritizedPacket>()

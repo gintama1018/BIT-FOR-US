@@ -35,7 +35,9 @@ enum class TrafficPriority(val level: Int) {
             PacketType.KEY_EXCHANGE,
             PacketType.TYPING_INDICATOR,
             PacketType.VOICE_CALL_SIGNAL,
-            PacketType.VOICE_FRAME -> HIGH_INTERACTIVE
+            PacketType.VOICE_FRAME,
+            PacketType.LINK_AUTH,
+            PacketType.CUSTODY_ACK -> HIGH_INTERACTIVE
             PacketType.DIRECT_MESSAGE,
             PacketType.BROADCAST_MESSAGE,
             PacketType.PEER_ANNOUNCE,

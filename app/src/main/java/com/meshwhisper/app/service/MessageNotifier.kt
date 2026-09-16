@@ -99,4 +99,62 @@ object MessageNotifier {
         val notificationId = (senderId and 0x7FFFFFFFL).toInt()
         notificationManager?.cancel(notificationId)
     }
+
+    const val CALL_NOTIFICATION_ID = 8888
+
+    @SuppressLint("MissingPermission")
+    fun showIncomingCallNotification(
+        context: Context,
+        callerId: Long,
+        callerAlias: String
+    ) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(
+                    context,
+                    android.Manifest.permission.POST_NOTIFICATIONS
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                return
+            }
+        }
+
+        val notificationManager =
+            context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+
+        val fullScreenIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra("EXTRA_INCOMING_CALL", true)
+            putExtra("EXTRA_NODE_ID", callerId)
+        }
+
+        val fullScreenPendingIntent = PendingIntent.getActivity(
+            context,
+            callerId.hashCode() + 1,
+            fullScreenIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val ringtoneUri = android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_RINGTONE)
+
+        val builder = NotificationCompat.Builder(context, MeshApplication.CALLS_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_mesh_notification)
+            .setContentTitle("Incoming Voice Call")
+            .setContentText("$callerAlias is calling...")
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setFullScreenIntent(fullScreenPendingIntent, true)
+            .setContentIntent(fullScreenPendingIntent)
+            .setAutoCancel(true)
+            .setOngoing(true)
+            .setSound(ringtoneUri)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+
+        notificationManager.notify(CALL_NOTIFICATION_ID, builder.build())
+    }
+
+    fun clearCallNotification(context: Context) {
+        val notificationManager =
+            context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+        notificationManager?.cancel(CALL_NOTIFICATION_ID)
+    }
 }

@@ -19,3 +19,5 @@ build_log.txt
 *.dex
 *.aab
 *.zip
+bin/
+**/bin/

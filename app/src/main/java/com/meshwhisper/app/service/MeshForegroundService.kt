@@ -8,10 +8,12 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.meshwhisper.app.MeshApplication
 import com.meshwhisper.app.R
+import com.meshwhisper.app.telemetry.PacketJournalExporter
 import com.meshwhisper.app.ui.MainActivity
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
@@ -31,6 +33,7 @@ class MeshForegroundService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + exceptionHandler)
     private var heartbeatJob: Job? = null
     private var statsJob: Job? = null
+    private var wakeLock: PowerManager.WakeLock? = null
 
     private var isRelayPaused: Boolean = false
 
@@ -41,6 +44,18 @@ class MeshForegroundService : Service() {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val isEnabled = prefs.getBoolean(KEY_BACKGROUND_RELAY, true)
         isRelayPaused = !isEnabled
+
+        // Acquire PARTIAL_WAKE_LOCK to prevent CPU sleep during pocket field tests
+        val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
+        try {
+            wakeLock = powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MeshWhisper:ForegroundRelayWakeLock")?.apply {
+                setReferenceCounted(false)
+                acquire()
+                Log.i(tag, "Acquired PARTIAL_WAKE_LOCK for background mesh operation")
+            }
+        } catch (e: Exception) {
+            Log.w(tag, "Failed to acquire PARTIAL_WAKE_LOCK: ${e.message}")
+        }
 
         startInForeground()
 
@@ -147,6 +162,17 @@ class MeshForegroundService : Service() {
                 // 4 seconds when active direct peers are connected
                 // 12 seconds when idle / 0 peers to conserve radio power
                 val connectedPeers = app.bleEngine.connectedPeersCount.value
+                val relayed = app.router.relayedPacketsCount.value
+                val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
+                val isInteractive = powerManager?.isInteractive ?: true
+                PacketJournalExporter.logHeartbeat(
+                    context = applicationContext,
+                    isScreenInteractive = isInteractive,
+                    connectedPeers = connectedPeers,
+                    relayedPackets = relayed,
+                    wakeLockHeld = wakeLock?.isHeld == true
+                )
+
                 val interval = if (connectedPeers > 0) 4000L else 12000L
                 delay(interval)
             }
@@ -266,6 +292,14 @@ class MeshForegroundService : Service() {
         super.onDestroy()
         heartbeatJob?.cancel()
         statsJob?.cancel()
+        try {
+            if (wakeLock?.isHeld == true) {
+                wakeLock?.release()
+                Log.i(tag, "Released PARTIAL_WAKE_LOCK")
+            }
+        } catch (e: Exception) {
+            Log.w(tag, "Error releasing wake lock: ${e.message}")
+        }
         try {
             MeshApplication.instance.bleEngine.stop()
             MeshApplication.instance.wifiEngine.stop()

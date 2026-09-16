@@ -120,7 +120,7 @@ class JitterBuffer(
         // The expected frame is missing. If newer frames are waiting, skip the lost frame
         // after giving it a brief grace period to prevent stalling the pipeline.
         val firstAvailableKey = frameMap.firstKey()
-        if (firstAvailableKey > nextPlaySeq && (firstAvailableKey - nextPlaySeq) <= 3) {
+        if (firstAvailableKey > nextPlaySeq) {
             // Advance playback head to the next available frame
             nextPlaySeq = firstAvailableKey
             val skippedFrame = frameMap.remove(nextPlaySeq)

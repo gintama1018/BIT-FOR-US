@@ -1,18 +1,26 @@
 package com.meshwhisper.app.ui.viewmodel
 
 import android.app.Application
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.PowerManager
+import android.provider.Settings
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.meshwhisper.app.MeshApplication
 import com.meshwhisper.app.data.model.MessageEntity
 import com.meshwhisper.app.data.model.PacketLogEntity
 import com.meshwhisper.app.data.model.PeerEntity
+import com.meshwhisper.app.telemetry.PeerLiveTelemetry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -43,6 +51,9 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
     val peers: StateFlow<List<PeerEntity>> = database.peerDao().getAllPeers()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val totalPeersCount: StateFlow<Int> = peers.map { it.size }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
     val broadcastMessages: StateFlow<List<MessageEntity>> = database.messageDao().getBroadcastMessages()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -70,13 +81,39 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
     // Engine & Router State
     val isBluetoothEnabled: StateFlow<Boolean> = bleEngine.isBluetoothEnabled
     val connectedPeersCount: StateFlow<Int> = bleEngine.connectedPeersCount
-    val connectedNodeIds: StateFlow<Set<Long>> = bleEngine.connectedNodeIds
+    val connectedNodeIds: StateFlow<Set<Long>> = combine(
+        bleEngine.connectedNodeIds,
+        app.wifiEngine.connectedWifiPeers
+    ) { bleIds, wifiPeers ->
+        bleIds + wifiPeers.keys
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.Eagerly,
+        initialValue = emptySet()
+    )
     val isAdvertising: StateFlow<Boolean> = bleEngine.isAdvertising
     val isScanning: StateFlow<Boolean> = bleEngine.isScanning
     val supportsPeripheral: StateFlow<Boolean> = bleEngine.supportsPeripheral
 
     val relayedPacketsCount: StateFlow<Int> = router.relayedPacketsCount
     val totalPacketsReceived: StateFlow<Int> = router.totalPacketsReceived
+    val peerTelemetry: StateFlow<List<PeerLiveTelemetry>> = router.peerTelemetry
+
+    private val _isBatteryOptimizationIgnored = MutableStateFlow(checkBatteryOptimization())
+    val isBatteryOptimizationIgnored: StateFlow<Boolean> = _isBatteryOptimizationIgnored.asStateFlow()
+
+    fun refreshBatteryOptimizationStatus() {
+        _isBatteryOptimizationIgnored.value = checkBatteryOptimization()
+    }
+
+    private fun checkBatteryOptimization(): Boolean {
+        return try {
+            val pm = app.getSystemService(Context.POWER_SERVICE) as? PowerManager
+            pm?.isIgnoringBatteryOptimizations(app.packageName) ?: false
+        } catch (e: Exception) {
+            false
+        }
+    }
 
     // Wi-Fi Transport State
     val isWifiActive: StateFlow<Boolean> = app.wifiEngine.isWifiActive
@@ -223,55 +260,13 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
 
     fun registerScannedPeer(nodeId: Long, alias: String, publicKeyHex: String) {
         viewModelScope.launch {
-            val pubBytes = com.meshwhisper.app.crypto.CryptoEngine.hexToBytes(publicKeyHex)
-
-            // SECURITY: Verify that the supplied nodeId is actually derived from the supplied public key.
-            // This mirrors the check in MeshRouter.handlePeerAnnounce() and prevents a crafted QR code
-            // from poisoning the peer DB with a false nodeId<->pubKey binding.
-            val derivedNodeId = com.meshwhisper.app.crypto.CryptoEngine.deriveNodeId(pubBytes)
-            if (derivedNodeId != nodeId) {
-                android.util.Log.e("MeshViewModel",
-                    "QR peer registration REJECTED: nodeId mismatch (claimed=$nodeId, derived=$derivedNodeId). Ignoring crafted QR.")
-                return@launch
-            }
-
-            val existing = database.peerDao().getPeerById(nodeId)
-            val fp = com.meshwhisper.app.crypto.CryptoEngine.generateFingerprint(pubBytes)
-
-            // Mirror MeshRouter.handlePeerAnnounce: detect key rotation before writing to DB.
-            // A crafted deep link or NFC tag must not silently overwrite a previously trusted key.
-            val hasKeyChanged = (existing != null && existing.publicKeyHex != publicKeyHex)
-            val prevFp = if (hasKeyChanged) existing?.fingerprint else existing?.previousFingerprint
-
-            if (hasKeyChanged) {
-                android.util.Log.w("MeshViewModel",
-                    "TOFU ALERT via QR: Key changed for peer $nodeId! (Old: ${existing?.fingerprint}, New: $fp)")
-                // Invalidate any cached session keys derived from the old peer public key.
-                cryptoEngine.invalidateSessionKey(nodeId)
-            }
-
-            val entity = com.meshwhisper.app.data.model.PeerEntity(
-                nodeId = nodeId,
-                alias = alias,
-                publicKeyHex = publicKeyHex,
-                fingerprint = fp,
-                lastSeen = System.currentTimeMillis(),
-                isDirect = false,
-                rssi = existing?.rssi ?: 0,
-                hopCount = existing?.hopCount ?: 1,
-                isBlocked = existing?.isBlocked ?: false,
-                // Carry forward any previously set hasKeyChanged flag OR set it now if the QR
-                // presents a new key. This surfaces the safety-number banner on next open.
-                hasKeyChanged = hasKeyChanged || (existing?.hasKeyChanged ?: false),
-                previousFingerprint = prevFp,
-                // Preserve existing avatar, mute state — QR re-registration must not silently
-                // reset user customizations that were already established for this peer.
-                avatarUri = existing?.avatarUri,
-                avatarHash = existing?.avatarHash ?: 0,
-                isMuted = existing?.isMuted ?: false,
-                isVerified = true // Explicitly verified via out-of-band QR / Contact link
-            )
-            database.peerDao().insertOrUpdate(entity)
+            // Frozen Protocol §2.1-§2.3, Phase P2:
+            // The only canonical identity authority is IK_pk -> identityHash -> nodeId64.
+            // Raw X25519 public key (EK) cannot establish canonical vNext identity or trust.
+            // Legacy registration fails closed.
+            android.util.Log.e("MeshViewModel",
+                "QR peer registration REJECTED: Raw X25519 key cannot establish canonical vNext identity (vNext §2.1).")
+            return@launch
         }
     }
 
@@ -309,29 +304,11 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
                 val alias = uri.getQueryParameter("alias") ?: "Verified Peer"
                 val pubHex = uri.getQueryParameter("pub")
                 if (!idHex.isNullOrBlank() && !pubHex.isNullOrBlank()) {
-                    try {
-                        val nodeId = java.lang.Long.parseUnsignedLong(idHex, 16)
-                        val pubBytes = com.meshwhisper.app.crypto.CryptoEngine.hexToBytes(pubHex)
-                        val derivedNodeId = com.meshwhisper.app.crypto.CryptoEngine.deriveNodeId(pubBytes)
-                        if (derivedNodeId != nodeId) {
-                            return QrScanResult.Invalid("Security Warning: Claimed Node ID does not match Public Key!")
-                        }
-
-                        if (targetPeerNodeId != null && targetPeerNodeId != nodeId) {
-                            return QrScanResult.KeyMismatch(
-                                claimedNodeId = nodeId,
-                                expectedNodeId = targetPeerNodeId,
-                                alias = alias
-                            )
-                        }
-
-                        registerScannedPeer(nodeId, alias, pubHex)
-                        database.peerDao().setPeerVerified(nodeId, true)
-                        val fp = com.meshwhisper.app.crypto.CryptoEngine.generateFingerprint(pubBytes)
-                        QrScanResult.PeerVerified(nodeId, alias, pubHex, fp)
-                    } catch (e: Exception) {
-                        QrScanResult.Invalid("Invalid cryptographic parameters in QR code")
-                    }
+                    // Frozen Protocol §2.1-§2.3, Phase P2:
+                    // Legacy QR carries raw encryption key (EK).
+                    // Cannot establish canonical vNext identity (vNext §2.1, C-02).
+                    // Fail closed to prevent establishing trust from raw EK bytes.
+                    QrScanResult.Invalid("Security Warning: Legacy QR carries raw encryption key. Cannot establish canonical vNext identity (vNext §2.1).")
                 } else {
                     QrScanResult.Invalid("Incomplete peer identity parameters in QR")
                 }
@@ -553,7 +530,7 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun emergencyPanicWipe() {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             android.util.Log.w("MeshViewModel", "EMERGENCY PANIC WIPE INITIATED — destroying all local data")
             audioPlayer.stop()
 
@@ -703,6 +680,53 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
     fun clearLogs() {
         viewModelScope.launch {
             database.packetLogDao().deleteAll()
+        }
+    }
+
+    fun requestBatteryOptimizationExemption(context: Context) {
+        try {
+            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                data = Uri.parse("package:${context.packageName}")
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            context.startActivity(intent)
+        } catch (e: Exception) {
+            try {
+                val fallbackIntent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                context.startActivity(fallbackIntent)
+            } catch (e2: Exception) {
+                Log.e("MeshViewModel", "Could not open battery optimization settings: ${e2.message}")
+            }
+        }
+    }
+
+    fun clearPacketJournal(context: Context) {
+        viewModelScope.launch {
+            router.clearJournal(context)
+            clearLogs()
+        }
+    }
+
+    fun sharePacketJournal(context: Context, onExportCompleted: ((String) -> Unit)? = null) {
+        viewModelScope.launch {
+            val exported = router.exportJournal(context)
+            if (exported != null) {
+                val (file, uri) = exported
+                val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/csv"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    putExtra(Intent.EXTRA_SUBJECT, "MeshWhisper Packet Journal (${file.name})")
+                    putExtra(Intent.EXTRA_TEXT, "Attached is the field telemetry packet journal dump for MeshWhisper.")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                val chooser = Intent.createChooser(sendIntent, "Export Packet Journal").apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                context.startActivity(chooser)
+                onExportCompleted?.invoke(file.absolutePath)
+            }
         }
     }
 

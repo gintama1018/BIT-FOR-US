@@ -41,17 +41,28 @@ class AndroidAudioStreamer(
     private var captureJob: Job? = null
     private var playbackJob: Job? = null
 
-    private val jitterBuffer = JitterBuffer(targetPreloadFrames = 2, maxCapacityFrames = 8)
+    private val jitterBuffer = JitterBuffer(targetPreloadFrames = 2, maxCapacityFrames = 12)
     private val encodeState = AdpcmCodec.State()
     private val decodeState = AdpcmCodec.State()
 
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+    private val powerManager = context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+    private var wakeLock: android.os.PowerManager.WakeLock? = null
 
     @SuppressLint("MissingPermission")
     override fun startStreaming(onOutboundFrame: (sequenceNumber: Int, timestamp: Long, audioBytes: ByteArray) -> Unit) {
         if (isRunning.getAndSet(true)) {
             Log.w(tag, "AudioStreamer already running")
             return
+        }
+
+        try {
+            wakeLock = powerManager?.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "MeshWhisper:VoiceCallStreamer")?.apply {
+                setReferenceCounted(false)
+                acquire(15 * 60 * 1000L)
+            }
+        } catch (e: Exception) {
+            Log.w(tag, "Failed to acquire wake lock: ${e.message}")
         }
 
         jitterBuffer.reset()
@@ -62,7 +73,19 @@ class AndroidAudioStreamer(
         val channelIn = AudioFormat.CHANNEL_IN_MONO
         val channelOut = AudioFormat.CHANNEL_OUT_MONO
         val encoding = AudioFormat.ENCODING_PCM_16BIT
-        val samplesPerFrame = AdpcmCodec.SAMPLES_PER_FRAME_20MS_8KHZ // 160 samples = 20ms
+        val samplesPerFrame = 320 // 40ms frame at 8 kHz (160 bytes ADPCM) - 25 pkts/sec for zero BLE radio drop
+
+        // Configure system audio policy for VoIP communication & loud speakerphone
+        try {
+            audioManager?.mode = AudioManager.MODE_IN_COMMUNICATION
+            audioManager?.isSpeakerphoneOn = true
+            val maxVol = audioManager?.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL) ?: 0
+            if (maxVol > 0) {
+                audioManager?.setStreamVolume(AudioManager.STREAM_VOICE_CALL, (maxVol * 0.9).toInt(), 0)
+            }
+        } catch (e: Exception) {
+            Log.w(tag, "Failed to initialize AudioManager routing: ${e.message}")
+        }
 
         // Initialize AudioRecord
         val minRecordBufSize = AudioRecord.getMinBufferSize(sampleRate, channelIn, encoding)
@@ -129,7 +152,7 @@ class AndroidAudioStreamer(
         // Capture Coroutine Loop
         captureJob = scope.launch {
             val pcmIn = ShortArray(samplesPerFrame)
-            val adpcmOut = ByteArray(AdpcmCodec.BYTES_PER_FRAME_ADPCM)
+            val adpcmOut = ByteArray(samplesPerFrame / 2)
             var seqNum = 0
 
             while (isActive && isRunning.get()) {
@@ -154,19 +177,19 @@ class AndroidAudioStreamer(
         // Playback Coroutine Loop
         playbackJob = scope.launch {
             val pcmOut = ShortArray(samplesPerFrame)
-            val silence = ShortArray(samplesPerFrame) { 0 }
 
             while (isActive && isRunning.get()) {
                 val track = audioTrack ?: break
                 val frame = jitterBuffer.pop()
 
                 if (frame != null && frame.data.isNotEmpty()) {
-                    AdpcmCodec.decode(frame.data, frame.data.size, pcmOut, decodeState)
-                    track.write(pcmOut, 0, samplesPerFrame)
+                    val sampleCount = frame.data.size * 2
+                    val outBuf = if (sampleCount == samplesPerFrame) pcmOut else ShortArray(sampleCount)
+                    AdpcmCodec.decode(frame.data, frame.data.size, outBuf, decodeState)
+                    track.write(outBuf, 0, sampleCount)
                 } else {
-                    // Underflow or waiting for preload: write small comfort silence or brief sleep
-                    track.write(silence, 0, samplesPerFrame / 2)
-                    delay(10L)
+                    // Waiting for next frame or preload: brief yield without injecting artificial silence into AudioTrack
+                    delay(5L)
                 }
             }
         }
@@ -204,6 +227,18 @@ class AndroidAudioStreamer(
             } finally {
                 audioTrack = null
             }
+
+            try {
+                audioManager?.mode = AudioManager.MODE_NORMAL
+                audioManager?.isSpeakerphoneOn = false
+            } catch (_: Exception) {}
+
+            try {
+                if (wakeLock?.isHeld == true) {
+                    wakeLock?.release()
+                }
+            } catch (_: Exception) {}
+            wakeLock = null
 
             jitterBuffer.reset()
         }

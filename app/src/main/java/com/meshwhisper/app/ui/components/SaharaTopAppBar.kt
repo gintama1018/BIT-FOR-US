@@ -33,6 +33,9 @@ fun SaharaTopAppBar(
     actionIcon: ImageVector? = Icons.Default.Emergency,
     actionIconTint: Color = SaharaError,
     onActionClick: (() -> Unit)? = null,
+    secondaryActionIcon: ImageVector? = null,
+    secondaryActionIconTint: Color = SaharaOnSurfaceVariant,
+    onSecondaryActionClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     // Pulse animation for active mesh indicator dot
@@ -120,23 +123,40 @@ fun SaharaTopAppBar(
                 }
             }
 
-            // Right Action / Emergency Button
-            if (actionIcon != null) {
-                IconButton(
-                    onClick = { onActionClick?.invoke() },
-                    modifier = Modifier
-                        .size(40.dp)
-                        .clip(CircleShape)
-                ) {
-                    Icon(
-                        imageVector = actionIcon,
-                        contentDescription = "Action",
-                        tint = actionIconTint,
-                        modifier = Modifier.size(24.dp)
-                    )
+            // Right Action Buttons
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (secondaryActionIcon != null) {
+                    IconButton(
+                        onClick = { onSecondaryActionClick?.invoke() },
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                    ) {
+                        Icon(
+                            imageVector = secondaryActionIcon,
+                            contentDescription = "Secondary Action",
+                            tint = secondaryActionIconTint,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
                 }
-            } else {
-                Spacer(modifier = Modifier.size(40.dp))
+                if (actionIcon != null) {
+                    IconButton(
+                        onClick = { onActionClick?.invoke() },
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                    ) {
+                        Icon(
+                            imageVector = actionIcon,
+                            contentDescription = "Action",
+                            tint = actionIconTint,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                } else if (secondaryActionIcon == null) {
+                    Spacer(modifier = Modifier.size(40.dp))
+                }
             }
         }
     }

@@ -333,16 +333,32 @@ class MeshRouter(
         }
     }
 
+    // Clean seam for P4 LINK_AUTH transport state binding.
+    // Unauthenticated raw transport ingress strictly defaults to LinkState.PENDING with null boundIdentity.
+    // P4 LINK_AUTH will invoke bindLink upon handshake completion.
+    private val authenticatedLinks = java.util.concurrent.ConcurrentHashMap<String, ByteArray>()
+
+    fun bindLink(linkHandle: String, identityHash: ByteArray) {
+        require(identityHash.size == 32) { "identityHash must be 32 bytes" }
+        authenticatedLinks[linkHandle] = identityHash
+    }
+
+    fun unbindLink(linkHandle: String) {
+        authenticatedLinks.remove(linkHandle)
+    }
+
     /**
      * Entry point for incoming raw packets from BLE / Wi-Fi.
      * Single mandatory production authentication chokepoint through PacketPipeline.
      */
     fun handleIncomingPacket(rawBytes: ByteArray, ingressAddress: String? = null) {
+        val handle = ingressAddress ?: "local"
+        val boundId = authenticatedLinks[handle]
         val linkContext = LinkContext(
-            linkHandle = ingressAddress ?: "local",
+            linkHandle = handle,
             transport = TransportType.BLE,
-            boundIdentity = null,
-            state = LinkState.AUTHENTICATED
+            boundIdentity = boundId,
+            state = if (boundId != null) LinkState.AUTHENTICATED else LinkState.PENDING
         )
 
         when (val result = pipeline.ingest(rawBytes, linkContext)) {

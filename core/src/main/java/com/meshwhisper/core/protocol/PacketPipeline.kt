@@ -332,14 +332,13 @@ class PacketPipeline(
 
             // 3. Rollback and equivocation rules (Finding C-12)
             val existing = identityStore.get(derivedIdHash)
+            var isEquivocation = false
             if (existing != null) {
                 if (announce.keyVersion < existing.keyVersion) {
                     return IngestResult.Dropped(PipelineStage.S6_SIGNATURE, "KeyVersion rollback attack: incoming ${announce.keyVersion} < stored ${existing.keyVersion}")
                 }
                 if (announce.keyVersion == existing.keyVersion && !announce.ekPub.contentEquals(existing.ekPub)) {
-                    // Equivocation attack: update warning count on existing identity without changing key
-                    identityStore.upsert(existing.copy(warningCount = existing.warningCount + 1))
-                    return IngestResult.Dropped(PipelineStage.S6_SIGNATURE, "KeyVersion equivocation detected: same version, different EK")
+                    isEquivocation = true
                 }
                 if (announce.announceCounter <= existing.lastAnnounceCounter) {
                     return IngestResult.Dropped(
@@ -369,6 +368,15 @@ class PacketPipeline(
 
             if (!PureCryptoEngine.verifySignature(announce.ikPub, transcript, hopSignature)) {
                 return IngestResult.Dropped(PipelineStage.S6_SIGNATURE, "PEER_ANNOUNCE hop signature verification failed")
+            }
+
+            if (isEquivocation) {
+                // Hop signature verified: authentic peer signed an announcement with the same keyVersion but different EK.
+                // Mutate diagnostic counter at this authenticated boundary without changing keyVersion/ekPub/trustState.
+                existing?.let {
+                    identityStore.upsert(it.copy(warningCount = it.warningCount + 1))
+                }
+                return IngestResult.Dropped(PipelineStage.S6_SIGNATURE, "KeyVersion equivocation detected: same version, different EK")
             }
 
             validatedAnnouncePayload = announce
@@ -442,13 +450,20 @@ class PacketPipeline(
 
         // 4. Construct AuthenticatedPacket / AdmittedChunk
         if (packet.type == PacketType.MEDIA_CHUNK) {
-            val buf = ByteBuffer.wrap(decryptedPayload).order(ByteOrder.BIG_ENDIAN)
-            val mostSig = buf.getLong()
-            val leastSig = buf.getLong()
-            val mediaId = UUID(mostSig, leastSig)
-            val chunkIndex = buf.getShort().toInt() and 0xFFFF
-            val chunkData = ByteArray(buf.remaining())
-            buf.get(chunkData)
+            val (mediaId, chunkIndex, chunkData) = if (isRelayOnly || decryptedPayload.size < 18) {
+                // Relay-only chunk: plaintext was not decrypted (or unavailable).
+                // Do not unpack plaintext. Use empty defaults for relay admission token.
+                Triple(UUID(0L, 0L), 0, ByteArray(0))
+            } else {
+                val buf = ByteBuffer.wrap(decryptedPayload).order(ByteOrder.BIG_ENDIAN)
+                val mostSig = buf.getLong()
+                val leastSig = buf.getLong()
+                val id = UUID(mostSig, leastSig)
+                val idx = buf.getShort().toInt() and 0xFFFF
+                val data = ByteArray(buf.remaining())
+                buf.get(data)
+                Triple(id, idx, data)
+            }
 
             val admittedChunk = AdmittedChunk.createFromPipeline(
                 packet = packet,
@@ -456,7 +471,8 @@ class PacketPipeline(
                 mediaId = mediaId,
                 chunkIndex = chunkIndex,
                 chunkData = chunkData,
-                isBroadcast = packet.recipientId == MeshPacket.BROADCAST_RECIPIENT_ID
+                isBroadcast = packet.recipientId == MeshPacket.BROADCAST_RECIPIENT_ID,
+                isRelayOnly = isRelayOnly
             )
             return IngestResult.Admitted(admittedChunk)
         }
@@ -547,7 +563,9 @@ class PacketPipeline(
             PacketType.AVATAR_REQUEST,
             PacketType.TYPING_INDICATOR,
             PacketType.VOICE_CALL_SIGNAL -> {
-                if (sender != null) keyProvider.getSessionKey(sender.nodeId64, packet.timestamp) else null
+                if (packet.recipientId == localNodeId64 && sender != null) {
+                    keyProvider.getSessionKey(sender.nodeId64, packet.timestamp)
+                } else null
             }
 
             PacketType.MEDIA_INIT,
@@ -557,7 +575,7 @@ class PacketPipeline(
             PacketType.MEDIA_ABORT -> {
                 if (packet.recipientId == MeshPacket.BROADCAST_RECIPIENT_ID) {
                     keyProvider.getPublicChannelKey()
-                } else if (sender != null) {
+                } else if (packet.recipientId == localNodeId64 && sender != null) {
                     keyProvider.getSessionKey(sender.nodeId64, packet.timestamp)
                 } else null
             }

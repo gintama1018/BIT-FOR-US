@@ -141,7 +141,8 @@ class PacketPipelineTest {
         ekPubOverride: ByteArray? = null,
         ibcSigOverride: ByteArray? = null,
         senderIdOverride: Long? = null,
-        flagsOverride: Byte? = null
+        flagsOverride: Byte? = null,
+        hopSigOverride: ByteArray? = null
     ): ByteArray {
         var flagsInt = 0
         if (location != null) flagsInt = flagsInt or 0x01
@@ -187,7 +188,7 @@ class PacketPipelineTest {
             payloadLenExcludingSig = enc.ciphertext.size,
             ciphertextAndTagHash = hash
         )
-        val sig = PureCryptoEngine.sign(sender.identitySeed, transcript)
+        val sig = hopSigOverride ?: PureCryptoEngine.sign(sender.identitySeed, transcript)
         val fullPayload = ByteArray(enc.ciphertext.size + 64)
         System.arraycopy(enc.ciphertext, 0, fullPayload, 0, enc.ciphertext.size)
         System.arraycopy(sig, 0, fullPayload, enc.ciphertext.size, 64)
@@ -653,7 +654,13 @@ class PacketPipelineTest {
 
         val (equivEkPriv, equivEkPub) = PureCryptoEngine.generateX25519KeyPair()
         val equivSig = PureCryptoEngine.signIbc(clientNode.identitySeed, equivEkPub, 1L, 0L)
-        val raw = buildAnnounceWireBytes(clientNode, keyVersion = 1L, ekPubOverride = equivEkPub, ibcSigOverride = equivSig)
+        val raw = buildAnnounceWireBytes(
+            sender = clientNode,
+            keyVersion = 1L,
+            announceCounter = 101L,
+            ekPubOverride = equivEkPub,
+            ibcSigOverride = equivSig
+        )
 
         val result = pipeline.ingest(raw, linkContext)
         assertThat(result).isInstanceOf(IngestResult.Dropped::class.java)
@@ -1046,5 +1053,62 @@ class PacketPipelineTest {
         assertThat(dropped.duplicateDmPacket).isNotNull()
         assertThat(dropped.duplicateDmPacket!!.messageId).isEqualTo((firstResult as IngestResult.Accepted).packet.packet.messageId)
         assertThat(packetStore.getSeenCount()).isEqualTo(seenCountAfterFirst)
+    }
+
+    @Test
+    fun testRelayOnlyMediaChunkCannotThrowBufferUnderflowException() {
+        registerPeerInStore(clientNode)
+        val linkContext = createAuthLinkContext(clientNode.identityHash)
+
+        // MEDIA_CHUNK directed to a 3rd party peer (so this node is a relay)
+        val thirdPartyNodeId = 0x123456789ABCDEF0L
+        val fakeCiphertext = ByteArray(32) { 0xAA.toByte() }
+        val authTag = ByteArray(16) { 0xBB.toByte() }
+
+        val packet = MeshPacket(
+            type = PacketType.MEDIA_CHUNK,
+            messageId = UUID.randomUUID(),
+            senderId = clientNode.nodeId64,
+            recipientId = thirdPartyNodeId,
+            ttl = 4,
+            timestamp = clock.nowSeconds(),
+            payload = fakeCiphertext,
+            authTag = authTag
+        )
+        val raw = MeshPacket.serialize(packet)
+
+        val result = pipeline.ingest(raw, linkContext)
+        assertThat(result).isInstanceOf(IngestResult.Admitted::class.java)
+        val admitted = result as IngestResult.Admitted
+        assertThat(admitted.chunk.isRelayOnly).isTrue()
+        assertThat(admitted.chunk.chunkData.size).isEqualTo(0)
+    }
+
+    @Test
+    fun testInvalidHopSignatureCannotIncrementPersistentWarningCount() {
+        val linkContext = createAuthLinkContext(clientNode.identityHash)
+        registerPeerInStore(clientNode.copy(keyVersion = 1L))
+
+        val (equivEkPriv, equivEkPub) = PureCryptoEngine.generateX25519KeyPair()
+        val equivSig = PureCryptoEngine.signIbc(clientNode.identitySeed, equivEkPub, 1L, 0L)
+        // Equivocation announcement with an invalid/corrupted hop signature
+        val raw = buildAnnounceWireBytes(
+            sender = clientNode,
+            keyVersion = 1L,
+            announceCounter = 101L,
+            ekPubOverride = equivEkPub,
+            ibcSigOverride = equivSig,
+            hopSigOverride = ByteArray(64) { 0xFE.toByte() }
+        )
+
+        val result = pipeline.ingest(raw, linkContext)
+        assertThat(result).isInstanceOf(IngestResult.Dropped::class.java)
+        val dropped = result as IngestResult.Dropped
+        assertThat(dropped.stage).isEqualTo(PipelineStage.S6_SIGNATURE)
+        assertThat(dropped.reason).contains("PEER_ANNOUNCE hop signature verification failed")
+
+        // Persistent identity must NOT have warningCount incremented!
+        val stored = identityStore.get(clientNode.identityHash)!!
+        assertThat(stored.warningCount).isEqualTo(0)
     }
 }

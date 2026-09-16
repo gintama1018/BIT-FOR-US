@@ -681,12 +681,7 @@ class MeshBleEngine(private val context: Context) {
                 if (!isInteractive) {
                     onBackgroundScanMatchListener?.invoke(address, rssi)
                 }
-                if (serviceData != null && serviceData.size >= 8) {
-                    val peerNodeId = java.nio.ByteBuffer.wrap(serviceData).long
-                    if (peerNodeId != 0L && peerNodeId != myNodeId) {
-                        registerDirectNode(address, peerNodeId)
-                    }
-                }
+                // Pre-auth advertisement scan match must NOT establish direct node trust/identity binding before P4 LINK_AUTH.
                 onPeerDiscoveredListener?.invoke(address, rssi)
 
                 // Auto-connect: Establish outbound GATT Client connection if not already connected as client

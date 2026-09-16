@@ -149,12 +149,27 @@ class DesktopMeshRouter(
         announcePresence()
     }
 
+    // Clean seam for P4 LINK_AUTH transport state binding.
+    // Unauthenticated raw transport ingress strictly defaults to LinkState.PENDING with null boundIdentity.
+    // P4 LINK_AUTH will invoke bindLink upon handshake completion.
+    private val authenticatedLinks = java.util.concurrent.ConcurrentHashMap<String, ByteArray>()
+
+    fun bindLink(linkHandle: String, identityHash: ByteArray) {
+        require(identityHash.size == 32) { "identityHash must be 32 bytes" }
+        authenticatedLinks[linkHandle] = identityHash
+    }
+
+    fun unbindLink(linkHandle: String) {
+        authenticatedLinks.remove(linkHandle)
+    }
+
     private fun handleIncomingRawPacket(rawBytes: ByteArray, ingressSource: String) {
+        val boundId = authenticatedLinks[ingressSource]
         val linkContext = LinkContext(
             linkHandle = ingressSource,
             transport = TransportType.WIFI_TCP,
-            boundIdentity = null,
-            state = LinkState.AUTHENTICATED
+            boundIdentity = boundId,
+            state = if (boundId != null) LinkState.AUTHENTICATED else LinkState.PENDING
         )
 
         when (val result = pipeline.ingest(rawBytes, linkContext)) {

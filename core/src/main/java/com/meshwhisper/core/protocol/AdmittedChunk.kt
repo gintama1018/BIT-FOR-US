@@ -26,7 +26,8 @@ class AdmittedChunk private constructor(
     val mediaId: UUID,
     val chunkIndex: Int,
     val chunkData: ByteArray,
-    val isBroadcast: Boolean
+    val isBroadcast: Boolean,
+    val isRelayOnly: Boolean = false
 ) {
     companion object {
         /**
@@ -39,9 +40,10 @@ class AdmittedChunk private constructor(
             mediaId: UUID,
             chunkIndex: Int,
             chunkData: ByteArray,
-            isBroadcast: Boolean
+            isBroadcast: Boolean,
+            isRelayOnly: Boolean = false
         ): AdmittedChunk {
-            return AdmittedChunk(packet, senderIdentity, mediaId, chunkIndex, chunkData, isBroadcast)
+            return AdmittedChunk(packet, senderIdentity, mediaId, chunkIndex, chunkData, isBroadcast, isRelayOnly)
         }
     }
 }

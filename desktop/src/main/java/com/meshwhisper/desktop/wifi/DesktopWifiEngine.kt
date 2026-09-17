@@ -1,7 +1,13 @@
 package com.meshwhisper.desktop.wifi
 
+import com.meshwhisper.core.crypto.PureCryptoEngine
 import com.meshwhisper.core.logging.MeshLogger
 import com.meshwhisper.core.logging.StdoutLogger
+import com.meshwhisper.core.protocol.MeshPacket
+import com.meshwhisper.core.protocol.ResourceLimits
+import com.meshwhisper.core.transport.*
+import com.meshwhisper.core.util.Clock
+import com.meshwhisper.core.util.SystemClock
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -10,11 +16,19 @@ import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.net.*
 import java.nio.ByteBuffer
-import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Pure JVM Offline Wi-Fi Transport Engine for Windows and macOS desktop nodes.
- * Reuses identical UDP beacon format (port 42425) and TCP data streaming framing (port 42426).
+ * Pure JVM Offline Wi-Fi Transport Engine for Windows and macOS desktop nodes (vNext Phase P4).
+ * 
+ * Enforces:
+ * 1. UDP Discovery Beacons on port 42425 (<= 128 B only, rate-limited, no raw mesh packets).
+ * 2. Dedicated 4-thread handshake dispatcher and bounded pending pool (max 8 concurrent).
+ * 3. Exact K_link cutover moment upon mutual cryptographically verified CONFIRM.
+ * 4. Post-auth AES-256-GCM encrypted transport frames (12 IV + 2104 plaintext + 16 tag <= 2132 B).
+ * 5. Atomic active-identity session registration (keyed by identityHash, max 5 sessions).
+ * 6. Frame allocation protection (length validated before allocation; close on 3 violations).
+ * 7. 120-second idle session timeout.
  */
 class DesktopWifiEngine(
     private val logger: MeshLogger = StdoutLogger
@@ -22,11 +36,18 @@ class DesktopWifiEngine(
     companion object {
         const val UDP_DISCOVERY_PORT = 42425
         const val TCP_DATA_PORT = 42426
-        val BEACON_MAGIC = "MWIF".toByteArray(Charsets.UTF_8)
+        const val MAX_CONCURRENT_WIFI_CONNECTIONS = ResourceLimits.MAX_WIFI_AUTHENTICATED_SESSIONS
+        const val TCP_HANDSHAKE_TIMEOUT_MS = 5000
+        val BEACON_MAGIC = byteArrayOf(0x4D, 0x57, 0x49, 0x46) // 'MWIF'
         private const val TAG = "DesktopWifiEngine"
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    var clock: Clock = SystemClock()
+    var credentialsProvider: (() -> LinkAuthLocalCredentials)? = null
+    var onLinkAuthenticatedListener: ((proof: LinkAuthProof) -> Unit)? = null
+    var onLinkDisconnectedListener: ((linkHandle: String) -> Unit)? = null
 
     private var myNodeId: Long = 0L
     private var myAlias: String = "DesktopNode"
@@ -38,9 +59,9 @@ class DesktopWifiEngine(
     private var udpBeaconJob: Job? = null
     private var tcpAcceptJob: Job? = null
 
-    // NodeId -> Active Peer TCP Session
-    private val activePeers = ConcurrentHashMap<Long, PeerTcpSession>()
-    private val peerIpToNodeId = ConcurrentHashMap<String, Long>()
+    // Session Registry & UDP Rate Limiter (P4)
+    private val sessionRegistry = WifiSessionRegistry(ResourceLimits.MAX_WIFI_AUTHENTICATED_SESSIONS)
+    private val udpBeaconLimiter = UdpBeaconLimiter()
 
     // State flows
     private val _isWifiActive = MutableStateFlow(false)
@@ -59,13 +80,6 @@ class DesktopWifiEngine(
     var onPacketReceivedListener: ((packetBytes: ByteArray, ingressSource: String) -> Unit)? = null
     var onPeerConnectedListener: ((nodeId: Long, ipAddress: String) -> Unit)? = null
     var onPeerDisconnectedListener: ((nodeId: Long) -> Unit)? = null
-
-    private class PeerTcpSession(
-        val nodeId: Long,
-        val ipAddress: String,
-        val socket: Socket,
-        val outStream: DataOutputStream
-    )
 
     @Synchronized
     fun start(nodeId: Long, alias: String = "DesktopNode") {
@@ -102,13 +116,13 @@ class DesktopWifiEngine(
         } catch (_: Exception) {}
         serverSocket = null
 
-        for ((_, session) in activePeers) {
+        for (session in sessionRegistry.getAllSessions()) {
             try {
                 session.socket.close()
             } catch (_: Exception) {}
         }
-        activePeers.clear()
-        peerIpToNodeId.clear()
+        sessionRegistry.clear()
+        udpBeaconLimiter.clear()
         updatePeerStates()
         _isWifiActive.value = false
     }
@@ -118,74 +132,92 @@ class DesktopWifiEngine(
     }
 
     fun isPeerConnected(peerId: Long): Boolean {
-        return activePeers.containsKey(peerId)
+        return sessionRegistry.getSessionByNodeId(peerId) != null
     }
 
     /**
-     * Broadcasts a raw MeshPacket across all connected Wi-Fi TCP streams and directed UDP subnet broadcasts.
+     * Broadcasts a raw MeshPacket across all connected authenticated Wi-Fi TCP streams.
+     * FROZEN §8: NO raw mesh packets over UDP.
      */
     fun broadcastPacket(rawBytes: ByteArray, excludeIp: String? = null) {
         if (!isEngineRunning) return
 
-        // 1. Send via TCP streams to all connected peer sockets
-        for ((nodeId, session) in activePeers) {
+        for (session in sessionRegistry.getAllSessions()) {
             if (excludeIp != null && session.ipAddress == excludeIp) continue
-            sendOverTcpSession(session, rawBytes)
-        }
-
-        // 2. Also send over UDP broadcast across all subnet broadcast addresses for discovering nodes
-        scope.launch {
             try {
-                val targets = getBroadcastAddresses()
-                for (targetAddr in targets) {
-                    try {
-                        val datagram = DatagramPacket(rawBytes, rawBytes.size, targetAddr, UDP_DISCOVERY_PORT)
-                        udpSocket?.send(datagram)
-                    } catch (_: Exception) {}
-                }
-            } catch (_: Exception) {}
+                WifiFrameCodec.writeEncryptedFrame(session.outStream, rawBytes, session.linkKey)
+            } catch (e: Exception) {
+                logger.w(TAG, "Failed to broadcast to ${session.ipAddress}: ${e.message}")
+                disconnectSession(session)
+            }
         }
     }
 
     /**
-     * Sends a raw MeshPacket directly to a specific target node over high-speed TCP.
+     * Sends a raw MeshPacket directly to a specific target node over high-speed encrypted TCP.
      */
-    fun sendDirectPacket(targetNodeId: Long, rawBytes: ByteArray): Boolean {
-        val session = activePeers[targetNodeId] ?: return false
-        return sendOverTcpSession(session, rawBytes)
-    }
-
-    private fun sendOverTcpSession(session: PeerTcpSession, rawBytes: ByteArray): Boolean {
+    fun sendDirectPacket(peerNodeId: Long, rawBytes: ByteArray): Boolean {
+        val session = sessionRegistry.getSessionByNodeId(peerNodeId) ?: return false
         return try {
-            synchronized(session.outStream) {
-                session.outStream.writeInt(rawBytes.size)
-                session.outStream.write(rawBytes)
-                session.outStream.flush()
-            }
+            WifiFrameCodec.writeEncryptedFrame(session.outStream, rawBytes, session.linkKey)
             true
         } catch (e: Exception) {
-            logger.w(TAG, "Failed to send TCP packet to 0x${String.format("%016X", session.nodeId)}: ${e.message}")
-            disconnectPeer(session.nodeId)
+            logger.w(TAG, "Failed to send packet over TCP to ${session.ipAddress}: ${e.message}")
+            disconnectSession(session)
             false
         }
+    }
+
+    private fun disconnectSession(session: AuthenticatedWifiSession) {
+        sessionRegistry.removeSession(session.identityHashHex, session)
+        val linkHandle = "${session.ipAddress}:${session.socket.port}"
+        onLinkDisconnectedListener?.invoke(linkHandle)
+        onPeerDisconnectedListener?.invoke(session.peerNodeId64)
+        try { session.socket.close() } catch (_: Exception) {}
+        updatePeerStates()
+    }
+
+    fun disconnectPeer(peerId: Long) {
+        val session = sessionRegistry.getSessionByNodeId(peerId) ?: return
+        disconnectSession(session)
     }
 
     private fun startTcpServer() {
         tcpAcceptJob = scope.launch {
             try {
-                serverSocket = ServerSocket().apply {
+                val server = ServerSocket().apply {
                     reuseAddress = true
                     bind(InetSocketAddress(TCP_DATA_PORT))
                 }
-                logger.i(TAG, "TCP Server listening on port $TCP_DATA_PORT")
+                serverSocket = server
+                _isWifiActive.value = true
+                logger.i(TAG, "TCP ServerSocket listening on port $TCP_DATA_PORT")
 
                 while (isActive && isEngineRunning) {
                     try {
-                        val socket = serverSocket?.accept() ?: break
-                        socket.tcpNoDelay = true
-                        val remoteIp = socket.inetAddress.hostAddress ?: "unknown"
-                        logger.i(TAG, "Accepted inbound TCP connection from $remoteIp")
-                        handleIncomingTcpConnection(socket, remoteIp)
+                        val clientSocket = server.accept()
+                        clientSocket.tcpNoDelay = true
+                        val remoteIp = clientSocket.inetAddress.hostAddress ?: "unknown"
+
+                        if (sessionRegistry.size() >= ResourceLimits.MAX_WIFI_AUTHENTICATED_SESSIONS) {
+                            logger.d(TAG, "Wi-Fi TCP connection limit (${ResourceLimits.MAX_WIFI_AUTHENTICATED_SESSIONS}) reached. Rejecting $remoteIp")
+                            try { clientSocket.close() } catch (_: Exception) {}
+                            continue
+                        }
+
+                        // Requirement 2: Dedicated 4-thread handshake pool + max 8 concurrent pending handshakes
+                        scope.launch(WifiTransportPool.handshakeDispatcher) {
+                            if (!WifiTransportPool.acquirePendingSlot()) {
+                                logger.w(TAG, "Pending handshake pool saturated (max 8). Rejecting connection from $remoteIp")
+                                try { clientSocket.close() } catch (_: Exception) {}
+                                return@launch
+                            }
+                            try {
+                                handleTcpHandshakeAndLoop(clientSocket, remoteIp)
+                            } finally {
+                                WifiTransportPool.releasePendingSlot()
+                            }
+                        }
                     } catch (e: Exception) {
                         if (isEngineRunning) {
                             logger.d(TAG, "TCP accept loop error: ${e.message}")
@@ -198,126 +230,217 @@ class DesktopWifiEngine(
         }
     }
 
-    private fun handleIncomingTcpConnection(socket: Socket, remoteIp: String) {
-        scope.launch {
-            var peerNodeId: Long? = null
+    private fun connectToPeer(peerId: Long, ip: String, tcpPort: Int) {
+        if (!isEngineRunning) return
+        if (sessionRegistry.size() >= ResourceLimits.MAX_WIFI_AUTHENTICATED_SESSIONS) return
+        if (sessionRegistry.getSessionByNodeId(peerId) != null) return
+
+        if (!WifiTransportPool.acquirePendingSlot()) {
+            logger.w(TAG, "Pending handshake pool saturated (max 8). Skipping outbound connection to $ip:$tcpPort")
+            return
+        }
+
+        scope.launch(WifiTransportPool.handshakeDispatcher) {
+            var socket: Socket? = null
             try {
+                logger.i(TAG, "Attempting outbound TCP connection to peer 0x${String.format("%016X", peerId)} at $ip:$tcpPort")
+                val s = Socket()
+                socket = s
+                withContext(Dispatchers.IO) {
+                    s.connect(InetSocketAddress(ip, tcpPort), (ResourceLimits.WIFI_PENDING_HANDSHAKE_TIMEOUT_SEC * 1000).toInt())
+                }
+                s.tcpNoDelay = true
+
+                handleTcpHandshakeAndLoop(s, ip)
+            } catch (e: Exception) {
+                logger.d(TAG, "Could not connect to peer $ip:$tcpPort: ${e.message}")
+                try { socket?.close() } catch (_: Exception) {}
+            } finally {
+                WifiTransportPool.releasePendingSlot()
+            }
+        }
+    }
+
+    /**
+     * Requirement 4 & 5: Performs LINK_AUTH handshake on WifiTransportPool, validates K_link,
+     * cuts over to AES-256-GCM encrypted transport frames, registers session atomically.
+     */
+    private suspend fun handleTcpHandshakeAndLoop(socket: Socket, remoteIp: String) {
+        val linkHandle = "$remoteIp:${socket.port}"
+        val violationCounter = AtomicInteger(0)
+        var sessionToClean: AuthenticatedWifiSession? = null
+
+        try {
+            val credentials = credentialsProvider?.invoke() ?: run {
+                logger.e(TAG, "CredentialsProvider not configured; closing connection from $remoteIp")
+                socket.close()
+                return
+            }
+
+            val linkAuthSession = LinkAuthSession(
+                linkHandle = linkHandle,
+                localCredentials = credentials,
+                clock = clock
+            )
+
+            // Strict 3-second timeout for handshake
+            val proof = withTimeout(ResourceLimits.WIFI_PENDING_HANDSHAKE_TIMEOUT_SEC * 1000L) {
+                socket.soTimeout = (ResourceLimits.WIFI_PENDING_HANDSHAKE_TIMEOUT_SEC * 1000L).toInt()
                 val inStream = DataInputStream(socket.getInputStream())
                 val outStream = DataOutputStream(socket.getOutputStream())
 
-                // 1. Send handshake frame
-                val myAliasBytes = myAlias.toByteArray(Charsets.UTF_8)
-                synchronized(outStream) {
-                    outStream.writeLong(myNodeId)
-                    outStream.writeByte(myAliasBytes.size)
-                    outStream.write(myAliasBytes)
-                    outStream.flush()
+                // 1. Send local HELLO
+                val localHelloPacket = linkAuthSession.createHelloPacket()
+                val localHelloBytes = MeshPacket.serialize(localHelloPacket)
+                WifiFrameCodec.writePlaintextFrame(outStream, localHelloBytes)
+
+                // 2. Read and process remote HELLO (pre-auth frame <= 2104 B validated before allocation)
+                val remoteHelloBytes = WifiFrameCodec.readFrame(inStream, isPostAuth = false, violationCounter)
+                    ?: throw IllegalStateException("Failed to read remote HELLO")
+                val remoteHelloPacket = MeshPacket.deserialize(remoteHelloBytes)
+                    ?: throw IllegalStateException("Failed to deserialize remote HELLO")
+                val helloResult = linkAuthSession.processIncomingPacket(remoteHelloPacket)
+                if (helloResult is LinkAuthStepResult.Failed) {
+                    throw IllegalStateException("Remote HELLO rejected: ${helloResult.reason}")
                 }
 
-                // 2. Read remote handshake frame
-                val remoteNodeId = inStream.readLong()
-                val remoteAliasLen = inStream.readByte().toInt() and 0xFF
-                val remoteAliasBytes = ByteArray(remoteAliasLen)
-                inStream.readFully(remoteAliasBytes)
-                val remoteAlias = String(remoteAliasBytes, Charsets.UTF_8)
-                peerNodeId = remoteNodeId
+                // 3. Send local CONFIRM
+                val localConfirmPacket = linkAuthSession.createConfirmPacket()
+                val localConfirmBytes = MeshPacket.serialize(localConfirmPacket)
+                WifiFrameCodec.writePlaintextFrame(outStream, localConfirmBytes)
 
-                val session = PeerTcpSession(remoteNodeId, remoteIp, socket, outStream)
-                val oldSession = activePeers.put(remoteNodeId, session)
-                if (oldSession != null && oldSession.socket != socket) {
-                    try { oldSession.socket.close() } catch (_: Exception) {}
+                // 4. Read and process remote CONFIRM (pre-auth frame <= 2104 B validated before allocation)
+                val remoteConfirmBytes = WifiFrameCodec.readFrame(inStream, isPostAuth = false, violationCounter)
+                    ?: throw IllegalStateException("Failed to read remote CONFIRM")
+                val remoteConfirmPacket = MeshPacket.deserialize(remoteConfirmBytes)
+                    ?: throw IllegalStateException("Failed to deserialize remote CONFIRM")
+                val confirmResult = linkAuthSession.processIncomingPacket(remoteConfirmPacket)
+                if (confirmResult !is LinkAuthStepResult.Completed) {
+                    throw IllegalStateException("Remote CONFIRM verification failed")
                 }
-                peerIpToNodeId[remoteIp] = remoteNodeId
-                updatePeerStates()
-                onPeerConnectedListener?.invoke(remoteNodeId, remoteIp)
-                logger.i(TAG, "Registered peer session for 0x${String.format("%016X", remoteNodeId)} ($remoteAlias) at $remoteIp")
 
-                // 3. Continuous frame read loop
-                while (isActive && isEngineRunning) {
-                    val frameLen = inStream.readInt()
-                    if (frameLen in 1..65535) {
-                        val frameBytes = ByteArray(frameLen)
-                        inStream.readFully(frameBytes)
-                        onPacketReceivedListener?.invoke(frameBytes, "WIFI_TCP:$remoteIp")
-                    }
-                }
-            } catch (e: Exception) {
-                logger.d(TAG, "TCP session ended for $remoteIp: ${e.message}")
-            } finally {
-                peerNodeId?.let { id ->
-                    val current = activePeers[id]
-                    if (current?.socket == socket) {
-                        disconnectPeer(id)
-                    }
-                }
-                try { socket.close() } catch (_: Exception) {}
+                confirmResult.proof
             }
+
+            // ATOMIC REGISTRATION (Requirement 3)
+            val identityHashHex = PureCryptoEngine.bytesToHex(proof.peerIdentityHash)
+            val outStream = DataOutputStream(socket.getOutputStream())
+            val session = AuthenticatedWifiSession(
+                identityHashHex = identityHashHex,
+                peerIdentityHash = proof.peerIdentityHash,
+                peerNodeId64 = proof.peerNodeId64,
+                ipAddress = remoteIp,
+                socket = socket,
+                outStream = outStream,
+                linkKey = proof.linkKey,
+                proof = proof
+            )
+
+            if (!sessionRegistry.registerSession(session)) {
+                logger.w(TAG, "Duplicate active identity $identityHashHex rejected. Closing second connection from $remoteIp")
+                socket.close()
+                return
+            }
+            sessionToClean = session
+
+            // BIND AUTHORITY (Requirement 5)
+            onLinkAuthenticatedListener?.invoke(proof)
+            onPeerConnectedListener?.invoke(proof.peerNodeId64, remoteIp)
+            updatePeerStates()
+
+            logger.i(TAG, "Wi-Fi TCP authenticated with 0x${String.format("%016X", proof.peerNodeId64)} at $remoteIp")
+
+            // POST-AUTH ENCRYPTED LOOP (runs on normal IO dispatcher)
+            socket.keepAlive = true
+            socket.soTimeout = (ResourceLimits.WIFI_SESSION_IDLE_TIMEOUT_SEC * 1000L).toInt()
+            val inStream = DataInputStream(socket.getInputStream())
+
+            withContext(Dispatchers.IO) {
+                while (isActive && isEngineRunning && !socket.isClosed) {
+                    val frameBytes = try {
+                        WifiFrameCodec.readFrame(inStream, isPostAuth = true, violationCounter)
+                    } catch (te: SocketTimeoutException) {
+                        if (!socket.isClosed && socket.isConnected) continue else break
+                    }
+                    if (frameBytes == null) continue
+
+                    val decryptedPlaintext = try {
+                        PureCryptoEngine.decryptTransportFrame(frameBytes, proof.linkKey)
+                    } catch (e: Exception) {
+                        logger.w(TAG, "Failed to decrypt K_link transport frame from $remoteIp: ${e.message}")
+                        break
+                    }
+
+                    onPacketReceivedListener?.invoke(decryptedPlaintext, linkHandle)
+                }
+            }
+        } catch (e: Exception) {
+            logger.d(TAG, "TCP session ended for $remoteIp: ${e.message}")
+        } finally {
+            sessionToClean?.let { disconnectSession(it) }
+            try { socket.close() } catch (_: Exception) {}
         }
     }
 
     private fun startUdpDiscovery() {
         udpDiscoveryJob = scope.launch {
             try {
-                udpSocket = DatagramSocket(null).apply {
+                val socket = DatagramSocket(null).apply {
                     reuseAddress = true
                     broadcast = true
                     bind(InetSocketAddress(UDP_DISCOVERY_PORT))
                 }
-                logger.i(TAG, "UDP Discovery listening on port $UDP_DISCOVERY_PORT")
+                udpSocket = socket
+                val rxBuffer = ByteArray(256)
 
-                val receiveBuf = ByteArray(4096)
-                val packet = DatagramPacket(receiveBuf, receiveBuf.size)
+                logger.i(TAG, "UDP Discovery listening on port $UDP_DISCOVERY_PORT")
 
                 while (isActive && isEngineRunning) {
                     try {
-                        udpSocket?.receive(packet)
+                        val packet = DatagramPacket(rxBuffer, rxBuffer.size)
+                        socket.receive(packet)
                         val senderIp = packet.address.hostAddress ?: continue
                         val myIp = _localIpAddress.value
                         if (senderIp == myIp || senderIp == "127.0.0.1") continue
 
-                        val length = packet.length
-                        if (length >= 15 && packet.data.copyOfRange(0, 4).contentEquals(BEACON_MAGIC)) {
-                            // Discovery Beacon
-                            val buf = ByteBuffer.wrap(packet.data, 4, length - 4)
-                            val peerNodeId = buf.getLong()
-                            val peerTcpPort = buf.getShort().toInt() and 0xFFFF
-
-                            if (peerNodeId != myNodeId && !activePeers.containsKey(peerNodeId)) {
-                                if (myNodeId < peerNodeId) {
-                                    connectToPeer(peerNodeId, senderIp, peerTcpPort)
-                                }
-                            }
-                        } else if (length >= 56) {
-                            // Direct UDP flood packet
-                            val data = packet.data.copyOf(length)
-                            onPacketReceivedListener?.invoke(data, "WIFI_UDP:$senderIp")
-                        }
+                        val data = packet.data.copyOfRange(packet.offset, packet.offset + packet.length)
+                        parseUdpPacket(data, senderIp)
                     } catch (e: Exception) {
-                        if (isEngineRunning) {
-                            logger.d(TAG, "UDP receive loop error: ${e.message}")
-                        }
+                        if (!isEngineRunning) break
                     }
                 }
             } catch (e: Exception) {
-                logger.e(TAG, "Could not start UDP discovery: ${e.message}", e)
+                logger.e(TAG, "Failed to bind UDP Discovery socket: ${e.message}", e)
             }
         }
     }
 
-    private fun connectToPeer(peerId: Long, ip: String, tcpPort: Int) {
-        scope.launch {
-            try {
-                logger.i(TAG, "Attempting outbound TCP connection to peer 0x${String.format("%016X", peerId)} at $ip:$tcpPort")
-                val socket = Socket()
-                withContext(Dispatchers.IO) {
-                    socket.connect(InetSocketAddress(ip, tcpPort), 3000)
-                }
-                socket.tcpNoDelay = true
-                socket.soTimeout = 0
+    private fun parseUdpPacket(data: ByteArray, senderIp: String) {
+        // Enforce beacon bounds and rate limits (Requirement 8)
+        if (!udpBeaconLimiter.isBeaconAllowed(data.size, senderIp)) {
+            return
+        }
 
-                handleIncomingTcpConnection(socket, ip)
-            } catch (e: Exception) {
-                logger.d(TAG, "Could not connect to peer $ip:$tcpPort: ${e.message}")
+        if (data.size < 4) return
+
+        // Must be UDP Beacon ('MWIF'). Raw mesh packets over UDP are unconditionally dropped.
+        if (data[0] != BEACON_MAGIC[0] || data[1] != BEACON_MAGIC[1] ||
+            data[2] != BEACON_MAGIC[2] || data[3] != BEACON_MAGIC[3]) {
+            return
+        }
+
+        if (data.size < 4 + 8 + 2 + 1) return
+        val buf = ByteBuffer.wrap(data)
+        buf.position(4) // Skip magic
+        val peerId = buf.long
+        val tcpPort = buf.short.toInt() and 0xFFFF
+        val aliasLen = buf.get().toInt() and 0xFF
+        if (buf.remaining() < aliasLen) return
+        if (peerId == myNodeId) return
+
+        if (sessionRegistry.size() < ResourceLimits.MAX_WIFI_AUTHENTICATED_SESSIONS) {
+            if (sessionRegistry.getSessionByNodeId(peerId) == null) {
+                connectToPeer(peerId, senderIp, tcpPort)
             }
         }
     }
@@ -347,7 +470,7 @@ class DesktopWifiEngine(
                         }
                     }
                 } catch (e: Exception) {
-                    logger.d(TAG, "Error sending UDP beacon: ${e.message}")
+                    logger.w(TAG, "UDP Beacon broadcast error: ${e.message}")
                 }
                 delay(3500L)
             }
@@ -359,14 +482,14 @@ class DesktopWifiEngine(
         try {
             broadcastList.add(InetAddress.getByName("255.255.255.255"))
 
-            val interfaces = NetworkInterface.getNetworkInterfaces()
+            val interfaces = NetworkInterface.getNetworkInterfaces() ?: return broadcastList
             while (interfaces.hasMoreElements()) {
                 val iface = interfaces.nextElement()
                 if (iface.isLoopback || !iface.isUp) continue
 
                 for (interfaceAddress in iface.interfaceAddresses) {
                     val broadcast = interfaceAddress.broadcast
-                    if (broadcast != null && broadcast is Inet4Address) {
+                    if (broadcast != null && interfaceAddress.address is Inet4Address) {
                         broadcastList.add(broadcast)
                     }
                 }
@@ -375,29 +498,16 @@ class DesktopWifiEngine(
         return broadcastList.distinct()
     }
 
-    private fun disconnectPeer(nodeId: Long) {
-        val session = activePeers.remove(nodeId)
-        if (session != null) {
-            peerIpToNodeId.remove(session.ipAddress)
-            try {
-                session.socket.close()
-            } catch (_: Exception) {}
-            updatePeerStates()
-            onPeerDisconnectedListener?.invoke(nodeId)
-            logger.i(TAG, "Disconnected Wi-Fi peer 0x${String.format("%016X", nodeId)}")
-        }
-    }
-
     private fun updatePeerStates() {
-        val count = activePeers.size
-        _connectedPeersCount.value = count
-        _connectedWifiPeers.value = activePeers.mapValues { it.value.ipAddress }
-        _isWifiActive.value = count > 0 || _localIpAddress.value != null
+        val sessions = sessionRegistry.getAllSessions()
+        _connectedWifiPeers.value = sessions.associate { it.peerNodeId64 to it.ipAddress }
+        _connectedPeersCount.value = sessions.size
+        _isWifiActive.value = sessions.isNotEmpty() || _localIpAddress.value != null
     }
 
     private fun refreshLocalIp() {
         try {
-            val interfaces = NetworkInterface.getNetworkInterfaces()
+            val interfaces = NetworkInterface.getNetworkInterfaces() ?: return
             while (interfaces.hasMoreElements()) {
                 val iface = interfaces.nextElement()
                 if (iface.isLoopback || !iface.isUp) continue

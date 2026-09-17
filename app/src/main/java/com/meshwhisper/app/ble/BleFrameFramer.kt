@@ -68,8 +68,12 @@ class BleFrameFramer {
      * Feeds an incoming raw frame and returns the reassembled packet byte array if complete.
      * Returns null if more chunks are required or if frame is invalid.
      */
+    /**
+     * Feeds an incoming raw frame and returns the reassembled packet byte array if complete.
+     * Returns null if more chunks are required or if frame is invalid.
+     */
     fun receiveFrame(deviceAddress: String, frameBytes: ByteArray): ByteArray? {
-        if (frameBytes.isEmpty() || frameBytes.size > 1024) return null
+        if (frameBytes.isEmpty() || frameBytes.size > BleConstants.MAX_BLE_FRAME_SIZE) return null
 
         val frameType = frameBytes[0]
 
@@ -94,9 +98,9 @@ class BleFrameFramer {
 
             val sessionKey = "$deviceAddress-$sessionId"
 
-            // Bound active chunk sessions per remote MAC address (max 4)
+            // Bound active chunk sessions per link (max 2 per §8)
             val peerSessions = sessions.keys.filter { it.startsWith("$deviceAddress-") }
-            if (peerSessions.size >= 4 && !sessions.containsKey(sessionKey)) {
+            if (peerSessions.size >= BleConstants.MAX_BLE_SESSIONS_PER_LINK && !sessions.containsKey(sessionKey)) {
                 val oldestKey = peerSessions.minByOrNull { sessions[it]?.createdAt ?: 0L }
                 if (oldestKey != null) {
                     val dropped = sessions.remove(oldestKey)
@@ -108,6 +112,25 @@ class BleFrameFramer {
                             dropped.chunks.size,
                             dropped.totalChunks,
                             "SESSION_EVICTION_LRU"
+                        )
+                    }
+                }
+            }
+
+            // Bound global active chunk sessions (max 16 per §8)
+            if (sessions.size >= BleConstants.MAX_BLE_SESSIONS_GLOBAL && !sessions.containsKey(sessionKey)) {
+                val oldestGlobalKey = sessions.entries.minByOrNull { it.value.createdAt }?.key
+                if (oldestGlobalKey != null) {
+                    val dropped = sessions.remove(oldestGlobalKey)
+                    if (dropped != null) {
+                        val devAddr = oldestGlobalKey.substringBeforeLast("-")
+                        val sessId = oldestGlobalKey.substringAfterLast("-").toShortOrNull() ?: 0
+                        onChunkSessionDroppedListener?.invoke(
+                            devAddr,
+                            sessId,
+                            dropped.chunks.size,
+                            dropped.totalChunks,
+                            "GLOBAL_SESSION_EVICTION_LRU"
                         )
                     }
                 }
@@ -133,9 +156,26 @@ class BleFrameFramer {
             synchronized(session) {
                 session.chunks[chunkIndex] = chunkData
 
-                // Prune expired sessions older than 30 seconds
+                // Check cumulative size limit (max 2104 B per §8, T-LINK-11)
+                var currentTotalSize = 0
+                for (chunk in session.chunks.values) {
+                    currentTotalSize += chunk.size
+                }
+                if (currentTotalSize > BleConstants.MAX_BLE_REASSEMBLY_SIZE) {
+                    sessions.remove(sessionKey)
+                    onChunkSessionDroppedListener?.invoke(
+                        deviceAddress,
+                        sessionId,
+                        session.chunks.size,
+                        session.totalChunks,
+                        "REASSEMBLY_SIZE_EXCEEDED"
+                    )
+                    return null
+                }
+
+                // Prune expired sessions older than 10 seconds (§8)
                 val now = System.currentTimeMillis()
-                val expiredKeys = sessions.entries.filter { now - it.value.createdAt > 30000 }.map { it.key }
+                val expiredKeys = sessions.entries.filter { now - it.value.createdAt > BleConstants.BLE_REASSEMBLY_TIMEOUT_MS }.map { it.key }
                 for (expKey in expiredKeys) {
                     val expired = sessions.remove(expKey)
                     if (expired != null) {
@@ -146,7 +186,7 @@ class BleFrameFramer {
                             expSessId,
                             expired.chunks.size,
                             expired.totalChunks,
-                            "SESSION_TIMEOUT_30S"
+                            "SESSION_TIMEOUT_10S"
                         )
                     }
                 }
@@ -157,6 +197,11 @@ class BleFrameFramer {
                     for (i in 0 until session.totalChunks) {
                         val c = session.chunks[i] ?: return null
                         totalSize += c.size
+                    }
+
+                    if (totalSize > BleConstants.MAX_BLE_REASSEMBLY_SIZE) {
+                        sessions.remove(sessionKey)
+                        return null
                     }
 
                     val fullPacket = ByteArray(totalSize)
@@ -174,5 +219,9 @@ class BleFrameFramer {
         }
 
         return null
+    }
+
+    fun clearDevice(deviceAddress: String) {
+        sessions.keys.filter { it.startsWith("$deviceAddress-") }.forEach { sessions.remove(it) }
     }
 }

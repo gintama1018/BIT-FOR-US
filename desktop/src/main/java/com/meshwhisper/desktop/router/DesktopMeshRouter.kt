@@ -4,6 +4,8 @@ import com.meshwhisper.core.logging.MeshLogger
 import com.meshwhisper.core.logging.StdoutLogger
 import com.meshwhisper.core.protocol.*
 import com.meshwhisper.core.router.LruDedupCache
+import com.meshwhisper.core.transport.LinkAuthProof
+import com.meshwhisper.core.transport.LinkAuthLocalCredentials
 import com.meshwhisper.core.util.*
 import com.meshwhisper.desktop.crypto.DesktopCryptoEngine
 import com.meshwhisper.desktop.crypto.DesktopPassphraseKeyStorage
@@ -112,6 +114,17 @@ class DesktopMeshRouter(
             }
         }
 
+        wifiEngine.clock = clock
+        wifiEngine.credentialsProvider = {
+            LinkAuthLocalCredentials.create(myPrivateKey)
+        }
+        wifiEngine.onLinkAuthenticatedListener = { proof ->
+            bindLink(proof)
+        }
+        wifiEngine.onLinkDisconnectedListener = { linkHandle ->
+            unbindLink(linkHandle)
+        }
+
         wifiEngine.onPacketReceivedListener = { rawBytes, ingressSource ->
             handleIncomingRawPacket(rawBytes, ingressSource)
         }
@@ -120,6 +133,10 @@ class DesktopMeshRouter(
             logger.i(TAG, "Peer connected: 0x${String.format("%016X", peerId)} at $ip")
             drainStoreAndForward(peerId)
             announcePresence()
+        }
+
+        wifiEngine.onPeerDisconnectedListener = { peerId ->
+            logger.i(TAG, "Peer disconnected: 0x${String.format("%016X", peerId)}")
         }
     }
 
@@ -154,13 +171,17 @@ class DesktopMeshRouter(
     // P4 LINK_AUTH will invoke bindLink upon handshake completion.
     private val authenticatedLinks = java.util.concurrent.ConcurrentHashMap<String, ByteArray>()
 
-    fun bindLink(linkHandle: String, identityHash: ByteArray) {
-        require(identityHash.size == 32) { "identityHash must be 32 bytes" }
-        authenticatedLinks[linkHandle] = identityHash
+    fun bindLink(proof: LinkAuthProof) {
+        require(proof.peerIdentityHash.size == 32) { "identityHash must be 32 bytes" }
+        authenticatedLinks[proof.linkHandle] = proof.peerIdentityHash
     }
 
     fun unbindLink(linkHandle: String) {
         authenticatedLinks.remove(linkHandle)
+    }
+
+    fun isLinkAuthenticated(linkHandle: String): Boolean {
+        return authenticatedLinks.containsKey(linkHandle)
     }
 
     private fun handleIncomingRawPacket(rawBytes: ByteArray, ingressSource: String) {

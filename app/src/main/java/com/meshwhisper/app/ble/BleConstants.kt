@@ -15,4 +15,12 @@ object BleConstants {
     // Frame chunking prefixes (for small MTU fragmentation)
     const val FRAME_TYPE_SINGLE: Byte = 0x00
     const val FRAME_TYPE_CHUNK: Byte = 0x01
+
+    // Resource limits from §8
+    const val MAX_BLE_FRAME_SIZE = 512
+    const val MAX_BLE_REASSEMBLY_SIZE = 2104
+    const val MAX_BLE_SESSIONS_PER_LINK = 2
+    const val MAX_BLE_SESSIONS_GLOBAL = 16
+    const val BLE_REASSEMBLY_TIMEOUT_MS = 10000L
+    const val MAX_BLE_WRITES_PER_SECOND = 50
 }

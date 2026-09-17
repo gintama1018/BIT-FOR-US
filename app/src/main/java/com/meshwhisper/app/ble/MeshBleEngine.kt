@@ -1,5 +1,6 @@
 package com.meshwhisper.app.ble
 
+import com.meshwhisper.core.transport.LinkAuthProof
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
@@ -99,7 +100,7 @@ class MeshBleEngine(private val context: Context) {
     private val _connectedPeersCount = MutableStateFlow(0)
     val connectedPeersCount: StateFlow<Int> = _connectedPeersCount.asStateFlow()
 
-    private val directAddressToNodeId = ConcurrentHashMap<String, Long>()
+    private val authenticatedLinks = ConcurrentHashMap<String, LinkAuthProof>()
     private val _connectedNodeIds = MutableStateFlow<Set<Long>>(emptySet())
     val connectedNodeIds: StateFlow<Set<Long>> = _connectedNodeIds.asStateFlow()
 
@@ -185,12 +186,17 @@ class MeshBleEngine(private val context: Context) {
         rssiPollerJob = null
     }
 
-    fun registerDirectNode(address: String, nodeId: Long) {
-        directAddressToNodeId[address] = nodeId
+    fun onLinkAuthenticated(proof: LinkAuthProof) {
+        authenticatedLinks[proof.linkHandle] = proof
         updateConnectedNodeIds()
     }
 
-    fun getDirectNodeId(address: String): Long? = directAddressToNodeId[address]
+    fun onLinkDisconnected(linkHandle: String) {
+        authenticatedLinks.remove(linkHandle)
+        updateConnectedNodeIds()
+    }
+
+    fun getDirectNodeId(address: String): Long? = authenticatedLinks[address]?.peerNodeId64
 
     fun isDirectlyConnected(nodeId: Long): Boolean = _connectedNodeIds.value.contains(nodeId)
 
@@ -199,8 +205,8 @@ class MeshBleEngine(private val context: Context) {
         activeAddresses.addAll(connectedCentrals.keys)
         activeAddresses.addAll(activeGattClients.keys)
 
-        directAddressToNodeId.keys.retainAll(activeAddresses)
-        _connectedNodeIds.value = directAddressToNodeId.values.toSet()
+        authenticatedLinks.keys.retainAll(activeAddresses)
+        _connectedNodeIds.value = authenticatedLinks.values.map { it.peerNodeId64 }.toSet()
     }
 
     private var myNodeId: Long = 0L
@@ -539,6 +545,8 @@ class MeshBleEngine(private val context: Context) {
                 connectedCentrals.remove(address)
                 centralMtus.remove(address)
                 rateLimiter.remove(address)
+                framer.clearDevice(address)
+                onLinkDisconnected(address)
                 updatePeerCount()
                 onPeerDisconnectedListener?.invoke(address)
             }
@@ -619,21 +627,11 @@ class MeshBleEngine(private val context: Context) {
             return
         }
 
-        val scanFilters = if (isLowLatencyMode) {
-            listOf(
-                ScanFilter.Builder()
-                    .setServiceUuid(ParcelUuid(BleConstants.MESH_SERVICE_UUID))
-                    .build(),
-                ScanFilter.Builder().build() // Catch all for devices whose OEM drops UUID filters in foreground
-            )
-        } else {
-            // Android 8+ OEM background scan compliance: STRICT UUID filter only, no blank catch-all
-            listOf(
-                ScanFilter.Builder()
-                    .setServiceUuid(ParcelUuid(BleConstants.MESH_SERVICE_UUID))
-                    .build()
-            )
-        }
+        val scanFilters = listOf(
+            ScanFilter.Builder()
+                .setServiceUuid(ParcelUuid(BleConstants.MESH_SERVICE_UUID))
+                .build()
+        )
 
         val scanMode = if (isLowLatencyMode) {
             ScanSettings.SCAN_MODE_LOW_LATENCY
@@ -765,6 +763,9 @@ class MeshBleEngine(private val context: Context) {
                 Log.d(tag, "Disconnected from $deviceAddress")
                 gatt.close()
                 activeGattClients.remove(deviceAddress)
+                rateLimiter.remove(deviceAddress)
+                framer.clearDevice(deviceAddress)
+                onLinkDisconnected(deviceAddress)
                 updatePeerCount()
                 onPeerDisconnectedListener?.invoke(deviceAddress)
             }
@@ -916,7 +917,7 @@ class MeshBleEngine(private val context: Context) {
                 if (conn != null) {
                     conn.rssi = rssi
                 }
-                val nodeId = directAddressToNodeId[deviceAddress]
+                val nodeId = authenticatedLinks[deviceAddress]?.peerNodeId64
                 if (nodeId != null) {
                     onRssiUpdatedListener?.invoke(nodeId, rssi)
                 }
@@ -1051,16 +1052,16 @@ class MeshBleEngine(private val context: Context) {
     /**
      * Sends packet bytes directly to a specific target peer over BLE GATT (Central or Peripheral role),
      * completely bypassing broadcast to other connected peers.
+     * Only transmits if the target peer has an authenticated link (P4).
      * Returns true if peer was found directly connected and transmission completed.
      */
     @SuppressLint("MissingPermission")
-    suspend fun sendDirectPacket(peerNodeId: Long, packetBytes: ByteArray): Boolean {
+    suspend fun attemptSend(peerNodeId: Long, packetBytes: ByteArray): Boolean {
         var sent = false
 
         // 1. Prioritize direct GATT Client write (most reliable across all Android OEMs)
         for ((addr, conn) in activeGattClients) {
-            val isTarget = (directAddressToNodeId[addr] == peerNodeId) ||
-                    (directAddressToNodeId[addr] == null && activeGattClients.isNotEmpty())
+            val isTarget = authenticatedLinks[addr]?.peerNodeId64 == peerNodeId
             if (isTarget && conn.isReady) {
                 val writeChar = conn.writeChar ?: continue
                 val frames = framer.fragment(packetBytes, conn.mtu)
@@ -1103,13 +1104,10 @@ class MeshBleEngine(private val context: Context) {
                     }
                     if (!sentOk) allChunksSent = false
                     if (frames.size > 1) {
-                        delay(20L)
+                        delay(15L) // 15 ms write pacing
                     }
                 }
                 if (allChunksSent) {
-                    if (directAddressToNodeId[addr] == null) {
-                        registerDirectNode(addr, peerNodeId)
-                    }
                     sent = true
                     break
                 }
@@ -1125,8 +1123,7 @@ class MeshBleEngine(private val context: Context) {
 
         if (server != null && notifyChar != null) {
             for ((addr, device) in connectedCentrals) {
-                val isTarget = (directAddressToNodeId[addr] == peerNodeId) ||
-                        (directAddressToNodeId[addr] == null && connectedCentrals.isNotEmpty())
+                val isTarget = authenticatedLinks[addr]?.peerNodeId64 == peerNodeId
                 if (isTarget) {
                     val centralMtu = centralMtus[addr] ?: BleConstants.DEFAULT_MTU
                     val frames = framer.fragment(packetBytes, centralMtu)
@@ -1164,13 +1161,10 @@ class MeshBleEngine(private val context: Context) {
                         }
                         if (!sentOk) allChunksSent = false
                         if (frames.size > 1) {
-                            delay(20L)
+                            delay(15L) // 15 ms write pacing
                         }
                     }
                     if (allChunksSent) {
-                        if (directAddressToNodeId[addr] == null) {
-                            registerDirectNode(addr, peerNodeId)
-                        }
                         sent = true
                         break
                     }
@@ -1179,6 +1173,81 @@ class MeshBleEngine(private val context: Context) {
         }
 
         return sent
+    }
+
+    suspend fun sendDirectPacket(peerNodeId: Long, packetBytes: ByteArray): Boolean = attemptSend(peerNodeId, packetBytes)
+
+    /**
+     * Sends packet bytes directly to a specific connected device address (Central or Peripheral),
+     * used for transport-level LINK_AUTH HELLO/CONFIRM exchange before authentication.
+     */
+    @SuppressLint("MissingPermission")
+    suspend fun sendDirectToDevice(deviceAddress: String, packetBytes: ByteArray): Boolean {
+        val client = activeGattClients[deviceAddress]
+        if (client != null && client.isReady) {
+            val writeChar = client.writeChar ?: return false
+            val frames = framer.fragment(packetBytes, client.mtu)
+            for (frame in frames) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    client.gatt.writeCharacteristic(writeChar, frame, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
+                } else {
+                    @Suppress("DEPRECATION")
+                    writeChar.value = frame
+                    @Suppress("DEPRECATION")
+                    writeChar.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                    @Suppress("DEPRECATION")
+                    client.gatt.writeCharacteristic(writeChar)
+                }
+                if (frames.size > 1) delay(15L)
+            }
+            return true
+        }
+
+        val centralDevice = connectedCentrals[deviceAddress]
+        val server = gattServer
+        if (centralDevice != null && server != null) {
+            val service = server.getService(BleConstants.MESH_SERVICE_UUID)
+            val notifyChar = service?.getCharacteristic(BleConstants.NOTIFY_CHAR_UUID) ?: return false
+            val centralMtu = centralMtus[deviceAddress] ?: BleConstants.DEFAULT_MTU
+            val frames = framer.fragment(packetBytes, centralMtu)
+            for (frame in frames) {
+                @Suppress("DEPRECATION")
+                notifyChar.value = frame
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    server.notifyCharacteristicChanged(centralDevice, notifyChar, false, frame)
+                } else {
+                    @Suppress("DEPRECATION")
+                    server.notifyCharacteristicChanged(centralDevice, notifyChar, false)
+                }
+                if (frames.size > 1) delay(15L)
+            }
+            return true
+        }
+
+        return false
+    }
+
+    @SuppressLint("MissingPermission")
+    fun disconnectDevice(address: String) {
+        val clientConn = activeGattClients.remove(address)
+        if (clientConn != null) {
+            try {
+                clientConn.gatt.disconnect()
+                clientConn.gatt.close()
+            } catch (_: Exception) {}
+        }
+        val serverDev = connectedCentrals.remove(address)
+        if (serverDev != null) {
+            try {
+                gattServer?.cancelConnection(serverDev)
+            } catch (_: Exception) {}
+        }
+        centralMtus.remove(address)
+        rateLimiter.remove(address)
+        framer.clearDevice(address)
+        onLinkDisconnected(address)
+        updatePeerCount()
+        onPeerDisconnectedListener?.invoke(address)
     }
 
     companion object {

@@ -32,7 +32,9 @@ object ResourceLimits {
     const val MAX_BLE_GATT_LINKS = 5
 
     // Wi-Fi bounds
-    const val MAX_WIFI_TCP_FRAME_SIZE = 2104
+    const val MAX_MESH_PACKET_SIZE = 2104
+    const val MAX_WIFI_TCP_FRAME_SIZE = 2104 // Plaintext MeshPacket limit
+    const val MAX_WIFI_TCP_ENCRYPTED_FRAME_SIZE = 2132 // 12-byte IV + 2104-byte MeshPacket + 16-byte AES-GCM tag
     const val WIFI_TCP_FRAMES_PER_SEC_PER_LINK = 50
     const val WIFI_MAX_OVERSIZE_FRAMES_BEFORE_CLOSE = 3
     const val WIFI_HELLO_SIZE = 169

@@ -5,6 +5,7 @@ import com.meshwhisper.core.identity.IdentityStore
 import com.meshwhisper.core.identity.PeerIdentity
 import com.meshwhisper.core.identity.TrustState
 import com.meshwhisper.core.router.LruDedupCache
+import com.meshwhisper.core.transport.LinkAuthSession
 import com.meshwhisper.core.util.Clock
 import com.meshwhisper.core.util.SystemClock
 import java.nio.ByteBuffer
@@ -389,6 +390,34 @@ class PacketPipeline(
                 trustState = existing?.trustState ?: TrustState.SEEN,
                 nodeId64 = derivedNodeId
             )
+        } else if (packet.type == PacketType.LINK_AUTH) {
+            // FROZEN §4 S6: LINK_AUTH verifies IBC for HELLO stage on first contact bootstrap
+            if (packet.payload.isEmpty()) {
+                return IngestResult.Dropped(PipelineStage.S6_SIGNATURE, "LINK_AUTH payload is empty")
+            }
+            val stage = packet.payload[0]
+            if (stage == 0x01.toByte()) {
+                val hello = LinkAuthSession.parseHello(packet.payload)
+                    ?: return IngestResult.Dropped(PipelineStage.S6_SIGNATURE, "Malformed LINK_AUTH HELLO")
+                if (!PureCryptoEngine.validateIbc(hello.ikPub, hello.ekPub, hello.keyVersion, hello.notBefore, hello.ibcSignature, packet.timestamp)) {
+                    return IngestResult.Dropped(PipelineStage.S6_SIGNATURE, "LINK_AUTH IBC signature invalid or expired")
+                }
+                val derivedIdHash = PureCryptoEngine.deriveIdentityHash(hello.ikPub)
+                val derivedNodeId = PureCryptoEngine.deriveNodeId64(derivedIdHash)
+                if (derivedNodeId != packet.senderId) {
+                    return IngestResult.Dropped(PipelineStage.S6_SIGNATURE, "LINK_AUTH senderId mismatch")
+                }
+                val existing = identityStore.get(derivedIdHash)
+                resolvedIdentity = PeerIdentity(
+                    identityHash = derivedIdHash,
+                    ikPub = hello.ikPub,
+                    ekPub = hello.ekPub,
+                    keyVersion = hello.keyVersion,
+                    lastAnnounceCounter = 0L,
+                    trustState = existing?.trustState ?: TrustState.SEEN,
+                    nodeId64 = derivedNodeId
+                )
+            }
         } else if (packet.type.isSigned) {
             val peer = resolvedIdentity
                 ?: return IngestResult.Dropped(PipelineStage.S6_SIGNATURE, "No identity resolved for signed packet")
@@ -428,22 +457,24 @@ class PacketPipeline(
         // =========================================================================
         // ATOMIC POST-AUTH COMMITMENT & OBJECT CONSTRUCTION
         // =========================================================================
-        // 1. Commit persistent dedup
-        val newlyCommitted = packetStore.commitSeen(packet.messageId, packet.type.code, packet.timestamp)
-        if (!newlyCommitted) {
-            return IngestResult.Dropped(
-                stage = PipelineStage.S3_PRE_AUTH_DEDUP,
-                reason = "Duplicate packet (raced persistent insert)",
-                isDuplicateDmForUs = isDmForUs,
-                duplicateDmPacket = if (isDmForUs) packet else null
-            )
+        // 1. Commit persistent dedup (FROZEN §7.1: LINK_AUTH dedup is memory-only nonces in T, no persistent processed_packets row)
+        if (packet.type != PacketType.LINK_AUTH) {
+            val newlyCommitted = packetStore.commitSeen(packet.messageId, packet.type.code, packet.timestamp)
+            if (!newlyCommitted) {
+                return IngestResult.Dropped(
+                    stage = PipelineStage.S3_PRE_AUTH_DEDUP,
+                    reason = "Duplicate packet (raced persistent insert)",
+                    isDuplicateDmForUs = isDmForUs,
+                    duplicateDmPacket = if (isDmForUs) packet else null
+                )
+            }
+
+            // 2. Commit RAM LRU
+            dedupCache.put(dedupKey, System.currentTimeMillis())
         }
 
-        // 2. Commit RAM LRU
-        dedupCache.put(dedupKey, System.currentTimeMillis())
-
         // 3. Commit identity updates if PEER_ANNOUNCE
-        val finalIdentity = resolvedIdentity!!
+        val finalIdentity = resolvedIdentity ?: return IngestResult.Dropped(PipelineStage.S6_SIGNATURE, "No identity resolved")
         if (packet.type == PacketType.PEER_ANNOUNCE) {
             identityStore.upsert(finalIdentity)
         }

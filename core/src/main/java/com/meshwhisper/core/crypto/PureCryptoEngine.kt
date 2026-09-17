@@ -50,6 +50,7 @@ object PureCryptoEngine {
     val PUBLIC_EMERGENCY_CHANNEL_SALT = "MESHWHISPER_PUBLIC_SALT_9A8B7C6D5E".toByteArray(Charsets.UTF_8)
     val PUBLIC_CHANNEL_SALT = PUBLIC_EMERGENCY_CHANNEL_SALT
     val HKDF_DM_SALT = "MESHWHISPER_DM_SALT_1F2E3D4C5B6A".toByteArray(Charsets.UTF_8)
+    val LINK_KEY_SALT = "MW/LINK/SALT/v2".toByteArray(Charsets.UTF_8)
     private const val PUBLIC_EMERGENCY_IKM = "MESHWHISPER_PUBLIC_EMERGENCY_DISASTER_ROOT_V1"
 
     private val secureRandom = SecureRandom()
@@ -252,6 +253,119 @@ object PureCryptoEngine {
         }
 
         return verifyIbcSignature(ikPub, ekPub, keyVersion, notBefore, signature)
+    }
+
+    /**
+     * Builds the Handshake Transcript T according to NEXTGEN/01_VNEXT_PROTOCOL_FROZEN.md §3.4:
+     * T = SHA-256("MW/TCP/v2" ‖ 0x00 ‖ HELLO_lo ‖ HELLO_hi)
+     * where HELLO_lo / HELLO_hi are the full 168-byte HELLO payloads (excluding stage byte 0x01),
+     * ordered by lexicographic comparison of the two 32-byte identityHash values.
+     * If identityHashA == identityHashB, throws IllegalArgumentException (reflection/self-connect rejected).
+     */
+    fun buildHandshakeTranscriptT(
+        helloPayloadA: ByteArray,
+        helloPayloadB: ByteArray,
+        identityHashA: ByteArray,
+        identityHashB: ByteArray
+    ): ByteArray {
+        require(helloPayloadA.size == 168) { "helloPayloadA must be exactly 168 bytes, got ${helloPayloadA.size}" }
+        require(helloPayloadB.size == 168) { "helloPayloadB must be exactly 168 bytes, got ${helloPayloadB.size}" }
+        require(identityHashA.size == 32) { "identityHashA must be 32 bytes" }
+        require(identityHashB.size == 32) { "identityHashB must be 32 bytes" }
+
+        val cmp = compareLexicographically(identityHashA, identityHashB)
+        require(cmp != 0) { "identityHashA and identityHashB are identical (reflection attack rejected)" }
+
+        val (helloLo, helloHi) = if (cmp < 0) {
+            Pair(helloPayloadA, helloPayloadB)
+        } else {
+            Pair(helloPayloadB, helloPayloadA)
+        }
+
+        val prefix = "MW/TCP/v2".toByteArray(Charsets.UTF_8)
+        val md = MessageDigest.getInstance("SHA-256")
+        md.update(prefix)
+        md.update(0.toByte())
+        md.update(helloLo)
+        md.update(helloHi)
+        return md.digest()
+    }
+
+    /**
+     * Compares two byte arrays lexicographically as unsigned bytes.
+     */
+    fun compareLexicographically(a: ByteArray, b: ByteArray): Int {
+        val minLen = minOf(a.size, b.size)
+        for (i in 0 until minLen) {
+            val byteA = a[i].toInt() and 0xFF
+            val byteB = b[i].toInt() and 0xFF
+            if (byteA != byteB) {
+                return byteA.compareTo(byteB)
+            }
+        }
+        return a.size.compareTo(b.size)
+    }
+
+    /**
+     * Builds the preimage for LINK_AUTH CONFIRM signature (confirmSig):
+     * "MW/SIG/v2" ‖ 0x00 ‖ 0x04 ‖ T ‖ identityHash_self ‖ identityHash_peer
+     * (9 + 1 + 1 + 32 + 32 + 32 = 107 bytes)
+     */
+    fun buildConfirmSigPreimage(
+        transcriptT: ByteArray,
+        identityHashSelf: ByteArray,
+        identityHashPeer: ByteArray
+    ): ByteArray {
+        require(transcriptT.size == 32) { "transcriptT must be 32 bytes" }
+        require(identityHashSelf.size == 32) { "identityHashSelf must be 32 bytes" }
+        require(identityHashPeer.size == 32) { "identityHashPeer must be 32 bytes" }
+
+        val buffer = ByteBuffer.allocate(107)
+        buffer.put("MW/SIG/v2".toByteArray(Charsets.UTF_8)) // 9 bytes
+        buffer.put(0.toByte()) // 1 byte separator
+        buffer.put(0x04.toByte()) // 1 byte purpose tag PURPOSE_LINK
+        buffer.put(transcriptT) // 32 bytes
+        buffer.put(identityHashSelf) // 32 bytes
+        buffer.put(identityHashPeer) // 32 bytes
+        return buffer.array()
+    }
+
+    /**
+     * Derives K_link according to NEXTGEN/01_VNEXT_PROTOCOL_FROZEN.md §3.4 & §6.3:
+     * K_link = HKDF(X25519(EK_sk_self, EK_pk_peer), salt = "MW/LINK/SALT/v2", info = "link" ‖ T, 32)
+     */
+    fun deriveLinkKey(
+        myEkPrivateKey: ByteArray,
+        peerEkPublicKey: ByteArray,
+        transcriptT: ByteArray
+    ): ByteArray {
+        require(myEkPrivateKey.size == 32) { "myEkPrivateKey must be 32 bytes" }
+        require(peerEkPublicKey.size == 32) { "peerEkPublicKey must be 32 bytes" }
+        require(transcriptT.size == 32) { "transcriptT must be 32 bytes" }
+
+        val privParams = X25519PrivateKeyParameters(myEkPrivateKey, 0)
+        val pubParams = X25519PublicKeyParameters(peerEkPublicKey, 0)
+
+        val agreement = X25519Agreement()
+        agreement.init(privParams)
+        val sharedSecret = ByteArray(agreement.agreementSize)
+        agreement.calculateAgreement(pubParams, sharedSecret, 0)
+
+        val infoPrefix = "link".toByteArray(Charsets.UTF_8)
+        val info = ByteArray(infoPrefix.size + transcriptT.size)
+        System.arraycopy(infoPrefix, 0, info, 0, infoPrefix.size)
+        System.arraycopy(transcriptT, 0, info, infoPrefix.size, transcriptT.size)
+
+        val hkdf = HKDFBytesGenerator(SHA256Digest())
+        val params = HKDFParameters(
+            sharedSecret,
+            LINK_KEY_SALT,
+            info
+        )
+        hkdf.init(params)
+        val linkKey = ByteArray(32)
+        hkdf.generateBytes(linkKey, 0, 32)
+        return linkKey
     }
 
     /**
@@ -501,5 +615,36 @@ object PureCryptoEngine {
             i += 2
         }
         return data
+    }
+
+    /**
+     * Post-CONFIRM K_link transport frame encryption.
+     * Output frame format: [12-byte IV] + [ciphertext] + [16-byte AES-GCM tag]
+     * For maximum plaintext (2104 B), total output frame size is exactly 2132 B.
+     */
+    fun encryptTransportFrame(plaintext: ByteArray, linkKey: ByteArray): ByteArray {
+        val iv = ByteArray(12).also { secureRandom.nextBytes(it) }
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        val keySpec = SecretKeySpec(linkKey, "AES")
+        cipher.init(Cipher.ENCRYPT_MODE, keySpec, GCMParameterSpec(128, iv))
+        val encryptedWithTag = cipher.doFinal(plaintext)
+        val frame = ByteArray(12 + encryptedWithTag.size)
+        System.arraycopy(iv, 0, frame, 0, 12)
+        System.arraycopy(encryptedWithTag, 0, frame, 12, encryptedWithTag.size)
+        return frame
+    }
+
+    /**
+     * Post-CONFIRM K_link transport frame decryption.
+     * Expects: [12-byte IV] + [ciphertext] + [16-byte AES-GCM tag]
+     */
+    fun decryptTransportFrame(frame: ByteArray, linkKey: ByteArray): ByteArray {
+        require(frame.size >= 12 + 16) { "Encrypted frame too short: ${frame.size}" }
+        val iv = frame.copyOfRange(0, 12)
+        val ciphertextWithTag = frame.copyOfRange(12, frame.size)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        val keySpec = SecretKeySpec(linkKey, "AES")
+        cipher.init(Cipher.DECRYPT_MODE, keySpec, GCMParameterSpec(128, iv))
+        return cipher.doFinal(ciphertextWithTag)
     }
 }

@@ -42,6 +42,11 @@ import com.meshwhisper.core.util.Clock
 import com.meshwhisper.core.util.SystemClock
 import com.meshwhisper.core.util.RandomSource
 import com.meshwhisper.core.util.DefaultRandomSource
+import com.meshwhisper.core.transport.LinkAuthLocalCredentials
+import com.meshwhisper.core.transport.LinkAuthProof
+import com.meshwhisper.core.transport.LinkAuthSession
+import com.meshwhisper.core.transport.LinkAuthState
+import com.meshwhisper.core.transport.LinkAuthStepResult
 
 class MeshRouter(
     private val context: Context,
@@ -199,22 +204,16 @@ class MeshRouter(
         }
 
         bleEngine.onPeerReadyListener = { address ->
-            // Exchange identity upon established BLE link and immediately drain S&F
             scope.launch {
-                syncDirectNeighbors()
-                announcePresence()
-                // Scheduled presence retry to ensure reception once link parameters stabilize
-                delay(1200L)
-                announcePresence()
-                val directNodeId = bleEngine.getDirectNodeId(address)
-                if (directNodeId != null && directNodeId != 0L) {
-                    drainStoreAndForwardQueueForPeer(directNodeId, forceImmediate = true)
-                }
+                initiateBleLinkAuth(address)
             }
         }
 
         bleEngine.onPeerDisconnectedListener = { address ->
             scope.launch {
+                bleLinkAuthSessions.remove(address)?.close()
+                unbindLink(address)
+                bleEngine.onLinkDisconnected(address)
                 val directNodeId = bleEngine.getDirectNodeId(address)
                 if (directNodeId != null && directNodeId != 0L) {
                     routeEngine.markLinkFailed(cryptoEngine.nodeId, directNodeId)
@@ -276,6 +275,15 @@ class MeshRouter(
             }
         }
 
+        wifiEngine.clock = clock
+        wifiEngine.credentialsProvider = { linkAuthLocalCredentials }
+        wifiEngine.onLinkAuthenticatedListener = { proof ->
+            bindLink(proof)
+        }
+        wifiEngine.onLinkDisconnectedListener = { linkHandle ->
+            unbindLink(linkHandle)
+        }
+
         wifiEngine.onPacketReceivedListener = { packetBytes, ingressAddress ->
             handleIncomingPacket(packetBytes, ingressAddress)
         }
@@ -333,18 +341,126 @@ class MeshRouter(
         }
     }
 
-    // Clean seam for P4 LINK_AUTH transport state binding.
+    // P4 LINK_AUTH transport state binding (strictly authority-controlled via LinkAuthProof).
     // Unauthenticated raw transport ingress strictly defaults to LinkState.PENDING with null boundIdentity.
-    // P4 LINK_AUTH will invoke bindLink upon handshake completion.
     private val authenticatedLinks = java.util.concurrent.ConcurrentHashMap<String, ByteArray>()
 
-    fun bindLink(linkHandle: String, identityHash: ByteArray) {
-        require(identityHash.size == 32) { "identityHash must be 32 bytes" }
-        authenticatedLinks[linkHandle] = identityHash
+    fun bindLink(proof: LinkAuthProof) {
+        require(proof.peerIdentityHash.size == 32) { "identityHash must be 32 bytes" }
+        authenticatedLinks[proof.linkHandle] = proof.peerIdentityHash
     }
 
     fun unbindLink(linkHandle: String) {
         authenticatedLinks.remove(linkHandle)
+    }
+
+    fun isLinkAuthenticated(linkHandle: String): Boolean {
+        return authenticatedLinks.containsKey(linkHandle)
+    }
+
+    private val bleLinkAuthSessions = ConcurrentHashMap<String, LinkAuthSession>()
+
+    private val linkAuthLocalCredentials: LinkAuthLocalCredentials by lazy {
+        LinkAuthLocalCredentials(
+            identitySeed = cryptoEngine.privateKeyBytes,
+            ikPub = cryptoEngine.ikPublicKeyBytes,
+            ekPub = cryptoEngine.ekPublicKeyBytes,
+            ekPriv = cryptoEngine.ekPrivateKeyBytes,
+            keyVersion = cryptoEngine.keyVersion,
+            notBefore = 0L,
+            ibcSignature = cryptoEngine.ibcSignature
+        )
+    }
+
+    private suspend fun initiateBleLinkAuth(address: String) {
+        if (authenticatedLinks.containsKey(address)) return
+        val session = bleLinkAuthSessions.computeIfAbsent(address) {
+            LinkAuthSession(
+                linkHandle = address,
+                localCredentials = linkAuthLocalCredentials,
+                clock = clock
+            )
+        }
+        val helloPacket = synchronized(session) {
+            if (session.state == LinkAuthState.IDLE) {
+                session.createHelloPacket()
+            } else null
+        }
+        if (helloPacket != null) {
+            val helloBytes = MeshPacket.serialize(helloPacket)
+            bleEngine.sendDirectToDevice(address, helloBytes)
+        }
+    }
+
+    private fun handleBleLinkAuthPacket(rawBytes: ByteArray, ingressAddress: String) {
+        scope.launch {
+            val session = bleLinkAuthSessions.computeIfAbsent(ingressAddress) {
+                LinkAuthSession(
+                    linkHandle = ingressAddress,
+                    localCredentials = linkAuthLocalCredentials,
+                    clock = clock
+                )
+            }
+
+            try {
+                val packet = MeshPacket.deserialize(rawBytes) ?: return@launch
+                if (packet.payload.isEmpty()) return@launch
+                val stage = packet.payload[0]
+
+                if (stage == 0x01.toByte()) { // HELLO
+                    val stepResult = synchronized(session) {
+                        session.processIncomingPacket(packet)
+                    }
+                    if (stepResult is LinkAuthStepResult.Failed) {
+                        logPacket("AUTH_FAIL", packet, rawBytes.size, "BLE HELLO failed from $ingressAddress: ${stepResult.reason}")
+                        bleLinkAuthSessions.remove(ingressAddress)
+                        bleEngine.disconnectDevice(ingressAddress)
+                        return@launch
+                    }
+                    synchronized(session) {
+                        if (session.state == LinkAuthState.HELLO_RECEIVED) {
+                            val localHello = session.createHelloPacket()
+                            val helloBytes = MeshPacket.serialize(localHello)
+                            launch { bleEngine.sendDirectToDevice(ingressAddress, helloBytes) }
+                        }
+                        if (session.state == LinkAuthState.HELLO_EXCHANGED) {
+                            val localConfirm = session.createConfirmPacket()
+                            val confirmBytes = MeshPacket.serialize(localConfirm)
+                            launch { bleEngine.sendDirectToDevice(ingressAddress, confirmBytes) }
+                        }
+                    }
+                } else if (stage == 0x02.toByte()) { // CONFIRM
+                    val result = synchronized(session) {
+                        session.processIncomingPacket(packet)
+                    }
+                    when (result) {
+                        is LinkAuthStepResult.Completed -> {
+                            val proof = result.proof
+                            bindLink(proof)
+                            bleEngine.onLinkAuthenticated(proof)
+                            bleLinkAuthSessions.remove(ingressAddress)
+                            logPacket("AUTH", packet, rawBytes.size, "BLE link $ingressAddress authenticated as 0x${String.format("%016X", proof.peerNodeId64)}")
+
+                            syncDirectNeighbors()
+                            announcePresence()
+                            delay(1200L)
+                            announcePresence()
+                            drainStoreAndForwardQueueForPeer(proof.peerNodeId64, forceImmediate = true)
+                        }
+                        is LinkAuthStepResult.Failed -> {
+                            logPacket("AUTH_FAIL", packet, rawBytes.size, "BLE link $ingressAddress auth failed: ${result.reason}")
+                            bleLinkAuthSessions.remove(ingressAddress)
+                            bleEngine.disconnectDevice(ingressAddress)
+                        }
+                        is LinkAuthStepResult.InProgress -> {}
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(tag, "Error processing LINK_AUTH packet from $ingressAddress: ${e.message}")
+                bleLinkAuthSessions.remove(ingressAddress)
+                bleEngine.disconnectDevice(ingressAddress)
+            }
+        }
     }
 
     /**
@@ -354,9 +470,17 @@ class MeshRouter(
     fun handleIncomingPacket(rawBytes: ByteArray, ingressAddress: String? = null) {
         val handle = ingressAddress ?: "local"
         val boundId = authenticatedLinks[handle]
+
+        // Pre-auth LINK_AUTH bypass to transport authentication coordinator (FROZEN §3.2, §4)
+        if (ingressAddress != null && boundId == null && rawBytes.isNotEmpty() && rawBytes[0] == PacketType.LINK_AUTH.code) {
+            handleBleLinkAuthPacket(rawBytes, ingressAddress)
+            return
+        }
+
+        val transport = if (handle.contains(".") || handle.contains(":")) TransportType.WIFI_TCP else TransportType.BLE
         val linkContext = LinkContext(
             linkHandle = handle,
-            transport = TransportType.BLE,
+            transport = transport,
             boundIdentity = boundId,
             state = if (boundId != null) LinkState.AUTHENTICATED else LinkState.PENDING
         )
@@ -399,9 +523,6 @@ class MeshRouter(
             stats.packetsReceived++
         }
 
-        if (ingressAddress != null && packet.senderId != 0L) {
-            bleEngine.registerDirectNode(ingressAddress, packet.senderId)
-        }
 
         scope.launch {
             // Post-auth: record topology edge

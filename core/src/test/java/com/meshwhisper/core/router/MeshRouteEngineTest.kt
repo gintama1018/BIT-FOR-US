@@ -33,9 +33,11 @@ class MeshRouteEngineTest {
     fun testTwoHopLinearPathAToBToC() {
         // A is directly connected to B. B has an edge to C.
         val engine = MeshRouteEngine(localNodeId = nodeA)
+        val now = System.currentTimeMillis()
         engine.updateDirectNeighbors(setOf(nodeB))
         engine.updateEdges(listOf(
-            RouteEdge(fromNode = nodeB, toNode = nodeC, cost = 1, lastSeen = System.currentTimeMillis())
+            RouteEdge(fromNode = nodeB, toNode = nodeC, cost = 1, lastSeen = now),
+            RouteEdge(fromNode = nodeC, toNode = nodeB, cost = 1, lastSeen = now)
         ))
 
         val routeToC = engine.resolveRoute(nodeC)
@@ -55,7 +57,9 @@ class MeshRouteEngineTest {
         engine.updateDirectNeighbors(setOf(nodeB))
         engine.updateEdges(listOf(
             RouteEdge(fromNode = nodeB, toNode = nodeC, cost = 1, lastSeen = now),
-            RouteEdge(fromNode = nodeC, toNode = nodeD, cost = 1, lastSeen = now)
+            RouteEdge(fromNode = nodeC, toNode = nodeB, cost = 1, lastSeen = now),
+            RouteEdge(fromNode = nodeC, toNode = nodeD, cost = 1, lastSeen = now),
+            RouteEdge(fromNode = nodeD, toNode = nodeC, cost = 1, lastSeen = now)
         ))
 
         val routeToD = engine.resolveRoute(nodeD)
@@ -77,8 +81,11 @@ class MeshRouteEngineTest {
         engine.updateDirectNeighbors(setOf(nodeB, nodeC))
         engine.updateEdges(listOf(
             RouteEdge(fromNode = nodeB, toNode = nodeD, cost = 1, lastSeen = now),
+            RouteEdge(fromNode = nodeD, toNode = nodeB, cost = 1, lastSeen = now),
             RouteEdge(fromNode = nodeC, toNode = nodeE, cost = 1, lastSeen = now),
-            RouteEdge(fromNode = nodeE, toNode = nodeD, cost = 1, lastSeen = now)
+            RouteEdge(fromNode = nodeE, toNode = nodeC, cost = 1, lastSeen = now),
+            RouteEdge(fromNode = nodeE, toNode = nodeD, cost = 1, lastSeen = now),
+            RouteEdge(fromNode = nodeD, toNode = nodeE, cost = 1, lastSeen = now)
         ))
 
         val routeToD = engine.resolveRoute(nodeD)
@@ -101,7 +108,9 @@ class MeshRouteEngineTest {
         engine.updateDirectNeighbors(setOf(nodeB, nodeC))
         engine.updateEdges(listOf(
             RouteEdge(fromNode = nodeB, toNode = nodeD, cost = 1, lastSeen = now),
-            RouteEdge(fromNode = nodeC, toNode = nodeD, cost = 2, lastSeen = now) // slightly higher cost initially
+            RouteEdge(fromNode = nodeD, toNode = nodeB, cost = 1, lastSeen = now),
+            RouteEdge(fromNode = nodeC, toNode = nodeD, cost = 2, lastSeen = now), // slightly higher cost initially
+            RouteEdge(fromNode = nodeD, toNode = nodeC, cost = 2, lastSeen = now)
         ))
 
         // Initial resolution chooses B (lower cost path: cost 2 vs 3)
@@ -131,7 +140,8 @@ class MeshRouteEngineTest {
 
         // Edge reported 130 seconds ago (expired)
         engine.updateEdges(listOf(
-            RouteEdge(fromNode = nodeB, toNode = nodeC, cost = 1, lastSeen = now - 130_000L)
+            RouteEdge(fromNode = nodeB, toNode = nodeC, cost = 1, lastSeen = now - 130_000L),
+            RouteEdge(fromNode = nodeC, toNode = nodeB, cost = 1, lastSeen = now - 130_000L)
         ))
 
         val routeToC = engine.resolveRoute(nodeC, now)
@@ -140,7 +150,8 @@ class MeshRouteEngineTest {
 
         // Fresh edge update arrives
         engine.updateEdges(listOf(
-            RouteEdge(fromNode = nodeB, toNode = nodeC, cost = 1, lastSeen = now - 10_000L)
+            RouteEdge(fromNode = nodeB, toNode = nodeC, cost = 1, lastSeen = now - 10_000L),
+            RouteEdge(fromNode = nodeC, toNode = nodeB, cost = 1, lastSeen = now - 10_000L)
         ))
         val freshRouteToC = engine.resolveRoute(nodeC, now)
         assertThat(freshRouteToC).isInstanceOf(RouteLookupResult.NextHop::class.java)
@@ -155,9 +166,13 @@ class MeshRouteEngineTest {
         engine.updateDirectNeighbors(setOf(nodeB))
         engine.updateEdges(listOf(
             RouteEdge(fromNode = nodeB, toNode = nodeC, cost = 1, lastSeen = now),
+            RouteEdge(fromNode = nodeC, toNode = nodeB, cost = 1, lastSeen = now),
             RouteEdge(fromNode = nodeC, toNode = nodeD, cost = 1, lastSeen = now),
-            RouteEdge(fromNode = nodeD, toNode = nodeB, cost = 1, lastSeen = now), // Cycle back to B
-            RouteEdge(fromNode = nodeD, toNode = nodeE, cost = 1, lastSeen = now)
+            RouteEdge(fromNode = nodeD, toNode = nodeC, cost = 1, lastSeen = now),
+            RouteEdge(fromNode = nodeD, toNode = nodeB, cost = 3, lastSeen = now), // Cycle back to B
+            RouteEdge(fromNode = nodeB, toNode = nodeD, cost = 3, lastSeen = now),
+            RouteEdge(fromNode = nodeD, toNode = nodeE, cost = 1, lastSeen = now),
+            RouteEdge(fromNode = nodeE, toNode = nodeD, cost = 1, lastSeen = now)
         ))
 
         val routeToE = engine.resolveRoute(nodeE, now)
@@ -175,7 +190,8 @@ class MeshRouteEngineTest {
         val now = System.currentTimeMillis()
         engine.updateDirectNeighbors(setOf(nodeB))
         engine.updateEdges(listOf(
-            RouteEdge(fromNode = nodeB, toNode = nodeC, cost = 1, lastSeen = now)
+            RouteEdge(fromNode = nodeB, toNode = nodeC, cost = 1, lastSeen = now),
+            RouteEdge(fromNode = nodeC, toNode = nodeB, cost = 1, lastSeen = now)
         ))
 
         val allRoutes = engine.getAllReachableRoutes(now)

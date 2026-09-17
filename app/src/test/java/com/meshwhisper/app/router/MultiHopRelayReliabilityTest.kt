@@ -52,14 +52,20 @@ class MultiHopRelayReliabilityTest {
 
         // Configure A: direct to B; B can reach C
         routeEngineA.updateDirectNeighbors(setOf(bobNodeId))
-        routeEngineA.updateEdges(listOf(RouteEdge(fromNode = bobNodeId, toNode = charlieNodeId, cost = 1, lastSeen = now)))
+        routeEngineA.updateEdges(listOf(
+            RouteEdge(fromNode = bobNodeId, toNode = charlieNodeId, cost = 1, lastSeen = now),
+            RouteEdge(fromNode = charlieNodeId, toNode = bobNodeId, cost = 1, lastSeen = now)
+        ))
 
         // Configure B: direct to A and C
         routeEngineB.updateDirectNeighbors(setOf(aliceNodeId, charlieNodeId))
 
         // Configure C: direct to B; B can reach A
         routeEngineC.updateDirectNeighbors(setOf(bobNodeId))
-        routeEngineC.updateEdges(listOf(RouteEdge(fromNode = bobNodeId, toNode = aliceNodeId, cost = 1, lastSeen = now)))
+        routeEngineC.updateEdges(listOf(
+            RouteEdge(fromNode = bobNodeId, toNode = aliceNodeId, cost = 1, lastSeen = now),
+            RouteEdge(fromNode = aliceNodeId, toNode = bobNodeId, cost = 1, lastSeen = now)
+        ))
 
         // --- STEP 1: A creates and sends DM to C ---
         val msgId = UUID.randomUUID()
@@ -266,7 +272,9 @@ class MultiHopRelayReliabilityTest {
         routeEngineA.updateDirectNeighbors(setOf(bobNodeId, daveNodeId))
         routeEngineA.updateEdges(listOf(
             RouteEdge(fromNode = bobNodeId, toNode = charlieNodeId, cost = 1, lastSeen = now),
-            RouteEdge(fromNode = daveNodeId, toNode = charlieNodeId, cost = 2, lastSeen = now) // slightly higher cost
+            RouteEdge(fromNode = charlieNodeId, toNode = bobNodeId, cost = 1, lastSeen = now),
+            RouteEdge(fromNode = daveNodeId, toNode = charlieNodeId, cost = 2, lastSeen = now), // slightly higher cost
+            RouteEdge(fromNode = charlieNodeId, toNode = daveNodeId, cost = 2, lastSeen = now)
         ))
 
         // Initial route: uses B

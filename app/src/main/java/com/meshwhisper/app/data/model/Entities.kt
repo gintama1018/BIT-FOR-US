@@ -31,7 +31,9 @@ enum class MessageStatus {
     RELAYED,
     DELIVERED,
     FAILED,
-    CANCELLED
+    CANCELLED,
+    EXPIRED,
+    CUSTODY_HELD
 }
 
 enum class MediaType {

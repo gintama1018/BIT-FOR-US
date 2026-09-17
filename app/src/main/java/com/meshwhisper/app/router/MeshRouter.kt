@@ -47,6 +47,7 @@ import com.meshwhisper.core.transport.LinkAuthProof
 import com.meshwhisper.core.transport.LinkAuthSession
 import com.meshwhisper.core.transport.LinkAuthState
 import com.meshwhisper.core.transport.LinkAuthStepResult
+import com.meshwhisper.core.custody.*
 
 class MeshRouter(
     private val context: Context,
@@ -154,6 +155,7 @@ class MeshRouter(
     )
 
     val routeEngine = MeshRouteEngine(cryptoEngine.nodeId)
+    val custodyManager = CustodyManager(cryptoEngine.nodeId, cryptoEngine.identityHash)
 
     var audioStreamerFactory: () -> com.meshwhisper.app.voice.AudioStreamer = {
         com.meshwhisper.app.voice.AndroidAudioStreamer(context, scope)
@@ -304,11 +306,24 @@ class MeshRouter(
             }
         }
 
-        // Periodic Store-and-Forward Drain Sweep (Fix #10)
+        // Periodic Store-and-Forward Drain & Custody / Topology Sweep
         scope.launch {
             while (isActive) {
                 delay(30_000L)
                 try {
+                    // 1. Prune stale topology entries (cadence: 30s)
+                    routeEngine.pruneStaleEntries()
+                    database.topologyEdgeDao().pruneStaleEdges(System.currentTimeMillis() - MeshRouteEngine.EDGE_EVICT_MS)
+
+                    // 2. Check custody timeouts (24h expiry)
+                    val expiredRecords = custodyManager.checkTimeouts()
+                    for (expired in expiredRecords) {
+                        database.messageDao().updateStatus(expired.messageId, MessageStatus.EXPIRED)
+                        database.storeForwardDao().delete(expired.messageId)
+                        logPacket("CUSTODY_EXPIRED", null, 0, "Message ${expired.messageId} expired without delivery proof after 24h")
+                    }
+
+                    // 3. Drain pending S&F queues
                     val pendingRecipients = database.storeForwardDao().getPendingRecipients()
                     for (recipientId in pendingRecipients) {
                         drainStoreAndForwardQueueForPeer(recipientId)
@@ -553,6 +568,7 @@ class MeshRouter(
                 PacketType.PROFILE_REQUEST -> handleProfileRequest(authPacket, ingressAddress)
                 PacketType.VOICE_CALL_SIGNAL -> handleVoiceCallSignal(authPacket, ingressAddress)
                 PacketType.VOICE_FRAME -> handleVoiceFrame(authPacket, ingressAddress)
+                PacketType.CUSTODY_ACK -> handleCustodyAck(authPacket, ingressAddress)
                 else -> {}
             }
 
@@ -587,6 +603,7 @@ class MeshRouter(
             hopCount = MeshPacket.DEFAULT_TTL - packet.ttl
         )
         database.peerDao().insertOrUpdate(peerEntity)
+        routeEngine.updateOriginNeighbors(packet.senderId, announce.neighbors, packet.timestamp * 1000L)
 
         val loc = announce.location
         if (announce.hasLocation && loc != null) {
@@ -731,11 +748,61 @@ class MeshRouter(
                         createdAt = System.currentTimeMillis(),
                         expiresAt = System.currentTimeMillis() + (24 * 60 * 60 * 1000L)
                     )
-                    database.storeForwardDao().insert(sfEntity)
+                    custodyManager.acceptRelayCustody(
+                        messageId = packet.messageId.toString(),
+                        recipientNodeId = packet.recipientId,
+                        originIdentityHash = authPacket.senderIdentity.identityHash,
+                        packetData = rawBytes
+                    )
+                    database.storeForwardDao().insertPartitioned(sfEntity, cryptoEngine.nodeId)
                     database.storeForwardDao().trimRecipientQueue(packet.recipientId, MAX_STORE_FORWARD_PER_RECIPIENT)
+
+                    // Emit CUSTODY_ACK back to the node that handed off custody
+                    try {
+                        val custodyAckBytes = custodyManager.buildCustodyAckPacket(
+                            custodyMessageId = packet.messageId,
+                            originIdentityHash = authPacket.senderIdentity.identityHash,
+                            recipientNodeId64 = packet.senderId,
+                            senderNodeId64 = cryptoEngine.nodeId,
+                            publicChannelKey = cryptoEngine.publicChannelKey,
+                            signingPrivateKey = cryptoEngine.privateKeyBytes
+                        )
+                        sendDirectToNode(packet.senderId, custodyAckBytes)
+                    } catch (e: Exception) {
+                        Log.d(tag, "Failed to emit CUSTODY_ACK: ${e.message}")
+                    }
 
                     relayPacketWithJitter(relayedPacket, ingressAddress, "Relaying private DM for ${packet.recipientId}")
                 }
+            }
+        }
+    }
+
+    private suspend fun handleCustodyAck(authPacket: AuthenticatedPacket, ingressAddress: String?) {
+        val packet = authPacket.packet
+        val decrypted = authPacket.decryptedPayload
+        if (decrypted.size != 48) return
+
+        val buf = ByteBuffer.wrap(decrypted).order(ByteOrder.BIG_ENDIAN)
+        val custodyMsgId = UUID(buf.long, buf.long).toString()
+        val originIdentityHash = decrypted.copyOfRange(16, 48)
+
+        val senderIdentityHash = authPacket.senderIdentity.identityHash
+        val released = custodyManager.handleCustodyAck(
+            custodyMessageId = custodyMsgId,
+            senderNodeId = packet.senderId,
+            senderIdentityHash = senderIdentityHash,
+            originIdentityHash = originIdentityHash
+        )
+
+        if (released) {
+            database.storeForwardDao().delete(custodyMsgId)
+            logPacket("CUSTODY_RELEASE", packet, packet.payload.size, "Relay custody released for msg $custodyMsgId via CUSTODY_ACK from ${packet.senderId}")
+        } else {
+            val rec = custodyManager.getRecord(custodyMsgId)
+            if (rec != null && rec.role == CustodyRole.ORIGINATOR) {
+                database.messageDao().updateStatus(custodyMsgId, MessageStatus.CUSTODY_HELD)
+                logPacket("CUSTODY_HELD", packet, packet.payload.size, "Originator custody held for msg $custodyMsgId (acknowledged by relay ${packet.senderId})")
             }
         }
     }
@@ -754,6 +821,7 @@ class MeshRouter(
             logPacket("ACK_RX", packet, packet.payload.size, "Authenticated delivery ACK received for msg $originalMsgId (ackId=${packet.messageId})")
             database.messageDao().updateStatus(originalMsgId, MessageStatus.DELIVERED)
             database.storeForwardDao().delete(originalMsgId)
+            custodyManager.handleEndToEndAck(originalMsgId)
         } else if (packet.ttl > 1) {
             val relayedPacket = packet.decrementTtl()
             val relayedBytes = MeshPacket.serialize(relayedPacket)
@@ -1259,7 +1327,6 @@ class MeshRouter(
         val raw = MeshPacket.serialize(packet)
         packetStore.commitSeen(msgId, PacketType.DIRECT_MESSAGE.code, timestamp)
         dedupCache.put("$msgId:${PacketType.DIRECT_MESSAGE.code}", System.currentTimeMillis())
-
         val sf = StoreForwardEntity(
             messageId = msgId.toString(),
             recipientId = recipientNodeId,
@@ -1267,7 +1334,12 @@ class MeshRouter(
             createdAt = System.currentTimeMillis(),
             expiresAt = System.currentTimeMillis() + (24 * 60 * 60 * 1000L)
         )
-        database.storeForwardDao().insert(sf)
+        custodyManager.registerOriginatorMessage(
+            messageId = msgId.toString(),
+            recipientNodeId = recipientNodeId,
+            packetData = raw
+        )
+        database.storeForwardDao().insertPartitioned(sf, cryptoEngine.nodeId)
         database.storeForwardDao().trimRecipientQueue(recipientNodeId, MAX_STORE_FORWARD_PER_RECIPIENT)
 
         syncDirectNeighbors()
@@ -1277,34 +1349,28 @@ class MeshRouter(
         when (routeResult) {
             is RouteLookupResult.Direct -> {
                 dispatched = sendDirectToNode(recipientNodeId, raw)
+                if (dispatched) {
+                    custodyManager.recordHandoffAttempt(msgId.toString(), recipientNodeId)
+                }
             }
             is RouteLookupResult.NextHop -> {
                 val nextHop = routeResult.nextHopNodeId
                 dispatched = sendDirectToNode(nextHop, raw)
                 if (dispatched) {
+                    custodyManager.recordHandoffAttempt(msgId.toString(), nextHop)
                     database.messageDao().updateStatus(msgId.toString(), MessageStatus.RELAYED)
                     logPacket("TX_RELAY_HOP", packet, raw.size, "Forwarded DM for $recipientNodeId via next-hop $nextHop (hops=${routeResult.hopCount})")
                 } else {
                     routeEngine.markLinkFailed(cryptoEngine.nodeId, nextHop)
-                    val altRoute = routeEngine.resolveRoute(recipientNodeId)
-                    if (altRoute is RouteLookupResult.NextHop) {
-                        dispatched = sendDirectToNode(altRoute.nextHopNodeId, raw)
-                        if (dispatched) {
-                            database.messageDao().updateStatus(msgId.toString(), MessageStatus.RELAYED)
-                            logPacket("TX_FAILOVER", packet, raw.size, "Failover DM for $recipientNodeId via alt-hop ${altRoute.nextHopNodeId}")
-                        }
-                    }
                 }
             }
-            RouteLookupResult.Unreachable -> {
-                dispatched = sendDirectToNode(recipientNodeId, raw)
-            }
+            RouteLookupResult.Unreachable -> {}
         }
 
         if (!dispatched) {
-            broadcastPacketDirect(raw)
+            logPacket("TX_PENDING", packet, raw.size, "Peer $recipientNodeId not reachable directly; stored in Store-and-Forward queue")
         }
-        logPacket("TX", packet, raw.size, "Sent direct DM to $recipientNodeId (${text.length} chars)")
+
         return msgId.toString()
     }
 
@@ -1334,10 +1400,10 @@ class MeshRouter(
             aesKey = sessionKey,
             aad = aad
         )
-
+        val authTag = encResult.authTag
         val md = java.security.MessageDigest.getInstance("SHA-256")
         md.update(encResult.ciphertext)
-        md.update(encResult.authTag)
+        md.update(authTag)
         val cipherHash = md.digest()
 
         val transcript = MeshPacket.buildSigTranscript(
@@ -1363,7 +1429,7 @@ class MeshRouter(
             ttl = MeshPacket.DEFAULT_TTL,
             timestamp = timestamp,
             payload = fullPayload,
-            authTag = encResult.authTag
+            authTag = authTag
         )
 
         val raw = MeshPacket.serialize(ackPacket)
@@ -1413,7 +1479,7 @@ class MeshRouter(
                 // NEVER falls back to global broadcast to eliminate broadcast amplification.
                 val delivered = sendDirectToNode(recipientNodeId, item.packetData)
                 if (delivered) {
-                    database.storeForwardDao().delete(item.messageId)
+                    custodyManager.recordHandoffAttempt(item.messageId, recipientNodeId)
                     logPacket("SF_DRAIN_DIRECT", null, item.packetData.size, "Directed unicast drain msg ${item.messageId} to direct peer $recipientNodeId")
                 } else {
                     logPacket("SF_DRAIN_FAIL", null, item.packetData.size, "Direct link failed during drain of msg ${item.messageId} to $recipientNodeId")
@@ -1426,7 +1492,7 @@ class MeshRouter(
                     val relayedBytes = MeshPacket.serialize(relayedPacket)
                     val forwarded = sendDirectToNode(route.nextHopNodeId, relayedBytes)
                     if (forwarded) {
-                        database.storeForwardDao().delete(item.messageId) // Handed off to next hop!
+                        custodyManager.recordHandoffAttempt(item.messageId, route.nextHopNodeId)
                         logPacket("SF_DRAIN_NEXTHOP", relayedPacket, relayedBytes.size, "Directed S&F handoff of msg ${item.messageId} via next-hop ${route.nextHopNodeId}")
                     } else {
                         routeEngine.markLinkFailed(cryptoEngine.nodeId, route.nextHopNodeId)

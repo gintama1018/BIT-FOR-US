@@ -12,6 +12,8 @@ import com.meshwhisper.app.data.model.PeerEntity
 import com.meshwhisper.app.data.model.ProcessedPacketEntity
 import com.meshwhisper.app.data.model.StoreForwardEntity
 import kotlinx.coroutines.flow.Flow
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 @Dao
 interface PeerDao {
@@ -110,6 +112,15 @@ interface StoreForwardDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(item: StoreForwardEntity)
 
+    @Query("SELECT * FROM store_forward_queue")
+    suspend fun getAll(): List<StoreForwardEntity>
+
+    @Query("SELECT COUNT(*) FROM store_forward_queue")
+    suspend fun getCount(): Int
+
+    @Query("SELECT * FROM store_forward_queue WHERE messageId = :messageId")
+    suspend fun getById(messageId: String): StoreForwardEntity?
+
     @Query("DELETE FROM store_forward_queue WHERE recipientId = :recipientId AND messageId NOT IN (SELECT messageId FROM store_forward_queue WHERE recipientId = :recipientId ORDER BY createdAt DESC LIMIT :keepLimit)")
     suspend fun trimRecipientQueue(recipientId: Long, keepLimit: Int = 50)
 
@@ -121,6 +132,45 @@ interface StoreForwardDao {
 
     @Query("DELETE FROM store_forward_queue WHERE expiresAt <= :currentTime")
     suspend fun purgeExpired(currentTime: Long): Int
+
+    /**
+     * Inserts an entity respecting the 300 own / 200 relayed partition limits (S-12, §8).
+     * Hostile relayed flood can never evict or touch the 300 own-message partition.
+     */
+    suspend fun insertPartitioned(item: StoreForwardEntity, localNodeId: Long) {
+        val isOwn = if (item.packetData.size >= 25) {
+            val buf = ByteBuffer.wrap(item.packetData).order(ByteOrder.BIG_ENDIAN)
+            buf.getLong(17) == localNodeId
+        } else {
+            false
+        }
+
+        val all = getAll()
+        if (isOwn) {
+            val ownItems = all.filter {
+                it.packetData.size >= 25 && ByteBuffer.wrap(it.packetData).order(ByteOrder.BIG_ENDIAN).getLong(17) == localNodeId
+            }
+            if (ownItems.size >= 300) {
+                val toTrim = ownItems.sortedBy { it.createdAt }.take(ownItems.size - 299)
+                for (old in toTrim) {
+                    delete(old.messageId)
+                }
+            }
+            insert(item)
+        } else {
+            val relayedItems = all.filter {
+                it.packetData.size < 25 || ByteBuffer.wrap(it.packetData).order(ByteOrder.BIG_ENDIAN).getLong(17) != localNodeId
+            }
+            if (relayedItems.size >= 200) {
+                // Relayed partition full: trim oldest relayed entry, preserving own partition untouched
+                val toTrim = relayedItems.sortedBy { it.createdAt }.take(relayedItems.size - 199)
+                for (old in toTrim) {
+                    delete(old.messageId)
+                }
+            }
+            insert(item)
+        }
+    }
 }
 
 @Dao

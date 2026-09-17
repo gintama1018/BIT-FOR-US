@@ -310,4 +310,83 @@ class LinkAuthTest {
         assertThat(inMemoryStore.all()).isEmpty()
         assertThat(inMemoryPacketStore.getSeenCount()).isEqualTo(0)
     }
+
+    /**
+     * P4 Remediation Fix 4:
+     * Enforce LINK_AUTH 60-second freshness window and 120-second future skew in production path.
+     * - age = now - packet.timestamp, accept iff -120 <= age <= 60
+     * - timestamp 61s old -> reject
+     * - timestamp exactly at allowed boundary (60s old) -> accepted
+     * - future timestamp within 120s -> accepted
+     * - future timestamp beyond 120s -> reject
+     * - stale packet must not mutate handshake state
+     * - stale packet must not create/bind identity
+     * - stale packet must not derive/cut over K_link
+     */
+    @Test
+    fun testLinkAuthFreshness_PastWindowAndFutureSkewBounds() {
+        clock.currentTime = 1000L
+
+        val sessionB = LinkAuthSession("link-B", credsB, clock)
+        val sessionA = LinkAuthSession("link-A", credsA, clock)
+        val baseHelloA = sessionA.createHelloPacket()
+
+        // 1. HELLO with timestamp 61s old (timestamp = 939) -> age = 61s > 60s -> REJECT
+        val staleHello = baseHelloA.copy(timestamp = 939L)
+        val resStaleHello = sessionB.processIncomingPacket(staleHello)
+        assertThat(resStaleHello).isInstanceOf(LinkAuthStepResult.Failed::class.java)
+        assertThat((resStaleHello as LinkAuthStepResult.Failed).reason).contains("outside freshness window")
+        // Invariant: Stale packet MUST NOT mutate handshake state
+        assertThat(sessionB.state).isEqualTo(LinkAuthState.IDLE)
+        assertThat(sessionB.linkKey).isNull()
+        assertThat(sessionB.remoteIdentityHash).isNull()
+
+        // 2. HELLO with future timestamp beyond 120s (timestamp = 1121) -> age = -121s < -120s -> REJECT
+        val futureHelloSkewed = baseHelloA.copy(timestamp = 1121L)
+        val resFutureSkewed = sessionB.processIncomingPacket(futureHelloSkewed)
+        assertThat(resFutureSkewed).isInstanceOf(LinkAuthStepResult.Failed::class.java)
+        assertThat((resFutureSkewed as LinkAuthStepResult.Failed).reason).contains("outside freshness window")
+        assertThat(sessionB.state).isEqualTo(LinkAuthState.IDLE)
+
+        // 3. HELLO with timestamp exactly at allowed past boundary (timestamp = 940) -> age = 60s <= 60s -> ACCEPT
+        val boundaryPastHello = baseHelloA.copy(timestamp = 940L)
+        val resBoundaryPast = sessionB.processIncomingPacket(boundaryPastHello)
+        assertThat(resBoundaryPast).isEqualTo(LinkAuthStepResult.InProgress)
+        assertThat(sessionB.state).isEqualTo(LinkAuthState.HELLO_RECEIVED)
+
+        // Reset sessionB for future boundary test
+        val sessionB2 = LinkAuthSession("link-B2", credsB, clock)
+        // 4. HELLO with future timestamp exactly at 120s boundary (timestamp = 1120) -> age = -120s >= -120s -> ACCEPT
+        val boundaryFutureHello = baseHelloA.copy(timestamp = 1120L)
+        val resBoundaryFuture = sessionB2.processIncomingPacket(boundaryFutureHello)
+        assertThat(resBoundaryFuture).isEqualTo(LinkAuthStepResult.InProgress)
+        assertThat(sessionB2.state).isEqualTo(LinkAuthState.HELLO_RECEIVED)
+
+        // 5. Test CONFIRM freshness
+        // Advance sessionA and sessionB2 to CONFIRM exchange
+        val helloB2 = sessionB2.createHelloPacket() // sessionB2 -> HELLO_EXCHANGED
+        sessionA.processIncomingPacket(helloB2) // sessionA -> HELLO_EXCHANGED
+        val confirmA = sessionA.createConfirmPacket() // sessionA -> CONFIRM_SENT
+
+        // Stale CONFIRM: timestamp 61s old (939)
+        val staleConfirm = confirmA.copy(timestamp = 939L)
+        val resStaleConfirm = sessionB2.processIncomingPacket(staleConfirm)
+        assertThat(resStaleConfirm).isInstanceOf(LinkAuthStepResult.Failed::class.java)
+        assertThat((resStaleConfirm as LinkAuthStepResult.Failed).reason).contains("outside freshness window")
+        // Invariant: sessionB2 state must NOT transition to CONFIRM_RECEIVED or AUTHENTICATED or FAILED
+        assertThat(sessionB2.state).isEqualTo(LinkAuthState.HELLO_EXCHANGED)
+
+        // Skewed future CONFIRM: timestamp 121s in future (1121)
+        val futureConfirm = confirmA.copy(timestamp = 1121L)
+        val resFutureConfirm = sessionB2.processIncomingPacket(futureConfirm)
+        assertThat(resFutureConfirm).isInstanceOf(LinkAuthStepResult.Failed::class.java)
+        assertThat(sessionB2.state).isEqualTo(LinkAuthState.HELLO_EXCHANGED)
+
+        // Valid boundary CONFIRM: timestamp exactly 60s old (940) -> ACCEPT
+        val validConfirm = confirmA.copy(timestamp = 940L)
+        val resValidConfirm = sessionB2.processIncomingPacket(validConfirm)
+        // sessionB2 was in HELLO_EXCHANGED, so receiving CONFIRM puts it in CONFIRM_RECEIVED
+        assertThat(resValidConfirm).isEqualTo(LinkAuthStepResult.InProgress)
+        assertThat(sessionB2.state).isEqualTo(LinkAuthState.CONFIRM_RECEIVED)
+    }
 }

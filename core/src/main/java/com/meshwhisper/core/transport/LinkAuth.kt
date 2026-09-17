@@ -311,6 +311,17 @@ class LinkAuthSession(
             return LinkAuthStepResult.Failed("Empty payload")
         }
 
+        // Frozen freshness requirement (§2.10, §3.4):
+        // age = now - packet.timestamp, accept iff -120 <= age <= 60 (PAST_WINDOW[LINK_AUTH] = 60s, FUTURE_SKEW = 120s).
+        // Stale or skewed packets are rejected without mutating handshake state, binding identity, or deriving K_link.
+        val nowSec = clock.nowSeconds()
+        val ageSec = nowSec - packet.timestamp
+        if (ageSec < -ResourceLimits.FUTURE_SKEW_SEC || ageSec > packet.type.pastWindowSec) {
+            return LinkAuthStepResult.Failed(
+                "LINK_AUTH timestamp ${packet.timestamp} outside freshness window (age: ${ageSec}s, allowed: -${ResourceLimits.FUTURE_SKEW_SEC}..${packet.type.pastWindowSec})"
+            )
+        }
+
         val stage = payload[0]
         return when (stage) {
             0x01.toByte() -> processHello(payload, packet)

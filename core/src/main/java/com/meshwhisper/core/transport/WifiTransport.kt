@@ -114,44 +114,94 @@ class AuthenticatedWifiSession(
 class WifiSessionRegistry(
     private val maxSessions: Int = ResourceLimits.MAX_WIFI_AUTHENTICATED_SESSIONS
 ) {
-    private val activeSessions = ConcurrentHashMap<String, AuthenticatedWifiSession>()
+    private val lock = Any()
+    private val activeSessions = HashMap<String, AuthenticatedWifiSession>()
 
     /**
      * Atomically registers an authenticated session.
      * Returns true if registered, or false if a session with this identityHash already exists
-     * or the registry is full.
+     * or the registry is full (capacity = maxSessions).
+     * Invariant: Never exceeds maxSessions (5). Duplicate identity never overwrites existing session.
      */
-    fun registerSession(session: AuthenticatedWifiSession): Boolean {
-        if (activeSessions.size >= maxSessions && !activeSessions.containsKey(session.identityHashHex)) {
+    fun registerSession(session: AuthenticatedWifiSession): Boolean = synchronized(lock) {
+        if (activeSessions.containsKey(session.identityHashHex)) {
             return false
         }
-        val existing = activeSessions.putIfAbsent(session.identityHashHex, session)
-        return existing == null
+        if (activeSessions.size >= maxSessions) {
+            return false
+        }
+        activeSessions[session.identityHashHex] = session
+        true
     }
 
     /**
      * Atomically removes an authenticated session if the current value matches.
      */
-    fun removeSession(identityHashHex: String, session: AuthenticatedWifiSession): Boolean {
-        return activeSessions.remove(identityHashHex, session)
+    fun removeSession(identityHashHex: String, session: AuthenticatedWifiSession): Boolean = synchronized(lock) {
+        val current = activeSessions[identityHashHex]
+        if (current === session) {
+            activeSessions.remove(identityHashHex)
+            true
+        } else {
+            false
+        }
     }
 
-    fun removeByIdentityHash(identityHashHex: String): AuthenticatedWifiSession? {
-        return activeSessions.remove(identityHashHex)
+    fun removeByIdentityHash(identityHashHex: String): AuthenticatedWifiSession? = synchronized(lock) {
+        activeSessions.remove(identityHashHex)
     }
 
-    fun getSession(identityHashHex: String): AuthenticatedWifiSession? = activeSessions[identityHashHex]
+    fun getSession(identityHashHex: String): AuthenticatedWifiSession? = synchronized(lock) {
+        activeSessions[identityHashHex]
+    }
 
-    fun getSessionByNodeId(nodeId: Long): AuthenticatedWifiSession? =
+    fun getSessionByNodeId(nodeId: Long): AuthenticatedWifiSession? = synchronized(lock) {
         activeSessions.values.firstOrNull { it.peerNodeId64 == nodeId }
+    }
 
-    fun getAllSessions(): List<AuthenticatedWifiSession> = activeSessions.values.toList()
+    fun getAllSessions(): List<AuthenticatedWifiSession> = synchronized(lock) {
+        activeSessions.values.toList()
+    }
 
-    fun size(): Int = activeSessions.size
+    fun size(): Int = synchronized(lock) {
+        activeSessions.size
+    }
 
-    fun clear() {
+    fun clear() = synchronized(lock) {
         activeSessions.clear()
     }
+}
+
+/**
+ * Enforces per-transport-link frame rate limiting on incoming Wi-Fi TCP frames (50 fps/link).
+ * Keyed strictly by the transport link/session identifier to prevent cross-session bypass or interference.
+ */
+class WifiFrameRateLimiter(
+    private val maxFramesPerSecond: Int = ResourceLimits.WIFI_TCP_FRAMES_PER_SEC_PER_LINK
+) {
+    private val rateTracker = ConcurrentHashMap<String, MutableList<Long>>()
+
+    fun isFrameAllowed(linkId: String, now: Long = System.currentTimeMillis()): Boolean {
+        val timestamps = rateTracker.computeIfAbsent(linkId) { mutableListOf() }
+        synchronized(timestamps) {
+            timestamps.removeAll { now - it >= 1000L }
+            if (timestamps.size >= maxFramesPerSecond) {
+                return false
+            }
+            timestamps.add(now)
+            return true
+        }
+    }
+
+    fun remove(linkId: String) {
+        rateTracker.remove(linkId)
+    }
+
+    fun clear() {
+        rateTracker.clear()
+    }
+
+    fun getTrackedLinksCount(): Int = rateTracker.size
 }
 
 /**

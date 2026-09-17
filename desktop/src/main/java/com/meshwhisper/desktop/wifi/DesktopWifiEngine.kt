@@ -59,9 +59,10 @@ class DesktopWifiEngine(
     private var udpBeaconJob: Job? = null
     private var tcpAcceptJob: Job? = null
 
-    // Session Registry & UDP Rate Limiter (P4)
+    // Session Registry, UDP Rate Limiter & Wi-Fi Frame Limiter (P4)
     private val sessionRegistry = WifiSessionRegistry(ResourceLimits.MAX_WIFI_AUTHENTICATED_SESSIONS)
     private val udpBeaconLimiter = UdpBeaconLimiter()
+    private val frameRateLimiter = WifiFrameRateLimiter()
 
     // State flows
     private val _isWifiActive = MutableStateFlow(false)
@@ -123,6 +124,7 @@ class DesktopWifiEngine(
         }
         sessionRegistry.clear()
         udpBeaconLimiter.clear()
+        frameRateLimiter.clear()
         updatePeerStates()
         _isWifiActive.value = false
     }
@@ -171,6 +173,7 @@ class DesktopWifiEngine(
     private fun disconnectSession(session: AuthenticatedWifiSession) {
         sessionRegistry.removeSession(session.identityHashHex, session)
         val linkHandle = "${session.ipAddress}:${session.socket.port}"
+        frameRateLimiter.remove(linkHandle)
         onLinkDisconnectedListener?.invoke(linkHandle)
         onPeerDisconnectedListener?.invoke(session.peerNodeId64)
         try { session.socket.close() } catch (_: Exception) {}
@@ -360,9 +363,16 @@ class DesktopWifiEngine(
                     val frameBytes = try {
                         WifiFrameCodec.readFrame(inStream, isPostAuth = true, violationCounter)
                     } catch (te: SocketTimeoutException) {
-                        if (!socket.isClosed && socket.isConnected) continue else break
+                        logger.i(TAG, "Wi-Fi TCP session reached idle timeout (${ResourceLimits.WIFI_SESSION_IDLE_TIMEOUT_SEC}s) for $remoteIp. Closing.")
+                        break
                     }
                     if (frameBytes == null) continue
+
+                    // Enforce Wi-Fi 50 transport frames / sec / link limit (Requirement 3)
+                    if (!frameRateLimiter.isFrameAllowed(linkHandle)) {
+                        logger.w(TAG, "Wi-Fi TCP frame rate limit exceeded for $linkHandle (50 fps). Dropping frame.")
+                        continue
+                    }
 
                     val decryptedPlaintext = try {
                         PureCryptoEngine.decryptTransportFrame(frameBytes, proof.linkKey)

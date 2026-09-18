@@ -131,11 +131,11 @@ class ReliableTransferTest {
         }
 
         assertThat(ranges.size).isEqualTo(5)
-        assertThat(ranges[0]).isEqualTo(0 until 3) // 1200 / 400 = 3 chunks (0..2)
-        assertThat(ranges[1]).isEqualTo(3 until 6) // 1200 / 400 = 3 chunks (3..5)
-        assertThat(ranges[2]).isEqualTo(6 until 9) // 1200 / 400 = 3 chunks (6..8)
-        assertThat(ranges[3]).isEqualTo(9 until 13) // 1600 / 400 = 4 chunks (9..12)
-        assertThat(ranges[4]).isEqualTo(13 until 15) // 800 / 400 = 2 chunks (13..14)
+        assertThat(ranges[0]).isEqualTo(0 until 4) // 1280 / 320 = 4 chunks (0..3)
+        assertThat(ranges[1]).isEqualTo(4 until 7) // 960 / 320 = 3 chunks (4..6)
+        assertThat(ranges[2]).isEqualTo(7 until 11) // 1280 / 320 = 4 chunks (7..10)
+        assertThat(ranges[3]).isEqualTo(11 until 16) // 1600 / 320 = 5 chunks (11..15)
+        assertThat(ranges[4]).isEqualTo(16 until 19) // 960 / 320 = 3 chunks (16..18)
     }
 
     @Test
@@ -461,6 +461,6 @@ class ReliableTransferTest {
         val paddedLen = sampleTileBytesLen + padLen
 
         assertThat(paddedLen % chunkSize).isEqualTo(0)
-        assertThat(paddedLen).isEqualTo(1600)
+        assertThat(paddedLen).isEqualTo(1280)
     }
 }

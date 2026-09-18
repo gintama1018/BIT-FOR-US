@@ -141,12 +141,21 @@ class MediaTransferManager(
     ) {
         var lastActivityMs: Long = System.currentTimeMillis()
         var nackRoundCount: Int = 0
-        val chunks = ConcurrentHashMap<Int, ByteArray>()
+        val admission = com.meshwhisper.core.protocol.InboundMediaAdmission(totalChunks, totalSizeBytes)
+        val chunks: ConcurrentHashMap<Int, ByteArray> get() = admission.chunks
         val throughputTracker = mutableListOf<Pair<Long, Long>>() // timestampMs -> cumulativeBytes
         val paintedTiles: MutableSet<Int> = ConcurrentHashMap.newKeySet()
+        val cumulativeBytesAccepted: Long get() = admission.cumulativeBytesAccepted
+        val cumulativeBytesRelayed: Long get() = admission.cumulativeBytesRelayed
+        val forwardCountPerIndex: ConcurrentHashMap<Int, Int> get() = admission.forwardCountPerIndex
+        val admissionLock: Any get() = admission.admissionLock
     }
 
     private val inboundSessions = ConcurrentHashMap<String, InboundMediaSession>()
+
+    private val identityMediaBudgetTracker = com.meshwhisper.core.protocol.IdentityMediaBudgetTracker()
+    private fun checkAndTrackMediaBudget(senderId: Long, bytesToAdd: Int, nowMs: Long = System.currentTimeMillis()): Boolean =
+        identityMediaBudgetTracker.checkAndTrackMediaBudget(senderId, bytesToAdd, nowMs)
 
     init {
         // Ensure private media directory exists
@@ -164,20 +173,21 @@ class MediaTransferManager(
             while (isActive) {
                 delay(2500L)
                 val now = System.currentTimeMillis()
+                val timeoutMs = com.meshwhisper.core.protocol.ResourceLimits.MEDIA_SESSION_IDLE_TIMEOUT_SEC * 1000L
                 val iterator = inboundSessions.entries.iterator()
                 while (iterator.hasNext()) {
                     val entry = iterator.next()
                     val session = entry.value
                     val isInactive = (now - session.lastActivityMs > 3000L)
 
-                    // 1. Inbound NACK selective retransmission trigger (for direct AND broadcast transfers)
-                    if (isInactive && session.chunks.size < session.totalChunks) {
+                    // 1. Inbound NACK selective retransmission trigger (for direct transfers only, never broadcast C-14)
+                    if (isInactive && session.chunks.size < session.totalChunks && !session.isBroadcast) {
                         if (session.nackRoundCount < 5) {
                             session.nackRoundCount += 1
                             session.lastActivityMs = now
                             val missingIndices = (0 until session.totalChunks).filter { !session.chunks.containsKey(it) }
                             if (missingIndices.isNotEmpty()) {
-                                Log.w(tag, "Inbound transfer ${session.mediaId} (broadcast=${session.isBroadcast}) missing ${missingIndices.size} chunks (round ${session.nackRoundCount}/5). Emitting MEDIA_NACK to ${session.senderId}...")
+                                Log.w(tag, "Inbound transfer ${session.mediaId} missing ${missingIndices.size} chunks (round ${session.nackRoundCount}/5). Emitting MEDIA_NACK to ${session.senderId}...")
                                 updateTransferState(
                                     session.mediaId,
                                     TransferState.RECOVERING,
@@ -210,10 +220,10 @@ class MediaTransferManager(
                         }
                     }
 
-                    // 2. Cleanup stale sessions (60s total inactivity)
-                    if (now - session.lastActivityMs > 60_000L) {
+                    // 2. Cleanup stale sessions (300s total inactivity per ResourceLimits.MEDIA_SESSION_IDLE_TIMEOUT_SEC)
+                    if (now - session.lastActivityMs > timeoutMs) {
                         iterator.remove()
-                        Log.w(tag, "Inbound media transfer ${session.mediaId} timed out after 60s")
+                        Log.w(tag, "Inbound media transfer ${session.mediaId} timed out after ${com.meshwhisper.core.protocol.ResourceLimits.MEDIA_SESSION_IDLE_TIMEOUT_SEC}s")
                         updateTransferState(
                             session.mediaId,
                             TransferState.FAILED,
@@ -701,10 +711,10 @@ class MediaTransferManager(
         val totalChunks = buffer.getShort().toInt() and 0xFFFF
         val totalSizeBytes = buffer.getInt()
 
-        // Bounds-check: reject absurd metadata that would cause excessive memory allocation.
-        // Max 52430 chunks (~20 MB at 400 B/chunk) and 20 MB total size are generous upper bounds.
-        if (totalChunks == 0 || totalChunks > 52430 || totalSizeBytes <= 0 || totalSizeBytes > 20 * 1024 * 1024) {
-            Log.w(tag, "MEDIA_INIT rejected from ${packet.senderId}: unreasonable metadata (chunks=$totalChunks, size=$totalSizeBytes). Possible malicious peer.")
+        // Bounds-check: reject metadata that violates ResourceLimits (P6 frozen contract)
+        if (totalChunks == 0 || totalChunks > com.meshwhisper.core.protocol.ResourceLimits.MAX_MEDIA_CHUNKS ||
+            totalSizeBytes <= 0 || totalSizeBytes > com.meshwhisper.core.protocol.ResourceLimits.MAX_MEDIA_SIZE_BYTES) {
+            Log.w(tag, "MEDIA_INIT rejected from ${packet.senderId}: unreasonable metadata (chunks=$totalChunks, size=$totalSizeBytes).")
             return
         }
         val durationMs = buffer.getInt().toLong()
@@ -718,12 +728,30 @@ class MediaTransferManager(
             String(fn, Charsets.UTF_8)
         } else ""
 
+        // Validate filename (P6: <=64 bytes, alphanumeric, no leading dot, no traversal)
+        if (fileNameLen > 64 || (originalFileName.isNotEmpty() && (originalFileName.startsWith(".") || originalFileName.contains("/") || !originalFileName.matches(Regex("^[A-Za-z0-9._-]{1,64}$"))))) {
+            Log.w(tag, "MEDIA_INIT rejected from ${packet.senderId}: invalid filename $originalFileName")
+            return
+        }
+
         val previewLen = buffer.getShort().toInt() and 0xFFFF
         val previewBytes = if (previewLen > 0 && buffer.remaining() >= previewLen) {
             val pb = ByteArray(previewLen)
             buffer.get(pb)
             pb
         } else ByteArray(0)
+
+        // Validate preview (P6: <= 512 bytes)
+        if (previewBytes.size > com.meshwhisper.core.protocol.ResourceLimits.MEDIA_PREVIEW_MAX_BYTES) {
+            Log.w(tag, "MEDIA_INIT rejected from ${packet.senderId}: preview too large (${previewBytes.size} B)")
+            return
+        }
+
+        // Hourly budget check: 8 MB/hr per identity
+        if (!checkAndTrackMediaBudget(packet.senderId, totalSizeBytes)) {
+            Log.w(tag, "MEDIA_INIT rejected from ${packet.senderId}: hourly media budget exceeded (8MB/hr)")
+            return
+        }
 
         val captionLen = buffer.get().toInt() and 0xFF
         val caption = if (captionLen > 0 && buffer.remaining() >= captionLen) {
@@ -895,6 +923,17 @@ class MediaTransferManager(
         Log.d(tag, "Received MEDIA_INIT: $mediaId ($mediaType, $totalChunks chunks, $totalSizeBytes bytes)")
     }
 
+    /**
+     * Concurrency-safe relay-side chunk admission accounting (P6):
+     * - cumulativeBytesRelayed <= totalSizeBytes * 1.1
+     * - each chunkIndex forwarded at most twice.
+     */
+    fun checkAndRecordChunkRelay(senderId: Long, mediaId: UUID, chunkIndex: Int, chunkSize: Int): Boolean {
+        val sessionKey = "${senderId}_${mediaId}"
+        val session = inboundSessions[sessionKey] ?: return true
+        return session.admission.checkAndRecordRelay(chunkIndex, chunkSize)
+    }
+
     suspend fun handleMediaChunk(
         packet: MeshPacket,
         isBroadcast: Boolean
@@ -931,13 +970,12 @@ class MediaTransferManager(
         val session = inboundSessions[sessionKey] ?: return
         session.lastActivityMs = System.currentTimeMillis()
 
-        // Bounds-check: reject out-of-range chunk indexes to prevent session map inflation
-        if (chunkIndex < 0 || chunkIndex >= session.totalChunks) {
-            Log.w(tag, "MEDIA_CHUNK rejected from ${packet.senderId}: chunkIndex=$chunkIndex out of bounds (totalChunks=${session.totalChunks})")
+        // Atomic Receiver-Side Chunk Admission (P6 Final Micro-Fix 1 & C-14)
+        val admitted = session.admission.admitChunk(chunkIndex, chunkData)
+        if (!admitted) {
             return
         }
 
-        session.chunks[chunkIndex] = chunkData
         val receivedCount = session.chunks.size
         val currentBytes = minOf((receivedCount * MeshPacket.CHUNK_PAYLOAD_SIZE).toLong(), session.totalSizeBytes.toLong())
         val progress = receivedCount.toFloat() / session.totalChunks
@@ -1014,15 +1052,21 @@ class MediaTransferManager(
         } else {
             File(context.filesDir, "media").also { if (!it.exists()) it.mkdirs() }
         }
-        val ext = when (session.mediaType) {
+        val rawExt = when (session.mediaType) {
             MediaType.VOICE -> "m4a"
             MediaType.IMAGE -> "jpg"
             MediaType.AVATAR -> "jpg"
-            MediaType.FILE -> if (session.originalFileName.contains(".")) session.originalFileName.substringAfterLast(".") else "bin"
+            MediaType.FILE -> if (session.originalFileName.contains(".")) session.originalFileName.substringAfterLast(".").lowercase() else "bin"
             MediaType.NONE -> "bin"
         }
+        val ext = if (ALLOWED_EXTENSIONS.contains(rawExt)) rawExt else "bin"
         val fileName = if (isAvatar) "avatar_${session.senderId}.$ext" else "${mediaId}.$ext"
-        val destFile = File(destDir, fileName)
+        val destFile = File(destDir, fileName).canonicalFile
+        // Directory traversal defense (T-RES-10)
+        if (!destFile.path.startsWith(destDir.canonicalPath)) {
+            Log.e(tag, "Directory traversal detected for file $fileName; rejecting file write")
+            return
+        }
 
         try {
             val totalBytesStream = java.io.ByteArrayOutputStream()
@@ -1469,7 +1513,8 @@ class MediaTransferManager(
     }
 
     companion object {
-        const val MAX_INBOUND_SESSIONS_PER_PEER = 4
-        const val MAX_TOTAL_INBOUND_SESSIONS = 16
+        val ALLOWED_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp", "gif", "mp4", "m4a", "aac", "mp3", "pdf", "txt")
+        const val MAX_INBOUND_SESSIONS_PER_PEER = com.meshwhisper.core.protocol.ResourceLimits.MAX_MEDIA_SESSIONS_INBOUND_PER_IDENTITY
+        const val MAX_TOTAL_INBOUND_SESSIONS = com.meshwhisper.core.protocol.ResourceLimits.MAX_MEDIA_SESSIONS_INBOUND_GLOBAL
     }
 }

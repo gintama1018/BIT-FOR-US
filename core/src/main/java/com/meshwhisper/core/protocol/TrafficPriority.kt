@@ -68,7 +68,9 @@ data class PrioritizedPacket(
     val priority: TrafficPriority,
     val targetNodeId: Long? = null,
     val excludeAddress: String? = null,
-    val enqueuedAtMs: Long = System.currentTimeMillis()
+    val enqueuedAtMs: Long = System.currentTimeMillis(),
+    val isRelay: Boolean = false,
+    val originIdentityHash: ByteArray? = null
 ) : Comparable<PrioritizedPacket> {
 
     override fun compareTo(other: PrioritizedPacket): Int {

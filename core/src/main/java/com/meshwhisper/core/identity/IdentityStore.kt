@@ -1,6 +1,8 @@
 package com.meshwhisper.core.identity
 
+import com.meshwhisper.core.protocol.ResourceLimits
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -16,9 +18,12 @@ interface IdentityStore {
     fun all(): List<PeerIdentity>
 }
 
-class InMemoryIdentityStore : IdentityStore {
+class InMemoryIdentityStore(
+    private val maxIdentities: Int = ResourceLimits.MAX_IDENTITIES_PEERS
+) : IdentityStore {
     private val byHash = ConcurrentHashMap<String, PeerIdentity>()
     private val byNodeId = ConcurrentHashMap<Long, CopyOnWriteArrayList<PeerIdentity>>()
+    private val insertionOrder = ConcurrentLinkedQueue<String>()
 
     private fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it) }
 
@@ -31,10 +36,36 @@ class InMemoryIdentityStore : IdentityStore {
 
     override fun getAllByNodeId64(id: Long): List<PeerIdentity> = byNodeId[id]?.toList() ?: emptyList()
 
+    @Synchronized
     override fun upsert(identity: PeerIdentity) {
         val hashKey = hex(identity.identityHash)
         val prev = byHash[hashKey]
+
+        if (prev == null && byHash.size >= maxIdentities) {
+            // Evict oldest unverified peer identity
+            val iterator = insertionOrder.iterator()
+            while (iterator.hasNext()) {
+                val candidateKey = iterator.next()
+                val candidate = byHash[candidateKey]
+                if (candidate != null &&
+                    candidate.trustState != TrustState.VERIFIED &&
+                    candidate.trustState != TrustState.CONFLICTED &&
+                    candidate.trustState != TrustState.BLOCKED
+                ) {
+                    iterator.remove()
+                    byHash.remove(candidateKey)
+                    if (candidate.nodeId64 != 0L) {
+                        byNodeId[candidate.nodeId64]?.removeIf { it.identityHash.contentEquals(candidate.identityHash) }
+                    }
+                    break
+                }
+            }
+        }
+
         byHash[hashKey] = identity
+        if (prev == null) {
+            insertionOrder.add(hashKey)
+        }
 
         if (prev != null && prev.nodeId64 != identity.nodeId64 && prev.nodeId64 != 0L) {
             byNodeId[prev.nodeId64]?.removeIf { it.identityHash.contentEquals(identity.identityHash) }
@@ -52,5 +83,6 @@ class InMemoryIdentityStore : IdentityStore {
     fun clear() {
         byHash.clear()
         byNodeId.clear()
+        insertionOrder.clear()
     }
 }

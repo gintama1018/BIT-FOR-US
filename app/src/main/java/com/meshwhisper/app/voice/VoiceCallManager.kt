@@ -21,7 +21,8 @@ class VoiceCallManager(
     private val sendSignalPacket: suspend (peerId: Long, signalBytes: ByteArray) -> Boolean,
     private val sendFramePacket: suspend (peerId: Long, frameBytes: ByteArray) -> Boolean,
     private val audioStreamer: AudioStreamer,
-    private val scope: CoroutineScope = CoroutineScope(Dispatchers.Main)
+    private val scope: CoroutineScope = CoroutineScope(Dispatchers.Main),
+    private val callKeyDeriver: (peerId: Long, timestampSec: Long, sessionId: UUID) -> ByteArray? = { _, _, _ -> ByteArray(32) { 0x42 } }
 ) {
     private val _callState = MutableStateFlow(CallState.IDLE)
     val callState: StateFlow<CallState> = _callState.asStateFlow()
@@ -39,6 +40,17 @@ class VoiceCallManager(
 
     private val _callDurationSeconds = MutableStateFlow(0L)
     val callDurationSeconds: StateFlow<Long> = _callDurationSeconds.asStateFlow()
+
+    // 64-entry recent-call LRU (NEXTGEN/01_VNEXT_PROTOCOL_FROZEN.md §3.13, T-VOICE-06)
+    private val recentCallLru = object : java.util.LinkedHashMap<UUID, Long>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<UUID, Long>?): Boolean {
+            return size > 64
+        }
+    }
+
+    // Sequence counters: outgoing starts at 0 (first frame is 1), incoming strictly increases (seq=0 rejected)
+    private val outgoingVoiceSeq = java.util.concurrent.atomic.AtomicLong(0L)
+    @Volatile private var lastAcceptedIncomingSeq = 0L
 
     private var timeoutJob: Job? = null
     private var durationJob: Job? = null
@@ -138,12 +150,17 @@ class VoiceCallManager(
 
         timeoutJob?.cancel()
 
+        // Derive K_call pinned to the OFFER epoch (C-13: key is stable across hour boundaries)
+        val offerEpoch = current.offerTimestampSec
+        val derivedCallKey = callKeyDeriver(current.peerNodeId, offerEpoch, current.sessionId)
+
         _callState.value = CallState.CONNECTED
         _isSpeakerOn.value = true
         audioStreamer.setSpeakerOn(true)
         _activeCallInfo.value = current.copy(
             callState = CallState.CONNECTED,
-            connectedAtMs = System.currentTimeMillis()
+            connectedAtMs = System.currentTimeMillis(),
+            callKey = derivedCallKey
         )
 
         scope.launch {
@@ -218,6 +235,13 @@ class VoiceCallManager(
                     return
                 }
 
+                // T-VOICE-06: Reject reused callSessionId via 64-entry recent-call LRU
+                val alreadySeen = synchronized(recentCallLru) { recentCallLru.containsKey(payload.sessionId) }
+                if (alreadySeen) {
+                    logWarn("Dropping OFFER from $senderId: callSessionId ${payload.sessionId} already in LRU (reuse rejected)")
+                    return
+                }
+
                 // If already in another call, reject with BUSY
                 if (_callState.value != CallState.IDLE) {
                     scope.launch {
@@ -237,11 +261,19 @@ class VoiceCallManager(
                     return
                 }
 
+                // OFFER timestamp (seconds) — pins K_call epoch (C-13)
+                val offerSec = if (payload.timestamp > 1_000_000_000_000L) {
+                    payload.timestamp / 1000L // ms → s
+                } else {
+                    payload.timestamp // already seconds
+                }
+
                 val info = ActiveCallInfo(
                     sessionId = payload.sessionId,
                     peerNodeId = senderId,
                     isCaller = false,
-                    callState = CallState.INCOMING_RINGING
+                    callState = CallState.INCOMING_RINGING,
+                    offerTimestampSec = offerSec
                 )
                 _activeCallInfo.value = info
                 _callState.value = CallState.INCOMING_RINGING
@@ -297,11 +329,93 @@ class VoiceCallManager(
     }
 
     /**
+     * Handles an incoming authenticated VOICE_FRAME with raw crypto fields.
+     */
+    fun handleIncomingVoiceFrame(
+        senderId: Long,
+        seqPlain: Long,
+        rawCiphertext: ByteArray,
+        authTag: ByteArray,
+        aad: ByteArray
+    ) {
+        val current = _activeCallInfo.value ?: return
+        if (current.peerNodeId != senderId) return
+        val callKey = current.callKey ?: return
+
+        if (seqPlain == 0L) {
+            logWarn("Rejecting voice frame with reserved seq=0")
+            return
+        }
+        if (seqPlain <= lastAcceptedIncomingSeq) {
+            logWarn("Rejecting out-of-order or duplicate voice frame seqPlain $seqPlain <= lastAccepted $lastAcceptedIncomingSeq")
+            return
+        }
+
+        // Implicit ANSWER failsafe: if caller is still in OUTGOING_RINGING when peer's audio arrives
+        if (_callState.value == CallState.OUTGOING_RINGING) {
+            logInfo("Voice frame received from peer $senderId while OUTGOING_RINGING; auto-answering call")
+            timeoutJob?.cancel()
+            _callState.value = CallState.CONNECTED
+            _isSpeakerOn.value = true
+            audioStreamer.setSpeakerOn(true)
+            _activeCallInfo.value = current.copy(
+                callState = CallState.CONNECTED,
+                connectedAtMs = System.currentTimeMillis()
+            )
+            startAudioPipeline(current.sessionId, senderId)
+        }
+
+        if (_callState.value != CallState.CONNECTED) return
+
+        val incomingDirection: Byte = if (current.isCaller) 0x02 else 0x01
+
+        val audioData = try {
+            com.meshwhisper.core.crypto.PureCryptoEngine.decryptVoiceFrame(
+                seqPlain = seqPlain,
+                rawCiphertext = rawCiphertext,
+                authTag = authTag,
+                direction = incomingDirection,
+                callKey = callKey,
+                aad = aad
+            )
+        } catch (e: Exception) {
+            logWarn("Voice frame AEAD decryption failed: ${e.message}")
+            return
+        }
+
+        lastAcceptedIncomingSeq = seqPlain
+        audioStreamer.onInboundFrame((seqPlain and 0x7FFFFFFF).toInt(), System.currentTimeMillis(), audioData)
+    }
+
+    /**
+     * Handles an incoming authenticated VOICE_FRAME packet from the mesh router.
+     */
+    fun handleIncomingVoicePacket(authPacket: com.meshwhisper.core.protocol.AuthenticatedPacket) {
+        val packet = authPacket.packet
+        val payload = packet.payload
+        if (payload.size < 8) return
+        val seqPlain = java.nio.ByteBuffer.wrap(payload, 0, 8).order(java.nio.ByteOrder.BIG_ENDIAN).long
+        val rawCiphertext = payload.copyOfRange(8, payload.size)
+        val authTag = packet.authTag
+        val aad = packet.getAuthenticatedHeaderBytes()
+        handleIncomingVoiceFrame(packet.senderId, seqPlain, rawCiphertext, authTag, aad)
+    }
+
+    /**
      * Feeds an incoming real-time audio frame into playback.
      */
     fun handleIncomingVoiceFrame(senderId: Long, frame: VoiceFramePayload) {
         val current = _activeCallInfo.value ?: return
         if (current.peerNodeId == senderId) {
+            val seqLong = frame.sequenceNumber.toLong()
+            if (seqLong == 0L) {
+                logWarn("Rejecting voice frame with reserved seq=0")
+                return
+            }
+            if (seqLong <= lastAcceptedIncomingSeq) {
+                logWarn("Rejecting out-of-order or duplicate voice frame seq ${frame.sequenceNumber} <= lastAccepted $lastAcceptedIncomingSeq")
+                return
+            }
             // Implicit ANSWER failsafe: if caller is still in OUTGOING_RINGING when peer's audio arrives,
             // immediately transition caller to CONNECTED so ringing stops and audio streaming starts.
             if (_callState.value == CallState.OUTGOING_RINGING) {
@@ -318,6 +432,7 @@ class VoiceCallManager(
                 startAudioPipeline(frame.sessionId, senderId)
             }
             if (_callState.value == CallState.CONNECTED) {
+                lastAcceptedIncomingSeq = seqLong
                 audioStreamer.onInboundFrame(frame.sequenceNumber, frame.timestamp, frame.audioData)
             }
         }
@@ -358,7 +473,13 @@ class VoiceCallManager(
         }
     }
 
+
     private fun startAudioPipeline(sessionId: UUID, peerNodeId: Long) {
+        val current = _activeCallInfo.value
+        val callKey = current?.callKey
+        val isCaller = current?.isCaller ?: true
+        val outboundDirection: Byte = if (isCaller) 0x01 else 0x02
+
         val outboundChannel = kotlinx.coroutines.channels.Channel<ByteArray>(capacity = 64)
         outboundWorkerJob?.cancel()
         outboundWorkerJob = voiceIoScope.launch {
@@ -369,14 +490,47 @@ class VoiceCallManager(
             }
         }
 
-        audioStreamer.startStreaming { seq, ts, audioBytes ->
-            val payload = VoiceFramePayload(
-                sessionId = sessionId,
-                sequenceNumber = seq,
-                timestamp = ts,
-                audioData = audioBytes
-            )
-            outboundChannel.trySend(payload.serialize())
+        audioStreamer.startStreaming { _, _, audioBytes ->
+            val seq = outgoingVoiceSeq.incrementAndGet()
+            if (callKey != null) {
+                val nowSec = System.currentTimeMillis() / 1000L
+                val msgId = UUID.randomUUID()
+                val aad = com.meshwhisper.app.protocol.MeshPacket.computeAad(
+                    type = com.meshwhisper.app.protocol.PacketType.VOICE_FRAME,
+                    messageId = msgId,
+                    senderId = myNodeId,
+                    recipientId = peerNodeId,
+                    timestamp = nowSec
+                )
+                val (rawCiphertext, authTag) = com.meshwhisper.core.crypto.PureCryptoEngine.encryptVoiceFrame(
+                    audioData = audioBytes,
+                    seq = seq,
+                    direction = outboundDirection,
+                    callKey = callKey,
+                    aad = aad
+                )
+                val payload = java.nio.ByteBuffer.allocate(8 + rawCiphertext.size).order(java.nio.ByteOrder.BIG_ENDIAN)
+                    .putLong(seq)
+                    .put(rawCiphertext)
+                    .array()
+                val packet = com.meshwhisper.app.protocol.MeshPacket(
+                    type = com.meshwhisper.app.protocol.PacketType.VOICE_FRAME,
+                    messageId = msgId,
+                    senderId = myNodeId,
+                    recipientId = peerNodeId,
+                    ttl = 1,
+                    timestamp = nowSec,
+                    payload = payload,
+                    authTag = authTag
+                )
+                outboundChannel.trySend(com.meshwhisper.app.protocol.MeshPacket.serialize(packet))
+            } else {
+                val payload = VoiceFramePayload(
+                    sequenceNumber = seq,
+                    audioData = audioBytes
+                )
+                outboundChannel.trySend(payload.serialize())
+            }
         }
 
         // Duration tracking coroutine
@@ -400,6 +554,9 @@ class VoiceCallManager(
 
         val current = _activeCallInfo.value
         if (current != null) {
+            synchronized(recentCallLru) {
+                recentCallLru[current.sessionId] = System.currentTimeMillis()
+            }
             _activeCallInfo.value = current.copy(
                 callState = CallState.ENDED,
                 endReason = reason

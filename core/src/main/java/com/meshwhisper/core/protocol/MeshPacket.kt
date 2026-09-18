@@ -83,7 +83,7 @@ data class MeshPacket(
         const val OVERHEAD_SIZE: Int = ResourceLimits.OVERHEAD_SIZE // 56
         const val MAX_PAYLOAD_SIZE: Int = ResourceLimits.MAX_PAYLOAD_SIZE // 2048
         const val MAX_PACKET_SIZE: Int = ResourceLimits.MAX_PACKET_SIZE // 2104
-        const val CHUNK_PAYLOAD_SIZE: Int = 400
+        const val CHUNK_PAYLOAD_SIZE: Int = ResourceLimits.CHUNK_PAYLOAD_SIZE // 320
 
         const val FUTURE_SKEW_SEC: Long = ResourceLimits.FUTURE_SKEW_SEC // 120s
 

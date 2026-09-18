@@ -106,6 +106,7 @@ class PacketPipeline(
     private val dedupCache: LruDedupCache<String, Long> = LruDedupCache(4000)
 ) {
     private val rateLimiter = VerificationRateLimiter(clock)
+    private val sosRateLimiter = ConcurrentHashMap<String, MutableList<Long>>()
 
     /**
      * Ingests raw bytes from the wire through S0–S7.
@@ -244,8 +245,8 @@ class PacketPipeline(
         var decryptedPayload = ByteArray(0)
         var isRelayOnly = false
 
-        if (packet.type == PacketType.LINK_AUTH) {
-            // LINK_AUTH has no AEAD encryption
+        if (packet.type == PacketType.LINK_AUTH || packet.type == PacketType.VOICE_FRAME) {
+            // LINK_AUTH has no AEAD encryption; VOICE_FRAME is decrypted by VoiceCallManager under pinned K_call
             decryptedPayload = packet.payload
         } else {
             val isForUs = (packet.recipientId == localNodeId64 || packet.recipientId == MeshPacket.BROADCAST_RECIPIENT_ID)
@@ -550,7 +551,54 @@ class PacketPipeline(
                 val hasLoc = (flags and 0x01) != 0
                 val expectedSize = 3 + textLen + (if (hasLoc) 28 else 0)
                 if (payload.size != expectedSize || textLen > 512) return false
+
+                // SOS rate limit: max 3 per 10 min per identity (ResourceLimits.SOS_ACCEPTANCE_MAX_PER_10_MIN)
+                val senderHashHex = sender?.identityHash?.joinToString("") { "%02x".format(it) } ?: return false
+                val now = clock.nowSeconds()
+                val tenMinutesAgo = now - 600L
+                val timestamps = sosRateLimiter.computeIfAbsent(senderHashHex) { mutableListOf() }
+                synchronized(timestamps) {
+                    timestamps.removeAll { it < tenMinutesAgo }
+                    if (timestamps.size >= ResourceLimits.SOS_ACCEPTANCE_MAX_PER_10_MIN) {
+                        return false
+                    }
+                    timestamps.add(now)
+                }
                 true
+            }
+            PacketType.MEDIA_INIT -> {
+                if (payload.size < 62) return false
+                val totalChunks = ((payload[18].toInt() and 0xFF) shl 8) or (payload[19].toInt() and 0xFF)
+                if (totalChunks == 0 || totalChunks > ResourceLimits.MAX_MEDIA_CHUNKS) return false
+                val totalSizeBytes = ByteBuffer.wrap(payload, 20, 4).order(ByteOrder.BIG_ENDIAN).int
+                if (totalSizeBytes <= 0 || totalSizeBytes > ResourceLimits.MAX_MEDIA_SIZE_BYTES) return false
+                val fileNameLen = payload[60].toInt() and 0xFF
+                if (fileNameLen > ResourceLimits.MEDIA_FILENAME_MAX_BYTES) return false
+                if (payload.size < 61 + fileNameLen + 2) return false
+                if (fileNameLen > 0) {
+                    val fn = String(payload, 61, fileNameLen, Charsets.UTF_8)
+                    if (fn.startsWith(".") || !fn.matches(Regex("^[A-Za-z0-9._-]{1,64}$"))) return false
+                }
+                val previewLen = ((payload[61 + fileNameLen].toInt() and 0xFF) shl 8) or (payload[62 + fileNameLen].toInt() and 0xFF)
+                if (previewLen > ResourceLimits.MEDIA_PREVIEW_MAX_BYTES) return false
+                if (payload.size < 63 + fileNameLen + previewLen + 1) return false
+                val captionLen = payload[63 + fileNameLen + previewLen].toInt() and 0xFF
+                if (captionLen > ResourceLimits.MEDIA_CAPTION_MAX_BYTES) return false
+                true
+            }
+            PacketType.VOICE_CALL_SIGNAL -> {
+                if (payload.size != 29) return false
+                val action = payload[0]
+                if (action !in 1..5) return false
+                if (action == 0x01.toByte()) { // OFFER requires authenticated/bound link
+                    if (linkContext.state != LinkState.AUTHENTICATED) return false
+                    if (linkContext.boundIdentity == null || !linkContext.boundIdentity.contentEquals(sender?.identityHash)) return false
+                }
+                true
+            }
+            PacketType.VOICE_FRAME -> {
+                if (packet.ttl != 1) return false
+                payload.size in 16..176
             }
             PacketType.PROFILE_UPDATE -> {
                 if (payload.size < 55 || payload.size > 207) return false
@@ -648,6 +696,8 @@ class PacketPipeline(
             PacketType.PROFILE_UPDATE -> payloadSize in 131..283 // 67..219 ciphertext + 64 sig
             PacketType.CUSTODY_ACK -> payloadSize == 124 // 60 ciphertext + 64 sig
             PacketType.MEDIA_CHUNK -> payloadSize in 18..350 // 12 IV + 18..338 (no sig)
+            PacketType.VOICE_CALL_SIGNAL -> payloadSize == 41 // 12 IV + 29 ciphertext (no sig)
+            PacketType.VOICE_FRAME -> payloadSize in 16..176 // 8 seqPlain + 8..168 ciphertext (no IV, no sig)
             PacketType.LINK_AUTH -> payloadSize in 1..300 // no AEAD tag/sig
             else -> payloadSize <= ResourceLimits.MAX_PAYLOAD_SIZE
         }

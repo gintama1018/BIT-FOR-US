@@ -13,6 +13,7 @@ import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
 import org.bouncycastle.crypto.params.Ed25519PublicKeyParameters
 import org.bouncycastle.crypto.signers.Ed25519Signer
 import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.UUID
@@ -646,5 +647,93 @@ object PureCryptoEngine {
         val keySpec = SecretKeySpec(linkKey, "AES")
         cipher.init(Cipher.DECRYPT_MODE, keySpec, GCMParameterSpec(128, iv))
         return cipher.doFinal(ciphertextWithTag)
+    }
+
+    /**
+     * Derives K_call for encrypted 1-hop voice calls.
+     * K_call = HKDF(sessionKey(epoch_of_OFFER), salt = HKDF_DM_SALT, info = "MW/VOICE/v2" || callSessionId(16), 32)
+     * Pinned at setup and never re-derived mid-call (C-13).
+     */
+    fun deriveCallKey(sessionKeyEpoch: ByteArray, callSessionId: ByteArray): ByteArray {
+        require(sessionKeyEpoch.size == 32) { "sessionKeyEpoch must be 32 bytes" }
+        require(callSessionId.size == 16) { "callSessionId must be 16 bytes" }
+        val info = "MW/VOICE/v2".toByteArray(Charsets.UTF_8) + callSessionId
+        val hkdf = HKDFBytesGenerator(SHA256Digest())
+        hkdf.init(HKDFParameters(sessionKeyEpoch, HKDF_DM_SALT, info))
+        val callKey = ByteArray(32)
+        hkdf.generateBytes(callKey, 0, 32)
+        return callKey
+    }
+
+    /**
+     * Builds deterministic 12-byte voice nonce:
+     * nonce = direction(1) || 0x00 0x00 0x00 || seq(8)
+     */
+    fun buildVoiceNonce(direction: Byte, seq: Long): ByteArray {
+        val nonce = ByteArray(12)
+        nonce[0] = direction
+        ByteBuffer.wrap(nonce, 4, 8).order(ByteOrder.BIG_ENDIAN).putLong(seq)
+        return nonce
+    }
+
+    /**
+     * Encrypts a real-time voice frame under K_call with deterministic nonce.
+     * Plaintext = seq(8) || audioData(<= 160)
+     * Returns Pair(rawCiphertext, authTag)
+     */
+    fun encryptVoiceFrame(
+        audioData: ByteArray,
+        seq: Long,
+        direction: Byte,
+        callKey: ByteArray,
+        aad: ByteArray
+    ): Pair<ByteArray, ByteArray> {
+        require(audioData.size <= 160) { "audioData exceeds maximum 160 bytes" }
+        val plaintext = ByteBuffer.allocate(8 + audioData.size).order(ByteOrder.BIG_ENDIAN)
+            .putLong(seq)
+            .put(audioData)
+            .array()
+        val nonce = buildVoiceNonce(direction, seq)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        val keySpec = SecretKeySpec(callKey, "AES")
+        cipher.init(Cipher.ENCRYPT_MODE, keySpec, GCMParameterSpec(128, nonce))
+        cipher.updateAAD(aad)
+        val encryptedWithTag = cipher.doFinal(plaintext)
+        val rawCiphertext = encryptedWithTag.copyOfRange(0, encryptedWithTag.size - 16)
+        val authTag = encryptedWithTag.copyOfRange(encryptedWithTag.size - 16, encryptedWithTag.size)
+        return Pair(rawCiphertext, authTag)
+    }
+
+    /**
+     * Decrypts a real-time voice frame under K_call with deterministic nonce built from seqPlain.
+     * Verifies that decrypted seq == seqPlain.
+     * Returns audioData.
+     */
+    fun decryptVoiceFrame(
+        seqPlain: Long,
+        rawCiphertext: ByteArray,
+        authTag: ByteArray,
+        direction: Byte,
+        callKey: ByteArray,
+        aad: ByteArray
+    ): ByteArray {
+        require(authTag.size == 16) { "authTag must be 16 bytes" }
+        val nonce = buildVoiceNonce(direction, seqPlain)
+        val ciphertextWithTag = ByteArray(rawCiphertext.size + authTag.size)
+        System.arraycopy(rawCiphertext, 0, ciphertextWithTag, 0, rawCiphertext.size)
+        System.arraycopy(authTag, 0, ciphertextWithTag, rawCiphertext.size, authTag.size)
+
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        val keySpec = SecretKeySpec(callKey, "AES")
+        cipher.init(Cipher.DECRYPT_MODE, keySpec, GCMParameterSpec(128, nonce))
+        cipher.updateAAD(aad)
+        val plaintext = cipher.doFinal(ciphertextWithTag)
+
+        require(plaintext.size >= 8) { "Decrypted voice plaintext too short: ${plaintext.size}" }
+        val decryptedSeq = ByteBuffer.wrap(plaintext, 0, 8).order(ByteOrder.BIG_ENDIAN).long
+        if (decryptedSeq != seqPlain) {
+            throw java.security.GeneralSecurityException("Voice sequence mismatch: seqPlain=$seqPlain != decryptedSeq=$decryptedSeq")
+        }
+        return plaintext.copyOfRange(8, plaintext.size)
     }
 }

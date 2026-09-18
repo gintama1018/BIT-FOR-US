@@ -1,5 +1,6 @@
 package com.meshwhisper.core.protocol
 
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -7,14 +8,16 @@ import java.util.concurrent.atomic.AtomicInteger
  * High-performance, starvation-free traffic scheduler and QoS controller for MeshWhisper.
  * 
  * Features:
- * 1. 4-Tier Bounded Queues: Prevents heap exhaustion under flood bursts.
+ * 1. 4-Tier Bounded Queues: Prevents heap exhaustion under flood bursts (ResourceLimits.EGRESS_QUEUE_MAX_PER_TIER).
  * 2. Weighted Fair Scheduling (WFS): Prevents bulk transfers from starving indefinitely.
  * 3. Airtime Protection Watchdog: Discards stale/expired frames before they hit physical radios.
  * 4. Lock-Free Ingress: Uses ConcurrentLinkedQueue per priority tier for non-blocking concurrent enqueueing.
+ * 5. Bounded Relay Slots: Enforces max 25 relay slots per identity (ResourceLimits.EGRESS_QUEUE_RELAY_SLOTS_PER_IDENTITY).
  */
 class MeshTrafficController(
-    val maxQueuePerTier: Int = 500,
-    val maxPacketLifetimeMs: Long = 60_000L
+    val maxQueuePerTier: Int = ResourceLimits.EGRESS_QUEUE_MAX_PER_TIER,
+    val maxPacketLifetimeMs: Long = ResourceLimits.EGRESS_PACKET_MAX_LIFETIME_MS,
+    val maxRelaySlotsPerIdentity: Int = ResourceLimits.EGRESS_QUEUE_RELAY_SLOTS_PER_IDENTITY
 ) {
     private val criticalQueue = ConcurrentLinkedQueue<PrioritizedPacket>()
     private val highQueue = ConcurrentLinkedQueue<PrioritizedPacket>()
@@ -26,26 +29,42 @@ class MeshTrafficController(
     private val standardCount = AtomicInteger(0)
     private val bulkCount = AtomicInteger(0)
 
+    // Per-identity relay slot tracking (hex(identityHash) -> active queued relay packets)
+    private val relaySlotsPerIdentity = ConcurrentHashMap<String, AtomicInteger>()
+
     // Weighted Quota for Deficit Round Robin (Standard : Bulk = 2 : 1)
     private var standardCredit = 0
 
     /**
      * Enqueues a packet with its appropriate QoS priority.
-     * Returns true if enqueued, false if dropped due to queue saturation.
+     * Returns true if enqueued, false if dropped due to queue saturation or per-identity relay budget breach.
      */
     fun enqueue(
         rawBytes: ByteArray,
         packetType: PacketType,
         targetNodeId: Long? = null,
-        excludeAddress: String? = null
+        excludeAddress: String? = null,
+        isRelay: Boolean = false,
+        originIdentityHash: ByteArray? = null
     ): Boolean {
+        if (isRelay && originIdentityHash != null) {
+            val idHex = originIdentityHash.joinToString("") { "%02x".format(it) }
+            val currentSlots = relaySlotsPerIdentity.computeIfAbsent(idHex) { AtomicInteger(0) }
+            if (currentSlots.get() >= maxRelaySlotsPerIdentity) {
+                // Identity already occupies maximum allowable relay slots
+                return false
+            }
+        }
+
         val priority = packetType.trafficPriority
         val packet = PrioritizedPacket(
             rawBytes = rawBytes,
             priority = priority,
             targetNodeId = targetNodeId,
             excludeAddress = excludeAddress,
-            enqueuedAtMs = System.currentTimeMillis()
+            enqueuedAtMs = System.currentTimeMillis(),
+            isRelay = isRelay,
+            originIdentityHash = originIdentityHash
         )
 
         val (queue, counter) = getQueueAndCounter(priority)
@@ -54,11 +73,16 @@ class MeshTrafficController(
             val dropped = queue.poll()
             if (dropped != null) {
                 counter.decrementAndGet()
+                decrementRelaySlotIfNeeded(dropped)
             }
         }
 
         queue.offer(packet)
         counter.incrementAndGet()
+        if (isRelay && originIdentityHash != null) {
+            val idHex = originIdentityHash.joinToString("") { "%02x".format(it) }
+            relaySlotsPerIdentity[idHex]?.incrementAndGet()
+        }
         return true
     }
 
@@ -103,11 +127,27 @@ class MeshTrafficController(
         while (true) {
             val item = queue.poll() ?: return null
             counter.decrementAndGet()
+            decrementRelaySlotIfNeeded(item)
             if (now - item.enqueuedAtMs <= maxPacketLifetimeMs) {
                 return item
             }
             // Packet expired in queue: dropped without transmitting to save airtime
         }
+    }
+
+    private fun decrementRelaySlotIfNeeded(packet: PrioritizedPacket) {
+        if (packet.isRelay && packet.originIdentityHash != null) {
+            val idHex = packet.originIdentityHash.joinToString("") { "%02x".format(it) }
+            val count = relaySlotsPerIdentity[idHex]
+            if (count != null && count.decrementAndGet() <= 0) {
+                relaySlotsPerIdentity.remove(idHex)
+            }
+        }
+    }
+
+    fun getRelaySlotsForIdentity(originIdentityHash: ByteArray): Int {
+        val idHex = originIdentityHash.joinToString("") { "%02x".format(it) }
+        return relaySlotsPerIdentity[idHex]?.get() ?: 0
     }
 
     private fun getQueueAndCounter(priority: TrafficPriority): Pair<ConcurrentLinkedQueue<PrioritizedPacket>, AtomicInteger> {
@@ -139,5 +179,6 @@ class MeshTrafficController(
         highCount.set(0)
         standardCount.set(0)
         bulkCount.set(0)
+        relaySlotsPerIdentity.clear()
     }
 }

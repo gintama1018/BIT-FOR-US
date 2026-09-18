@@ -78,7 +78,11 @@ class MeshRouter(
     )
 
     // QoS Traffic Controller (4-tier bounded priority queues, anti-starvation scheduling)
-    val trafficController = MeshTrafficController(maxQueuePerTier = 500, maxPacketLifetimeMs = 60_000L)
+    val trafficController = MeshTrafficController(
+        maxQueuePerTier = com.meshwhisper.core.protocol.ResourceLimits.EGRESS_QUEUE_MAX_PER_TIER,
+        maxPacketLifetimeMs = com.meshwhisper.core.protocol.ResourceLimits.EGRESS_PACKET_MAX_LIFETIME_MS,
+        maxRelaySlotsPerIdentity = com.meshwhisper.core.protocol.ResourceLimits.EGRESS_QUEUE_RELAY_SLOTS_PER_IDENTITY
+    )
 
     // Statistics
     private val _relayedPacketsCount = MutableStateFlow(0)
@@ -130,7 +134,7 @@ class MeshRouter(
         if (priority != TrafficPriority.BULK_TRANSFER) {
             broadcastPacketDirect(rawBytes, ingressAddress)
         } else {
-            trafficController.enqueue(rawBytes, type, targetNodeId = null, excludeAddress = ingressAddress)
+            trafficController.enqueue(rawBytes, packetType = type, targetNodeId = null, excludeAddress = ingressAddress)
         }
     }
 
@@ -172,7 +176,18 @@ class MeshRouter(
                 sendVoiceFramePacket(recipientId, frameBytes)
             },
             audioStreamer = audioStreamerFactory(),
-            scope = scope
+            scope = scope,
+            callKeyDeriver = { peerId, timestampSec, sessionId ->
+                val peerPubKey = peerPublicKeyCache[peerId]
+                if (peerPubKey != null) {
+                    val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey, timestampSec)
+                    val callSessionIdBytes = java.nio.ByteBuffer.allocate(16).order(java.nio.ByteOrder.BIG_ENDIAN)
+                        .putLong(sessionId.mostSignificantBits)
+                        .putLong(sessionId.leastSignificantBits)
+                        .array()
+                    cryptoEngine.deriveCallKey(sessionKey, callSessionIdBytes)
+                } else null
+            }
         )
     }
 
@@ -506,7 +521,13 @@ class MeshRouter(
             }
             is IngestResult.Admitted -> {
                 scope.launch {
-                    mediaTransferManager.handleMediaChunk(result.chunk.packet, result.chunk.isBroadcast)
+                    val chunk = result.chunk
+                    if (!chunk.isRelayOnly && (chunk.packet.recipientId == cryptoEngine.nodeId || chunk.isBroadcast)) {
+                        mediaTransferManager.handleMediaChunk(chunk.packet, chunk.isBroadcast)
+                    }
+                    if (chunk.packet.ttl > 1 && chunk.packet.senderId != cryptoEngine.nodeId && chunk.packet.recipientId != cryptoEngine.nodeId) {
+                        relayMediaChunkIfEligible(chunk, ingressAddress)
+                    }
                 }
             }
             is IngestResult.Dropped -> {
@@ -577,10 +598,11 @@ class MeshRouter(
                 val relayedPacket = packet.decrementTtl()
                 val isPrioritySos = (packet.type == PacketType.SOS_MESSAGE)
                 relayPacketWithJitter(
-                    relayedPacket,
-                    ingressAddress,
-                    "Relaying ${packet.type.name} msg",
-                    isPrioritySos = isPrioritySos
+                    relayedPacket = relayedPacket,
+                    ingressAddress = ingressAddress,
+                    logDescription = "Relaying ${packet.type.name} msg",
+                    isPrioritySos = isPrioritySos,
+                    originIdentityHash = authPacket.senderIdentity.identityHash
                 )
             }
         }
@@ -666,7 +688,8 @@ class MeshRouter(
         relayedPacket: MeshPacket,
         ingressAddress: String?,
         logDescription: String,
-        isPrioritySos: Boolean = false
+        isPrioritySos: Boolean = false,
+        originIdentityHash: ByteArray? = null
     ) {
         val jitterMs = if (isPrioritySos) {
             java.util.concurrent.ThreadLocalRandom.current().nextLong(5L, 20L)
@@ -676,9 +699,40 @@ class MeshRouter(
         delay(jitterMs)
 
         val relayedBytes = MeshPacket.serialize(relayedPacket)
-        broadcastPacket(relayedBytes, ingressAddress)
+        val enqueued = trafficController.enqueue(
+            rawBytes = relayedBytes,
+            packetType = relayedPacket.type,
+            targetNodeId = null,
+            excludeAddress = ingressAddress,
+            isRelay = true,
+            originIdentityHash = originIdentityHash
+        )
+        if (!enqueued) {
+            Log.w(tag, "Relay packet dropped by MeshTrafficController limits: $logDescription")
+            return
+        }
         _relayedPacketsCount.value += 1
         logPacket("RELAY", relayedPacket, relayedBytes.size, logDescription)
+    }
+
+    private suspend fun relayMediaChunkIfEligible(chunk: com.meshwhisper.core.protocol.AdmittedChunk, ingressAddress: String?) {
+        val eligible = mediaTransferManager.checkAndRecordChunkRelay(
+            senderId = chunk.packet.senderId,
+            mediaId = chunk.mediaId,
+            chunkIndex = chunk.chunkIndex,
+            chunkSize = chunk.chunkData.size
+        )
+        if (!eligible) {
+            Log.w(tag, "Relay chunk rejected by accounting limit: ${chunk.chunkIndex} for ${chunk.mediaId}")
+            return
+        }
+        val relayedPacket = chunk.packet.decrementTtl()
+        relayPacketWithJitter(
+            relayedPacket = relayedPacket,
+            ingressAddress = ingressAddress,
+            logDescription = "Relaying MEDIA_CHUNK ${chunk.chunkIndex} for ${chunk.mediaId}",
+            originIdentityHash = chunk.senderIdentity.identityHash
+        )
     }
 
     private suspend fun handleDirectMessage(
@@ -1973,10 +2027,7 @@ class MeshRouter(
             // Strict 1-hop: never forward voice frames
             return
         }
-        val plainBytes = authPacket.decryptedPayload
-        if (plainBytes.isEmpty()) return
-        val framePayload = com.meshwhisper.app.voice.VoiceFramePayload.deserialize(plainBytes) ?: return
-        voiceCallManager.handleIncomingVoiceFrame(packet.senderId, framePayload)
+        voiceCallManager.handleIncomingVoicePacket(authPacket)
     }
 
     suspend fun sendVoiceCallSignalPacket(recipientId: Long, signalBytes: ByteArray): Boolean {
@@ -2026,6 +2077,14 @@ class MeshRouter(
     }
 
     suspend fun sendVoiceFramePacket(recipientId: Long, frameBytes: ByteArray): Boolean {
+        if (frameBytes.isNotEmpty() && frameBytes[0] == PacketType.VOICE_FRAME.code) {
+            val delivered = sendDirectToNode(recipientId, frameBytes)
+            if (!delivered) {
+                broadcastPacketDirect(frameBytes)
+            }
+            return true
+        }
+
         val msgId = UUID.randomUUID()
         val timestamp = System.currentTimeMillis() / 1000L
 

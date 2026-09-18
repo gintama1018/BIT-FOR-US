@@ -352,6 +352,36 @@ class PacketPipelineTest {
                 PacketType.CUSTODY_ACK -> {
                     ByteArray(48) { 0x55.toByte() }
                 }
+                PacketType.MEDIA_INIT -> {
+                    val fn = "photo.jpg".toByteArray(Charsets.UTF_8)
+                    ByteBuffer.allocate(68 + fn.size).apply {
+                        putLong(12345L).putLong(67890L) // mediaId
+                        put(0.toByte()) // type IMAGE
+                        put(1.toByte()) // version
+                        putShort(10.toShort()) // totalChunks
+                        putInt(3200) // totalSizeBytes
+                        putInt(0) // durationMs
+                        put(ByteArray(32) { 0x11.toByte() }) // sha256
+                        put(fn.size.toByte()) // fileNameLen
+                        put(fn)
+                        putShort(0.toShort()) // previewLen
+                        put(0.toByte()) // captionLen
+                    }.array()
+                }
+                PacketType.VOICE_CALL_SIGNAL -> {
+                    ByteBuffer.allocate(29).apply {
+                        put(1.toByte()) // OFFER
+                        putLong(12345L).putLong(67890L) // callSessionId
+                        putInt(1) // signalSeq
+                        putLong(1000_000L) // timestampMs
+                    }.array()
+                }
+                PacketType.VOICE_FRAME -> {
+                    ByteBuffer.allocate(8 + 20).apply {
+                        putLong(1L) // seqPlain
+                        put(ByteArray(20) { 0x22.toByte() }) // rawCiphertext
+                    }.array()
+                }
                 PacketType.MEDIA_CHUNK -> {
                     ByteBuffer.allocate(18 + 10).apply {
                         putLong(12345L)

@@ -98,7 +98,7 @@ class VoiceCallManagerTest {
 
         val bytes = original.serialize()
         assertEquals(VoiceSignalPayload.PAYLOAD_SIZE, bytes.size)
-        assertEquals(25, bytes.size)
+        assertEquals(29, bytes.size)
 
         val deserialized = VoiceSignalPayload.deserialize(bytes)
         assertNotNull(deserialized)

@@ -480,6 +480,10 @@ class CryptoEngine private constructor(private val context: Context) : SecureKey
         return PureCryptoEngine.decrypt(ciphertext, authTag, messageId, aesKey, aad)
     }
 
+    fun deriveCallKey(sessionKey: ByteArray, callSessionIdBytes: ByteArray): ByteArray {
+        return PureCryptoEngine.deriveCallKey(sessionKey, callSessionIdBytes)
+    }
+
     companion object {
         private const val TAG = "CryptoEngine"
         private const val ANDROID_KEYSTORE = "AndroidKeyStore"

@@ -38,45 +38,56 @@ data class ActiveCallInfo(
     val peerNodeId: Long,
     val isCaller: Boolean,
     val callState: CallState,
+    val callKey: ByteArray? = null,
     val startedAtMs: Long = System.currentTimeMillis(),
     val connectedAtMs: Long? = null,
-    val endReason: CallEndReason? = null
+    val endReason: CallEndReason? = null,
+    /** Unix timestamp (seconds) from the OFFER signal — used to pin K_call epoch (C-13). */
+    val offerTimestampSec: Long = 0L
 )
 
 /**
  * Binary signaling packet for voice call setup and teardown.
- * Total size: exactly 25 bytes.
+ * Total size: exactly 29 bytes (NEXTGEN/01_VNEXT_PROTOCOL_FROZEN.md §3.13).
+ * plaintext = action(1) ‖ callSessionId(16) ‖ signalSeq(4) ‖ timestampMs(8)
  */
 data class VoiceSignalPayload(
     val action: CallAction,
     val sessionId: UUID,
+    val signalSeq: Int = 1,
     val timestamp: Long
 ) {
+    constructor(action: CallAction, sessionId: UUID, timestamp: Long) : this(action, sessionId, 1, timestamp)
+
     fun serialize(): ByteArray {
-        val buffer = ByteBuffer.allocate(PAYLOAD_SIZE).order(ByteOrder.BIG_ENDIAN)
+        val buffer = ByteBuffer.allocate(TOTAL_SIZE).order(ByteOrder.BIG_ENDIAN)
         buffer.put(action.code)
         buffer.putLong(sessionId.mostSignificantBits)
         buffer.putLong(sessionId.leastSignificantBits)
+        buffer.putInt(signalSeq)
         buffer.putLong(timestamp)
         return buffer.array()
     }
 
     companion object {
-        const val PAYLOAD_SIZE = 25
+        const val TOTAL_SIZE = 29
+        const val PAYLOAD_SIZE = TOTAL_SIZE
 
         fun deserialize(bytes: ByteArray): VoiceSignalPayload? {
-            if (bytes.size < PAYLOAD_SIZE) return null
+            if (bytes.size != TOTAL_SIZE) return null
             return try {
                 val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN)
                 val actionCode = buffer.get()
                 val action = CallAction.fromCode(actionCode) ?: return null
                 val mostSig = buffer.getLong()
                 val leastSig = buffer.getLong()
-                val timestamp = buffer.getLong()
+                val signalSeq = buffer.getInt()
+                val ts = buffer.getLong()
                 VoiceSignalPayload(
                     action = action,
                     sessionId = UUID(mostSig, leastSig),
-                    timestamp = timestamp
+                    signalSeq = signalSeq,
+                    timestamp = ts
                 )
             } catch (_: Exception) {
                 null
@@ -87,14 +98,21 @@ data class VoiceSignalPayload(
 
 /**
  * Binary payload for 1-hop real-time compressed voice frames.
- * Overhead: 28 bytes + audioData size (typically 80 bytes for 20ms ADPCM = 108 bytes total).
+ * Supports both vNext (seqPlain(8) ‖ rawCiphertext) and legacy tests.
  */
 data class VoiceFramePayload(
-    val sessionId: UUID,
-    val sequenceNumber: Int,
-    val timestamp: Long,
-    val audioData: ByteArray
+    val sessionId: UUID = UUID(0L, 0L),
+    val sequenceNumber: Int = 0,
+    val timestamp: Long = System.currentTimeMillis(),
+    val audioData: ByteArray = ByteArray(0)
 ) {
+    constructor(sequenceNumber: Long, audioData: ByteArray) : this(
+        sessionId = UUID(0L, 0L),
+        sequenceNumber = (sequenceNumber and 0x7FFFFFFF).toInt(),
+        timestamp = System.currentTimeMillis(),
+        audioData = audioData
+    )
+
     fun serialize(): ByteArray {
         val totalSize = HEADER_SIZE + audioData.size
         val buffer = ByteBuffer.allocate(totalSize).order(ByteOrder.BIG_ENDIAN)

@@ -38,6 +38,9 @@ import com.meshwhisper.app.ui.components.CameraQrScannerDialog
 import com.meshwhisper.app.ui.components.ImageMessageBubble
 import com.meshwhisper.app.ui.components.NodeAvatar
 import com.meshwhisper.app.ui.components.VoiceNoteBubble
+import com.meshwhisper.app.ui.components.TrustBadge
+import com.meshwhisper.app.ui.components.SafetyNumberConfirmationDialog
+import com.meshwhisper.core.identity.VerificationCandidate
 import com.meshwhisper.app.ui.theme.*
 import com.meshwhisper.app.ui.viewmodel.MeshViewModel
 import com.meshwhisper.app.ui.viewmodel.QrScanResult
@@ -71,13 +74,25 @@ fun DirectChatDetailScreen(
     var textInput by remember { mutableStateOf("") }
     var showSafetyNumberDialog by remember { mutableStateOf(false) }
     var showCameraScanner by remember { mutableStateOf(false) }
+    var verificationCandidate by remember { mutableStateOf<VerificationCandidate?>(null) }
+    var computedSafetyNumber by remember { mutableStateOf<String?>(null) }
+    var myFingerprintHex by remember { mutableStateOf("") }
+    var peerFingerprintHex by remember { mutableStateOf<String?>(null) }
     val coroutineScope = rememberCoroutineScope()
     val listState = rememberLazyListState()
+
+    LaunchedEffect(showSafetyNumberDialog, peerNodeId) {
+        if (showSafetyNumberDialog) {
+            computedSafetyNumber = viewModel.getSafetyNumberForPeer(peerNodeId)
+            myFingerprintHex = viewModel.getMyFingerprintHex()
+            peerFingerprintHex = viewModel.getPeerFingerprintHex(peerNodeId)
+        }
+    }
 
     // Safety Number Verification Dialog (Cryptographic MITM Defense)
     if (showSafetyNumberDialog) {
         val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
-        val safetyNumber = peer?.fingerprint ?: "Awaiting Key Exchange"
+        val safetyNumber = computedSafetyNumber ?: "Awaiting Authenticated Announce"
         AlertDialog(
             onDismissRequest = { showSafetyNumberDialog = false },
             title = {
@@ -95,9 +110,9 @@ fun DirectChatDetailScreen(
                 }
             },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        text = "Compare this safety number with the number on ${peer?.alias ?: "peer"}'s screen to verify end-to-end encryption integrity and prevent man-in-the-middle attacks.",
+                        text = "Compare this 60-digit safety number with the number on ${peer?.alias ?: "peer"}'s screen to verify end-to-end encryption integrity and prevent man-in-the-middle attacks.",
                         style = MaterialTheme.typography.bodySmall,
                         color = SaharaOnSurfaceVariant
                     )
@@ -107,14 +122,31 @@ fun DirectChatDetailScreen(
                         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
                     ) {
                         Text(
-                            text = safetyNumber.chunked(4).joinToString(" "),
+                            text = safetyNumber,
                             fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
                             fontWeight = FontWeight.Bold,
                             fontSize = 13.sp,
                             color = SaharaPrimary,
-                            modifier = Modifier.padding(12.dp)
+                            modifier = Modifier.padding(12.dp),
+                            lineHeight = 20.sp
                         )
                     }
+
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = "Your Fingerprint: ${myFingerprintHex.take(16)}...",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = TextSecondary,
+                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                        )
+                        Text(
+                            text = "Peer Fingerprint: ${(peerFingerprintHex ?: peer?.fingerprint)?.take(16)}...",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = TextSecondary,
+                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                        )
+                    }
+
                     Button(
                         onClick = { showCameraScanner = true },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
@@ -125,6 +157,7 @@ fun DirectChatDetailScreen(
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("Scan Peer's Screen with Camera")
                     }
+
                     if (isVerified) {
                         Surface(
                             color = Color(0xFF1B5E20).copy(alpha = 0.2f),
@@ -149,29 +182,16 @@ fun DirectChatDetailScreen(
                 }
             },
             confirmButton = {
-                Button(
-                    onClick = {
-                        viewModel.togglePeerVerification(peerNodeId, !isVerified)
-                        showSafetyNumberDialog = false
-                    },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (isVerified) SaharaOutline else Color(0xFF2E7D32)
-                    )
-                ) {
-                    Text(if (isVerified) "Clear Verification" else "Mark as Verified")
+                TextButton(onClick = { showSafetyNumberDialog = false }) {
+                    Text("Close")
                 }
             },
             dismissButton = {
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    TextButton(onClick = {
-                        clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(safetyNumber))
-                        android.widget.Toast.makeText(context, "Safety number copied", android.widget.Toast.LENGTH_SHORT).show()
-                    }) {
-                        Text("Copy")
-                    }
-                    TextButton(onClick = { showSafetyNumberDialog = false }) {
-                        Text("Close")
-                    }
+                TextButton(onClick = {
+                    clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(safetyNumber))
+                    android.widget.Toast.makeText(context, "Safety number copied", android.widget.Toast.LENGTH_SHORT).show()
+                }) {
+                    Text("Copy")
                 }
             }
         )
@@ -185,13 +205,9 @@ fun DirectChatDetailScreen(
                 showCameraScanner = false
                 coroutineScope.launch {
                     when (val res = viewModel.handleScannedQrContent(scannedContent, targetPeerNodeId = peerNodeId)) {
-                        is QrScanResult.PeerVerified -> {
+                        is QrScanResult.VerificationReady -> {
                             showSafetyNumberDialog = false
-                            android.widget.Toast.makeText(
-                                context,
-                                "✓ Identity Verified! End-to-end cryptographic link authenticated with ${peer?.alias ?: "peer"}.",
-                                android.widget.Toast.LENGTH_LONG
-                            ).show()
+                            verificationCandidate = res.candidate
                         }
                         is QrScanResult.KeyMismatch -> {
                             android.widget.Toast.makeText(
@@ -211,6 +227,33 @@ fun DirectChatDetailScreen(
             },
             title = "Verify Safety Number",
             subtitle = "Point camera at ${peer?.alias ?: "peer"}'s screen to authenticate public key"
+        )
+    }
+
+    // Staged Two-Step Verification Confirmation Modal
+    verificationCandidate?.let { candidate ->
+        SafetyNumberConfirmationDialog(
+            candidate = candidate,
+            onConfirm = {
+                coroutineScope.launch {
+                    val res = viewModel.confirmSafetyNumber(candidate)
+                    if (res.isSuccess) {
+                        android.widget.Toast.makeText(
+                            context,
+                            "✓ Identity Verified! End-to-end cryptographic link authenticated with ${peer?.alias ?: "peer"}.",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                    } else {
+                        android.widget.Toast.makeText(
+                            context,
+                            "Verification failed: ${res.exceptionOrNull()?.message}",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                    }
+                    verificationCandidate = null
+                }
+            },
+            onDismiss = { verificationCandidate = null }
         )
     }
 
@@ -349,7 +392,7 @@ fun DirectChatDetailScreen(
                 Column(modifier = Modifier.weight(1f)) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Text(
                             text = peerProfile?.displayName?.ifBlank { null } ?: peer?.alias?.ifBlank { "Peer 0x${String.format("%016X", peerNodeId).takeLast(4)}" } ?: "Peer",
@@ -359,14 +402,7 @@ fun DirectChatDetailScreen(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                        if (isVerified) {
-                            Icon(
-                                imageVector = Icons.Default.Verified,
-                                contentDescription = "Verified Contact",
-                                tint = Color(0xFF4CAF50),
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
+                        TrustBadge(trustState = peer?.trustState ?: "LEGACY_UNVERIFIED")
                     }
 
                     if (!peerProfile?.bio.isNullOrBlank()) {
@@ -402,6 +438,14 @@ fun DirectChatDetailScreen(
                 // Voice Call Action (Milestone 4 - Direct 1-Hop Only)
                 IconButton(
                     onClick = {
+                        if (peer?.trustState == "CONFLICTED") {
+                            android.widget.Toast.makeText(context, "Voice call suspended due to Node ID collision (C-23)", android.widget.Toast.LENGTH_SHORT).show()
+                            return@IconButton
+                        }
+                        if (peer?.isBlocked == true) {
+                            android.widget.Toast.makeText(context, "Cannot call blocked peer", android.widget.Toast.LENGTH_SHORT).show()
+                            return@IconButton
+                        }
                         if (isDirect) {
                             val started = viewModel.startVoiceCall(peerNodeId)
                             if (!started) {
@@ -415,16 +459,16 @@ fun DirectChatDetailScreen(
                     Icon(
                         imageVector = Icons.Default.Call,
                         contentDescription = "Voice Call",
-                        tint = if (isDirect) SaharaPrimary else SaharaOnSurfaceVariant.copy(alpha = 0.35f),
+                        tint = if (isDirect && peer?.trustState != "CONFLICTED" && peer?.isBlocked != true) SaharaPrimary else SaharaOnSurfaceVariant.copy(alpha = 0.35f),
                         modifier = Modifier.size(20.dp)
                     )
                 }
 
                 IconButton(onClick = { showSafetyNumberDialog = true }) {
                     Icon(
-                        imageVector = if (isVerified) Icons.Default.VerifiedUser else Icons.Default.Shield,
+                        imageVector = if (peer?.trustState == "CONFLICTED") Icons.Default.Warning else if (isVerified) Icons.Default.VerifiedUser else Icons.Default.Shield,
                         contentDescription = "Verify Safety Number",
-                        tint = if (isVerified) Color(0xFF4CAF50) else SaharaPrimary,
+                        tint = if (peer?.trustState == "CONFLICTED") Color(0xFFC62828) else if (isVerified) Color(0xFF4CAF50) else SaharaPrimary,
                         modifier = Modifier.size(20.dp)
                     )
                 }
@@ -433,7 +477,92 @@ fun DirectChatDetailScreen(
 
         HorizontalDivider(color = SaharaSurfaceContainerHigh, thickness = 0.8.dp)
 
-        // Safety Number Changed Security Alert Banner (Fix P1-1)
+        // Node ID Collision Security Alert Banner (C-23)
+        if (peer?.trustState == "CONFLICTED") {
+            Surface(
+                color = Color(0xFFFFEBEE),
+                shape = RoundedCornerShape(12.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFEF9A9A)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Warning,
+                            contentDescription = null,
+                            tint = Color(0xFFC62828),
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "NODE ID COLLISION DETECTED (C-23)",
+                            color = Color(0xFFC62828),
+                            fontSize = 11.sp,
+                            fontFamily = ManropeFamily,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Multiple distinct cryptographic identities claim Node ID 0x${peer.nodeIdHex.takeLast(6)}. Unicast messaging and voice calls are suspended. Scan this peer's QR code with your camera in person to resolve the collision.",
+                        color = SaharaOnSurface,
+                        fontSize = 11.sp,
+                        fontFamily = ManropeFamily,
+                        lineHeight = 15.sp
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Button(
+                        onClick = { showCameraScanner = true },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC62828)),
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                        modifier = Modifier.height(30.dp)
+                    ) {
+                        Text(
+                            text = "Scan QR to Resolve Collision",
+                            color = Color.White,
+                            fontSize = 11.sp,
+                            fontFamily = ManropeFamily,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+        }
+
+        // Blocked Contact Alert Banner
+        if (peer?.isBlocked == true || peer?.trustState == "BLOCKED") {
+            Surface(
+                color = Color(0xFFEEEEEE),
+                shape = RoundedCornerShape(12.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFBDBDBD)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Icon(Icons.Default.Block, contentDescription = null, tint = Color.DarkGray, modifier = Modifier.size(18.dp))
+                        Text(
+                            text = "This contact is blocked.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextPrimary
+                        )
+                    }
+                    TextButton(onClick = { peer?.identityHashHex?.let { viewModel.unblockPeer(it) } }) {
+                        Text("Unblock", color = BurntSienna, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
+        // Safety Number Changed Security Alert Banner (C-12 Key Rotation)
         if (peer?.hasKeyChanged == true) {
             Surface(
                 color = SaharaErrorContainer.copy(alpha = 0.7f),
@@ -453,7 +582,7 @@ fun DirectChatDetailScreen(
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "SECURITY WARNING: SAFETY NUMBER CHANGED",
+                            text = "SECURITY WARNING: SAFETY NUMBER CHANGED (C-12)",
                             color = SaharaError,
                             fontSize = 11.sp,
                             fontFamily = ManropeFamily,
@@ -462,7 +591,7 @@ fun DirectChatDetailScreen(
                     }
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "The cryptographic identity key for ${peer.alias} has changed. This can happen if they reinstalled the app or if a Man-In-The-Middle attack is occurring. Verify out-of-band via QR before sharing sensitive data.",
+                        text = "The cryptographic encryption key for ${peer.alias} has changed. Verification has been demoted to LINKED. Verify their safety number in person via QR code before sharing sensitive data.",
                         color = SaharaOnSurface,
                         fontSize = 11.sp,
                         fontFamily = ManropeFamily,
@@ -477,7 +606,7 @@ fun DirectChatDetailScreen(
                         modifier = Modifier.height(30.dp)
                     ) {
                         Text(
-                            text = "Acknowledge & Trust New Key",
+                            text = "Dismiss Banner",
                             color = Color.White,
                             fontSize = 11.sp,
                             fontFamily = ManropeFamily,
@@ -507,12 +636,21 @@ fun DirectChatDetailScreen(
                 }
             }
 
+            val isConflicted = peer?.trustState == "CONFLICTED"
+            val isBlocked = peer?.isBlocked == true || peer?.trustState == "BLOCKED"
+            val isComposerDisabled = isConflicted || isBlocked
+            val disabledReason = when {
+                isConflicted -> "Messaging suspended due to Node ID collision (C-23)"
+                isBlocked -> "Contact is blocked"
+                else -> null
+            }
+
             // Floating Bottom Composer
             SaharaDirectComposer(
                 textInput = textInput,
                 onTextChanged = { textInput = it },
                 onSend = {
-                    if (textInput.trim().isNotEmpty()) {
+                    if (textInput.trim().isNotEmpty() && !isComposerDisabled) {
                         viewModel.sendDirect(peerNodeId, textInput.trim())
                         textInput = ""
                     }
@@ -574,6 +712,8 @@ fun DirectChatDetailScreen(
                         }
                     }
                 },
+                enabled = !isComposerDisabled,
+                disabledReason = disabledReason,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .imePadding()
@@ -667,19 +807,29 @@ private fun SaharaDirectMessageBubble(
                                 MessageStatus.DELIVERED -> Icons.Default.DoneAll
                                 MessageStatus.RELAYED -> Icons.Default.DoneAll
                                 MessageStatus.SENT -> Icons.Default.Check
+                                MessageStatus.EXPIRED -> Icons.Default.ErrorOutline
                                 else -> Icons.Default.Schedule
                             }
                             val iconTint = when (msg.status) {
                                 MessageStatus.DELIVERED -> SaharaPrimary
                                 MessageStatus.RELAYED -> SaharaWarning
+                                MessageStatus.EXPIRED -> SaharaError
                                 else -> SaharaOnSurfaceVariant.copy(alpha = 0.7f)
                             }
                             Icon(
                                 imageVector = icon,
-                                contentDescription = null,
+                                contentDescription = if (msg.status == MessageStatus.EXPIRED) "Expired (undelivered)" else null,
                                 tint = iconTint,
                                 modifier = Modifier.size(13.dp)
                             )
+                            if (msg.status == MessageStatus.EXPIRED) {
+                                Text(
+                                    text = "Expired (undelivered)",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = SaharaError,
+                                    fontSize = 10.sp
+                                )
+                            }
                         }
                     }
                 }
@@ -702,6 +852,8 @@ private fun SaharaDirectComposer(
     onStartVoiceRecording: () -> Unit,
     onCancelVoiceRecording: () -> Unit,
     onSendVoiceRecording: () -> Unit,
+    enabled: Boolean = true,
+    disabledReason: String? = null,
     modifier: Modifier = Modifier
 ) {
     Surface(
@@ -801,24 +953,26 @@ private fun SaharaDirectComposer(
             ) {
                 IconButton(
                     onClick = onAttachPhoto,
+                    enabled = enabled,
                     modifier = Modifier.size(36.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.AttachFile,
                         contentDescription = "Attach Photo",
-                        tint = SaharaOnSurfaceVariant,
+                        tint = if (enabled) SaharaOnSurfaceVariant else SaharaOnSurfaceVariant.copy(alpha = 0.3f),
                         modifier = Modifier.size(20.dp)
                     )
                 }
 
                 IconButton(
                     onClick = onStartVoiceRecording,
+                    enabled = enabled,
                     modifier = Modifier.size(36.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Mic,
                         contentDescription = "Record Voice Note",
-                        tint = SaharaPrimary,
+                        tint = if (enabled) SaharaPrimary else SaharaOnSurfaceVariant.copy(alpha = 0.3f),
                         modifier = Modifier.size(22.dp)
                     )
                 }
@@ -826,21 +980,25 @@ private fun SaharaDirectComposer(
                 TextField(
                     value = textInput,
                     onValueChange = onTextChanged,
+                    enabled = enabled,
                     placeholder = {
                         Text(
-                            text = "Encrypted message...",
-                            color = SaharaOnSurfaceVariant.copy(alpha = 0.6f),
-                            fontSize = 15.sp,
+                            text = if (enabled) "Encrypted message..." else (disabledReason ?: "Messaging suspended"),
+                            color = if (enabled) SaharaOnSurfaceVariant.copy(alpha = 0.6f) else SaharaError.copy(alpha = 0.8f),
+                            fontSize = 14.sp,
                             fontFamily = ManropeFamily
                         )
                     },
                     colors = TextFieldDefaults.colors(
                         focusedContainerColor = Color.Transparent,
                         unfocusedContainerColor = Color.Transparent,
+                        disabledContainerColor = Color.Transparent,
                         focusedIndicatorColor = Color.Transparent,
                         unfocusedIndicatorColor = Color.Transparent,
+                        disabledIndicatorColor = Color.Transparent,
                         focusedTextColor = SaharaOnSurface,
-                        unfocusedTextColor = SaharaOnSurface
+                        unfocusedTextColor = SaharaOnSurface,
+                        disabledTextColor = SaharaOnSurfaceVariant.copy(alpha = 0.4f)
                     ),
                     maxLines = 4,
                     modifier = Modifier.weight(1f)
@@ -849,10 +1007,11 @@ private fun SaharaDirectComposer(
                 if (textInput.isNotBlank()) {
                     IconButton(
                         onClick = onSend,
+                        enabled = enabled,
                         modifier = Modifier
                             .size(40.dp)
                             .clip(CircleShape)
-                            .background(SaharaPrimary)
+                            .background(if (enabled) SaharaPrimary else SaharaOutlineVariant)
                     ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.Send,
@@ -864,10 +1023,11 @@ private fun SaharaDirectComposer(
                 } else {
                     IconButton(
                         onClick = onStartVoiceRecording,
+                        enabled = enabled,
                         modifier = Modifier
                             .size(40.dp)
                             .clip(CircleShape)
-                            .background(SaharaPrimary)
+                            .background(if (enabled) SaharaPrimary else SaharaOutlineVariant)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Mic,

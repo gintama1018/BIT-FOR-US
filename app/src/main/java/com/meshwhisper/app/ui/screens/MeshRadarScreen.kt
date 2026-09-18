@@ -65,6 +65,7 @@ import com.meshwhisper.app.data.model.PeerEntity
 import com.meshwhisper.app.data.model.TopologyEdgeEntity
 import com.meshwhisper.app.ui.components.NodeAvatar
 import com.meshwhisper.app.ui.components.SaharaTopAppBar
+import com.meshwhisper.app.ui.components.TrustBadge
 import com.meshwhisper.app.ui.graph.GraphEdge
 import com.meshwhisper.app.ui.graph.GraphNode
 import com.meshwhisper.app.ui.graph.GraphPhysicsSimulation
@@ -682,7 +683,10 @@ private fun RadarPeerCard(
                 Spacer(modifier = Modifier.width(12.dp))
 
                 Column {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
                         Text(
                             text = peer.alias,
                             color = TextPrimary,
@@ -690,7 +694,7 @@ private fun RadarPeerCard(
                             fontFamily = ManropeFamily,
                             fontWeight = FontWeight.SemiBold
                         )
-                        Spacer(modifier = Modifier.width(6.dp))
+                        TrustBadge(trustState = peer.trustState)
                         val hopBadge = if (peer.isDirect) "Direct BLE" else "${peer.hopCount} hops"
                         Text(
                             text = "• $hopBadge",

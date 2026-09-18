@@ -24,9 +24,10 @@ object AppPipelineFactory {
         packetStore: PacketStore,
         clock: Clock,
         dedupCache: LruDedupCache<String, Long>,
-        peerPublicKeyCache: ConcurrentHashMap<Long, ByteArray>
+        peerPublicKeyCache: ConcurrentHashMap<Long, ByteArray>,
+        identityRepository: com.meshwhisper.app.identity.IdentityRepository? = null
     ): PacketPipeline {
-        val identityStore = InMemoryIdentityStore()
+        val identityStore = identityRepository?.identityStore ?: InMemoryIdentityStore()
 
         // Seed own identity
         identityStore.upsert(

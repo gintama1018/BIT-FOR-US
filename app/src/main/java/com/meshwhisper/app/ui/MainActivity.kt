@@ -6,6 +6,7 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
+import androidx.lifecycle.lifecycleScope
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -53,6 +54,8 @@ import com.meshwhisper.app.ui.theme.TextPrimary
 import com.meshwhisper.app.ui.theme.TextSecondary
 import com.meshwhisper.app.ui.theme.WarmLinen
 import com.meshwhisper.app.ui.viewmodel.MeshViewModel
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsResultCallback {
 
@@ -154,29 +157,35 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
 
     private fun handleDeepLink(intent: android.content.Intent?) {
         val uri = intent?.data ?: return
+        val uriString = uri.toString().trim()
         if (uri.scheme == "meshwhisper" && uri.host == "node") {
-            val idHex = uri.getQueryParameter("id")
-            val alias = uri.getQueryParameter("alias") ?: "Unknown Node"
-            val pubHex = uri.getQueryParameter("pub")
-            if (!idHex.isNullOrBlank() && !pubHex.isNullOrBlank()) {
-                val nodeId = try {
-                    java.lang.Long.parseUnsignedLong(idHex, 16)
-                } catch (e: NumberFormatException) {
-                    android.util.Log.w("MainActivity", "handleDeepLink: unparseable nodeId hex '$idHex'")
-                    android.widget.Toast.makeText(this, "Invalid contact link", android.widget.Toast.LENGTH_SHORT).show()
+            if (uriString.startsWith("meshwhisper://node/v2")) {
+                val qrData = com.meshwhisper.core.identity.NodeQrCodec.decode(uriString)
+                if (qrData == null) {
+                    android.widget.Toast.makeText(this, "Invalid vNext contact link", android.widget.Toast.LENGTH_SHORT).show()
                     return
                 }
 
-                // Security Confirmation Dialog for Deep Links (Fix P1-3: Prevent Remote Trust Injection)
+                val alias = qrData.alias.ifBlank { "Node-${String.format("%016X", qrData.nodeId64).takeLast(4)}" }
+
+                // Invariant I-8 / Finding S-17: Deep link import MUST ONLY produce IMPORTED state. NEVER VERIFIED.
                 android.app.AlertDialog.Builder(this)
-                    .setTitle("Trust New Peer?")
-                    .setMessage("Received contact link for '$alias' (Node ID: 0x${idHex.takeLast(8)}).\n\nDo you want to verify and add this peer to your trusted contacts?")
-                    .setPositiveButton("Trust & Add") { _, _ ->
-                        viewModel.registerScannedPeer(nodeId, alias, pubHex)
-                        android.widget.Toast.makeText(this, "Added Peer: $alias", android.widget.Toast.LENGTH_SHORT).show()
+                    .setTitle("Import Contact (Unverified)")
+                    .setMessage("Received contact link for '$alias' (Node ID: 0x${String.format("%016X", qrData.nodeId64).takeLast(6)}).\n\nDo you want to import this contact? Note: Deep link import does not verify end-to-end encryption integrity. In-person safety number comparison is required to verify.")
+                    .setPositiveButton("Import Contact") { _, _ ->
+                        lifecycleScope.launch {
+                            val res = viewModel.importPeerUri(uriString)
+                            if (res.isSuccess) {
+                                android.widget.Toast.makeText(this@MainActivity, "Imported '$alias' as unverified contact (IMPORTED)", android.widget.Toast.LENGTH_LONG).show()
+                            } else {
+                                android.widget.Toast.makeText(this@MainActivity, "Failed to import contact: ${res.exceptionOrNull()?.message}", android.widget.Toast.LENGTH_LONG).show()
+                            }
+                        }
                     }
                     .setNegativeButton("Cancel", null)
                     .show()
+            } else {
+                android.widget.Toast.makeText(this, "Security Warning: Legacy contact link rejected (vNext §2.1)", android.widget.Toast.LENGTH_SHORT).show()
             }
         }
     }

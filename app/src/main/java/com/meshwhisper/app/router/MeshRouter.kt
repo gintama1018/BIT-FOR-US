@@ -56,7 +56,8 @@ class MeshRouter(
     private val cryptoEngine: CryptoEngine,
     private val database: MeshDatabase,
     val clock: Clock = SystemClock(),
-    val randomSource: RandomSource = DefaultRandomSource()
+    val randomSource: RandomSource = DefaultRandomSource(),
+    val identityRepository: com.meshwhisper.app.identity.IdentityRepository = com.meshwhisper.app.identity.IdentityRepository(database, cryptoEngine, clock)
 ) {
     private val tag = "MeshRouter"
     private val exceptionHandler = kotlinx.coroutines.CoroutineExceptionHandler { _, throwable ->
@@ -74,7 +75,8 @@ class MeshRouter(
         packetStore = packetStore,
         clock = clock,
         dedupCache = dedupCache,
-        peerPublicKeyCache = peerPublicKeyCache
+        peerPublicKeyCache = peerPublicKeyCache,
+        identityRepository = identityRepository
     )
 
     // QoS Traffic Controller (4-tier bounded priority queues, anti-starvation scheduling)
@@ -207,6 +209,14 @@ class MeshRouter(
     var onSosAlertReceivedListener: ((senderId: Long, senderAlias: String, text: String, lat: Double?, lon: Double?, fixTimestamp: Long?) -> Unit)? = null
 
     init {
+        scope.launch {
+            try {
+                identityRepository.initialize()
+            } catch (e: Exception) {
+                Log.e(tag, "Failed to initialize identityRepository: ${e.message}", e)
+            }
+        }
+
         scope.launch {
             try {
                 val peers = database.peerDao().getAllPeersList()
@@ -378,10 +388,26 @@ class MeshRouter(
     fun bindLink(proof: LinkAuthProof) {
         require(proof.peerIdentityHash.size == 32) { "identityHash must be 32 bytes" }
         authenticatedLinks[proof.linkHandle] = proof.peerIdentityHash
+        scope.launch {
+            try {
+                identityRepository.onLinkEstablished(proof.peerIdentityHash)
+            } catch (e: Exception) {
+                Log.w(tag, "identityRepository.onLinkEstablished error: ${e.message}")
+            }
+        }
     }
 
     fun unbindLink(linkHandle: String) {
-        authenticatedLinks.remove(linkHandle)
+        val hash = authenticatedLinks.remove(linkHandle)
+        if (hash != null) {
+            scope.launch {
+                try {
+                    identityRepository.onLinkClosed(hash)
+                } catch (e: Exception) {
+                    Log.w(tag, "identityRepository.onLinkClosed error: ${e.message}")
+                }
+            }
+        }
     }
 
     fun isLinkAuthenticated(linkHandle: String): Boolean {
@@ -614,17 +640,8 @@ class MeshRouter(
 
         peerPublicKeyCache[packet.senderId] = announce.ekPub
 
-        val peerEntity = PeerEntity(
-            nodeId = packet.senderId,
-            alias = announce.alias,
-            publicKeyHex = CryptoEngine.bytesToHex(announce.ekPub),
-            fingerprint = CryptoEngine.generateFingerprint(announce.ikPub),
-            lastSeen = packet.timestamp * 1000L,
-            isDirect = (packet.ttl == MeshPacket.DEFAULT_TTL),
-            rssi = -50,
-            hopCount = MeshPacket.DEFAULT_TTL - packet.ttl
-        )
-        database.peerDao().insertOrUpdate(peerEntity)
+        val trustResult = identityRepository.onAuthenticatedAnnounce(authPacket, announce)
+
         routeEngine.updateOriginNeighbors(packet.senderId, announce.neighbors, packet.timestamp * 1000L)
 
         val loc = announce.location
@@ -641,7 +658,7 @@ class MeshRouter(
             )
         }
 
-        logPacket("PEER_ANNOUNCE", packet, packet.payload.size, "Authenticated announce from ${announce.alias} (${packet.senderId})")
+        logPacket("PEER_ANNOUNCE", packet, packet.payload.size, "Authenticated announce from ${announce.alias} (${packet.senderId}, trust=$trustResult)")
     }
 
     private suspend fun handleBroadcastMessage(
@@ -1310,6 +1327,10 @@ class MeshRouter(
             Log.w(tag, "Cannot send message to blocked peer $recipientNodeId")
             return null
         }
+        if (identityRepository.isNodeConflicted(recipientNodeId)) {
+            Log.w(tag, "Cannot send message to conflicted peer $recipientNodeId: Unicast suspended (C-23)")
+            return null
+        }
 
         val msgId = UUID.randomUUID()
         val textBytes = text.toByteArray(Charsets.UTF_8)
@@ -1663,6 +1684,10 @@ class MeshRouter(
         imageHeightPx: Int = 0,
         paddedTileByteLengths: List<Int> = emptyList()
     ): String {
+        if (identityRepository.isNodeConflicted(recipientNodeId)) {
+            Log.w(tag, "Cannot send media to conflicted peer $recipientNodeId: Unicast suspended (C-23)")
+            return ""
+        }
         return mediaTransferManager.sendMedia(
             recipientNodeId = recipientNodeId,
             mediaType = mediaType,
@@ -2031,6 +2056,10 @@ class MeshRouter(
     }
 
     suspend fun sendVoiceCallSignalPacket(recipientId: Long, signalBytes: ByteArray): Boolean {
+        if (identityRepository.isNodeConflicted(recipientId)) {
+            Log.w(tag, "Cannot send voice signal to conflicted peer $recipientId: Unicast suspended (C-23)")
+            return false
+        }
         val msgId = UUID.randomUUID()
         val timestamp = System.currentTimeMillis() / 1000L
 

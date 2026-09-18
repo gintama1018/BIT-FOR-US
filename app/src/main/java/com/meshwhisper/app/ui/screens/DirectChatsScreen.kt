@@ -30,9 +30,12 @@ import com.meshwhisper.app.data.model.MessageEntity
 import com.meshwhisper.app.data.model.PeerEntity
 import com.meshwhisper.app.ui.components.CameraQrScannerDialog
 import com.meshwhisper.app.ui.components.NodeAvatar
+import com.meshwhisper.app.ui.components.SafetyNumberConfirmationDialog
+import com.meshwhisper.app.ui.components.TrustBadge
 import com.meshwhisper.app.ui.theme.*
 import com.meshwhisper.app.ui.viewmodel.MeshViewModel
 import com.meshwhisper.app.ui.viewmodel.QrScanResult
+import com.meshwhisper.core.identity.VerificationCandidate
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
@@ -51,6 +54,7 @@ fun DirectChatsScreen(
     var searchQuery by remember { mutableStateOf("") }
     var isSearchActive by remember { mutableStateOf(false) }
     var showCameraScanner by remember { mutableStateOf(false) }
+    var verificationCandidate by remember { mutableStateOf<VerificationCandidate?>(null) }
     val coroutineScope = rememberCoroutineScope()
 
     // Map latest messages by peerId
@@ -90,13 +94,8 @@ fun DirectChatsScreen(
                 showCameraScanner = false
                 coroutineScope.launch {
                     when (val res = viewModel.handleScannedQrContent(scannedContent)) {
-                        is QrScanResult.PeerVerified -> {
-                            android.widget.Toast.makeText(
-                                context,
-                                "✓ Verified Contact: ${res.alias}",
-                                android.widget.Toast.LENGTH_SHORT
-                            ).show()
-                            onOpenChat(res.nodeId)
+                        is QrScanResult.VerificationReady -> {
+                            verificationCandidate = res.candidate
                         }
                         is QrScanResult.ChannelConfigured -> {
                             android.widget.Toast.makeText(
@@ -120,6 +119,34 @@ fun DirectChatsScreen(
             },
             title = "Scan Peer to Pair",
             subtitle = "Point camera at peer's screen to verify keys and start direct chat"
+        )
+    }
+
+    // Staged Two-Step Verification Confirmation Modal
+    verificationCandidate?.let { candidate ->
+        SafetyNumberConfirmationDialog(
+            candidate = candidate,
+            onConfirm = {
+                coroutineScope.launch {
+                    val res = viewModel.confirmSafetyNumber(candidate)
+                    if (res.isSuccess) {
+                        android.widget.Toast.makeText(
+                            context,
+                            "✓ Identity Verified! End-to-end cryptographic link authenticated with ${candidate.alias}.",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                        onOpenChat(candidate.nodeId64)
+                    } else {
+                        android.widget.Toast.makeText(
+                            context,
+                            "Verification failed: ${res.exceptionOrNull()?.message}",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                    }
+                    verificationCandidate = null
+                }
+            },
+            onDismiss = { verificationCandidate = null }
         )
     }
 
@@ -396,14 +423,7 @@ private fun SaharaInboxPeerRow(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    if (peer.isVerified) {
-                        Icon(
-                            imageVector = Icons.Default.Verified,
-                            contentDescription = "Verified Contact",
-                            tint = Color(0xFF4CAF50),
-                            modifier = Modifier.size(16.dp)
-                        )
-                    }
+                    TrustBadge(trustState = peer.trustState)
                 }
 
                 Text(

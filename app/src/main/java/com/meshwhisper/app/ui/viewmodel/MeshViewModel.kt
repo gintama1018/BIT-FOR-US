@@ -24,6 +24,8 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import com.meshwhisper.core.crypto.PureCryptoEngine
+import com.meshwhisper.core.identity.VerificationCandidate
 
 class MeshViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -32,6 +34,7 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
     private val cryptoEngine = app.cryptoEngine
     private val bleEngine = app.bleEngine
     private val router = app.router
+    val identityRepository: com.meshwhisper.app.identity.IdentityRepository get() = router.identityRepository
 
     val identityVersion: StateFlow<Long> = cryptoEngine.identityVersion
 
@@ -286,11 +289,36 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         return cryptoEngine.generateChannelQr(cryptoEngine.activeChannelName, cryptoEngine.activeChannelPassphrase ?: "")
     }
 
+    fun getNodeQrContent(alias: String): String {
+        return cryptoEngine.generateNodeQr(alias)
+    }
+
     suspend fun handleScannedQrContent(
         content: String,
         targetPeerNodeId: Long? = null
     ): QrScanResult {
         val trimmed = content.trim()
+
+        // Handle vNext QR URI format: meshwhisper://node/v2?...
+        if (trimmed.startsWith("meshwhisper://node/v2")) {
+            val candidateResult = prepareCameraQrVerification(trimmed, targetPeerNodeId ?: 0L)
+            return if (candidateResult.isSuccess) {
+                QrScanResult.VerificationReady(candidateResult.getOrThrow())
+            } else {
+                val err = candidateResult.exceptionOrNull()?.message ?: "Invalid QR verification candidate"
+                if (err.contains("claimed") || err.contains("expected") || err.contains("mismatch")) {
+                    val qrData = com.meshwhisper.core.identity.NodeQrCodec.decode(trimmed)
+                    QrScanResult.KeyMismatch(
+                        claimedNodeId = qrData?.nodeId64 ?: 0L,
+                        expectedNodeId = targetPeerNodeId ?: 0L,
+                        alias = qrData?.alias ?: "Peer"
+                    )
+                } else {
+                    QrScanResult.Invalid(err)
+                }
+            }
+        }
+
         val uri = try { android.net.Uri.parse(trimmed) } catch (_: Exception) { null }
             ?: return QrScanResult.Invalid("Unparseable QR code format")
 
@@ -300,18 +328,7 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
 
         return when (uri.host) {
             "node" -> {
-                val idHex = uri.getQueryParameter("id")
-                val alias = uri.getQueryParameter("alias") ?: "Verified Peer"
-                val pubHex = uri.getQueryParameter("pub")
-                if (!idHex.isNullOrBlank() && !pubHex.isNullOrBlank()) {
-                    // Frozen Protocol §2.1-§2.3, Phase P2:
-                    // Legacy QR carries raw encryption key (EK).
-                    // Cannot establish canonical vNext identity (vNext §2.1, C-02).
-                    // Fail closed to prevent establishing trust from raw EK bytes.
-                    QrScanResult.Invalid("Security Warning: Legacy QR carries raw encryption key. Cannot establish canonical vNext identity (vNext §2.1).")
-                } else {
-                    QrScanResult.Invalid("Incomplete peer identity parameters in QR")
-                }
+                QrScanResult.Invalid("Security Warning: Legacy QR carries raw encryption key. Cannot establish canonical vNext identity (vNext §2.1).")
             }
             "channel" -> {
                 val channelName = uri.getQueryParameter("name") ?: "Team Channel"
@@ -328,18 +345,64 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun togglePeerVerification(peerNodeId: Long, isVerified: Boolean) {
+    suspend fun getSafetyNumberForPeer(peerNodeId: Long): String? {
+        val peer = database.peerDao().getPeerById(peerNodeId) ?: return null
+        val hashHex = peer.identityHashHex ?: return null
+        return try {
+            val peerHash = PureCryptoEngine.hexToBytes(hashHex)
+            PureCryptoEngine.computeSafetyNumber(cryptoEngine.identityHash, peerHash)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun getMyFingerprintHex(): String = PureCryptoEngine.bytesToHex(cryptoEngine.ikPublicKeyBytes)
+
+    suspend fun getPeerFingerprintHex(peerNodeId: Long): String? {
+        val peer = database.peerDao().getPeerById(peerNodeId) ?: return null
+        val idEntity = peer.identityHashHex?.let { database.identityDao().getByIdentityHash(it) }
+        return if (idEntity != null) {
+            idEntity.ikPubHex
+        } else {
+            peer.fingerprint
+        }
+    }
+
+    fun prepareCameraQrVerification(
+        scannedContent: String,
+        targetPeerNodeId: Long = 0L
+    ): Result<VerificationCandidate> {
+        return identityRepository.prepareCameraQrVerification(scannedContent, targetPeerNodeId)
+    }
+
+    suspend fun confirmSafetyNumber(candidate: VerificationCandidate): Result<Unit> {
+        return identityRepository.confirmSafetyNumber(candidate)
+    }
+
+    suspend fun importPeerUri(uriString: String): Result<com.meshwhisper.app.data.model.IdentityEntity> {
+        return identityRepository.importPeerUri(uriString)
+    }
+
+    fun blockPeer(identityHashHex: String) {
         viewModelScope.launch {
-            database.peerDao().setPeerVerified(peerNodeId, isVerified)
+            identityRepository.blockPeer(identityHashHex)
+        }
+    }
+
+    fun unblockPeer(identityHashHex: String) {
+        viewModelScope.launch {
+            identityRepository.unblockPeer(identityHashHex)
         }
     }
 
     fun acknowledgeKeyChange(nodeId: Long) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val peer = database.peerDao().getPeerById(nodeId) ?: return@launch
-            val updated = peer.copy(hasKeyChanged = false)
-            database.peerDao().insertOrUpdate(updated)
+        viewModelScope.launch {
+            identityRepository.acknowledgeKeyChange(nodeId)
         }
+    }
+
+    fun isNodeConflicted(nodeId: Long): Boolean {
+        return identityRepository.isNodeConflicted(nodeId)
     }
 
     private val secPrefs = application.getSharedPreferences("meshwhisper_security_settings", android.content.Context.MODE_PRIVATE)
@@ -726,11 +789,8 @@ data class SosAlertEvent(
 }
 
 sealed class QrScanResult {
-    data class PeerVerified(
-        val nodeId: Long,
-        val alias: String,
-        val publicKeyHex: String,
-        val fingerprint: String
+    data class VerificationReady(
+        val candidate: VerificationCandidate
     ) : QrScanResult()
 
     data class ChannelConfigured(

@@ -377,6 +377,18 @@ class CryptoEngine private constructor(private val context: Context) : SecureKey
         return "meshwhisper://channel?name=${android.net.Uri.encode(channelName)}&pass=${android.net.Uri.encode(passphrase)}"
     }
 
+    fun generateNodeQr(alias: String): String {
+        val data = com.meshwhisper.core.identity.NodeQrData(
+            ikPub = ikPublicKeyBytes,
+            ekPub = ekPublicKeyBytes,
+            keyVersion = keyVersion,
+            notBefore = 0L,
+            ibcSignature = ibcSignature,
+            alias = alias
+        )
+        return com.meshwhisper.core.identity.NodeQrCodec.encode(data)
+    }
+
     private fun saveEncryptedChannelPassphrase(passphrase: String?) {
         if (passphrase == null) {
             prefs.edit()

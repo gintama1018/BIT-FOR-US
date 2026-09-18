@@ -43,6 +43,8 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.QrCode
 import androidx.compose.material.icons.filled.QrCodeScanner
 import com.meshwhisper.app.ui.components.CameraQrScannerDialog
+import com.meshwhisper.app.ui.components.SafetyNumberConfirmationDialog
+import com.meshwhisper.core.identity.VerificationCandidate
 import com.meshwhisper.app.ui.util.QrCodeGenerator
 import com.meshwhisper.app.ui.viewmodel.QrScanResult
 import androidx.core.content.ContextCompat
@@ -68,6 +70,7 @@ fun PublicMeshScreen(
     var showChannelConfigDialog by remember { mutableStateOf(false) }
     var showChannelQrShareDialog by remember { mutableStateOf(false) }
     var showCameraScanner by remember { mutableStateOf(false) }
+    var verificationCandidate by remember { mutableStateOf<VerificationCandidate?>(null) }
     var channelNameInput by remember(activeChannelName) { mutableStateOf(activeChannelName) }
     var channelPassphraseInput by remember { mutableStateOf("") }
     var sosCustomText by remember { mutableStateOf("") }
@@ -640,12 +643,8 @@ fun PublicMeshScreen(
                                 android.widget.Toast.LENGTH_LONG
                             ).show()
                         }
-                        is QrScanResult.PeerVerified -> {
-                            android.widget.Toast.makeText(
-                                context,
-                                "✓ Authenticated Peer: ${res.alias} (Safety Number Verified)",
-                                android.widget.Toast.LENGTH_LONG
-                            ).show()
+                        is QrScanResult.VerificationReady -> {
+                            verificationCandidate = res.candidate
                         }
                         is QrScanResult.KeyMismatch -> {
                             android.widget.Toast.makeText(
@@ -662,6 +661,33 @@ fun PublicMeshScreen(
             },
             title = "Scan Channel or Peer QR",
             subtitle = "Point camera at channel QR code or peer screen"
+        )
+    }
+
+    // Staged Two-Step Verification Confirmation Modal
+    verificationCandidate?.let { candidate ->
+        SafetyNumberConfirmationDialog(
+            candidate = candidate,
+            onConfirm = {
+                coroutineScope.launch {
+                    val res = viewModel.confirmSafetyNumber(candidate)
+                    if (res.isSuccess) {
+                        android.widget.Toast.makeText(
+                            context,
+                            "✓ Identity Verified! End-to-end cryptographic link authenticated with ${candidate.alias}.",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                    } else {
+                        android.widget.Toast.makeText(
+                            context,
+                            "Verification failed: ${res.exceptionOrNull()?.message}",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                    }
+                    verificationCandidate = null
+                }
+            },
+            onDismiss = { verificationCandidate = null }
         )
     }
 }

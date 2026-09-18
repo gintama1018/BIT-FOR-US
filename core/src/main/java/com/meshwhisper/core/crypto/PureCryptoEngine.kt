@@ -390,6 +390,69 @@ object PureCryptoEngine {
     }
 
     /**
+     * Formats canonical identityHash as truncated visual hex: XXXX:XXXX:XXXX:XXXX (16 hex characters).
+     */
+    fun generateCanonicalFingerprint(identityHash: ByteArray): String {
+        require(identityHash.size == 32) { "identityHash must be 32 bytes" }
+        val hex = bytesToHex(identityHash).take(16).uppercase()
+        return hex.chunked(4).joinToString(":")
+    }
+
+    /**
+     * Formats full 32-byte identityHash as visual hex: XXXX:XXXX:XXXX:XXXX:XXXX:XXXX:XXXX:XXXX (32 hex characters / 8 groups).
+     */
+    fun formatFullFingerprint(identityHash: ByteArray): String {
+        require(identityHash.size == 32) { "identityHash must be 32 bytes" }
+        val hex = bytesToHex(identityHash).take(32).uppercase()
+        return hex.chunked(4).joinToString(":")
+    }
+
+    /**
+     * Computes deterministic 60-digit safety number between two identities (vNext §5.2 / §2.2).
+     * Output is formatted as 12 groups of 5 decimal digits: "XXXXX XXXXX XXXXX XXXXX XXXXX XXXXX XXXXX XXXXX XXXXX XXXXX XXXXX XXXXX".
+     * Sorted canonically so both peers compute the identical 60-digit number.
+     */
+    fun computeSafetyNumber(identityHash1: ByteArray, identityHash2: ByteArray): String {
+        require(identityHash1.size == 32) { "identityHash1 must be 32 bytes" }
+        require(identityHash2.size == 32) { "identityHash2 must be 32 bytes" }
+
+        var cmp = 0
+        for (i in 0 until 32) {
+            val b1 = identityHash1[i].toInt() and 0xFF
+            val b2 = identityHash2[i].toInt() and 0xFF
+            if (b1 != b2) {
+                cmp = b1.compareTo(b2)
+                break
+            }
+        }
+
+        val (first, second) = if (cmp <= 0) {
+            Pair(identityHash1, identityHash2)
+        } else {
+            Pair(identityHash2, identityHash1)
+        }
+
+        val md = MessageDigest.getInstance("SHA-512")
+        md.update("MW/SAFETY/v2".toByteArray(Charsets.UTF_8))
+        md.update(first)
+        md.update(second)
+        val digest = md.digest()
+
+        val groups = ArrayList<String>(12)
+        for (i in 0 until 12) {
+            val offset = i * 4
+            val b0 = (digest[offset].toLong() and 0xFFL) shl 24
+            val b1 = (digest[offset + 1].toLong() and 0xFFL) shl 16
+            val b2 = (digest[offset + 2].toLong() and 0xFFL) shl 8
+            val b3 = digest[offset + 3].toLong() and 0xFFL
+            val u32 = b0 or b1 or b2 or b3
+            val groupNum = (u32 and 0xFFFFFFFFL) % 100000L
+            groups.add(String.format("%05d", groupNum))
+        }
+        return groups.joinToString(" ")
+    }
+
+    /**
      * Calculates time epoch (1 hour window) for session key rotation.
      */
     fun getEpochForTimestamp(timestampSec: Long): Long = timestampSec / 3600L

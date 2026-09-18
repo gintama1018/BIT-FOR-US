@@ -47,8 +47,33 @@ interface PeerDao {
     @Query("UPDATE peers SET isMuted = :isMuted WHERE nodeId = :nodeId")
     suspend fun setPeerMuted(nodeId: Long, isMuted: Boolean)
 
-    @Query("UPDATE peers SET isVerified = :isVerified WHERE nodeId = :nodeId")
-    suspend fun setPeerVerified(nodeId: Long, isVerified: Boolean)
+    @Query("SELECT * FROM peers WHERE identityHashHex = :identityHashHex LIMIT 1")
+    suspend fun getPeerByIdentityHash(identityHashHex: String): PeerEntity?
+
+    @Query("SELECT * FROM peers WHERE nodeId = :nodeId")
+    suspend fun getPeersByNodeId(nodeId: Long): List<PeerEntity>
+
+    @Query("""
+        UPDATE peers 
+        SET trustState = :trustState, 
+            isVerified = CASE WHEN :trustState = 'VERIFIED' THEN 1 ELSE 0 END 
+        WHERE identityHashHex = :identityHashHex
+    """)
+    suspend fun updateTrustStateByIdentityHash(identityHashHex: String, trustState: String)
+
+    @Query("""
+        UPDATE peers 
+        SET trustState = :trustState, 
+            isVerified = CASE WHEN :trustState = 'VERIFIED' THEN 1 ELSE 0 END 
+        WHERE nodeId = :nodeId
+    """)
+    suspend fun updateTrustStateByNodeId(nodeId: Long, trustState: String)
+
+    @Query("UPDATE peers SET hasKeyChanged = :hasChanged WHERE identityHashHex = :identityHashHex")
+    suspend fun updateHasKeyChangedByIdentityHash(identityHashHex: String, hasChanged: Boolean)
+
+    @Query("UPDATE peers SET hasKeyChanged = :hasChanged WHERE nodeId = :nodeId")
+    suspend fun updateHasKeyChangedByNodeId(nodeId: Long, hasChanged: Boolean)
 
     @Query("DELETE FROM peers WHERE nodeId = :nodeId")
     suspend fun deletePeer(nodeId: Long)

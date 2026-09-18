@@ -43,6 +43,25 @@ fun PacketInspectorScreen(
     viewModel: MeshViewModel,
     modifier: Modifier = Modifier
 ) {
+    if (!com.meshwhisper.app.BuildConfig.DEBUG) {
+        Box(
+            modifier = modifier
+                .fillMaxSize()
+                .background(SaharaBackground)
+                .padding(32.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "Packet Inspector is restricted to debug builds.",
+                color = SaharaOnSurfaceVariant,
+                fontSize = 14.sp,
+                fontFamily = ManropeFamily,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+            )
+        }
+        return
+    }
+
     val context = LocalContext.current
     val logs by viewModel.packetLogs.collectAsState()
     val relayedCount by viewModel.relayedPacketsCount.collectAsState()

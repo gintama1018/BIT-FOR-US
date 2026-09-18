@@ -151,10 +151,268 @@ object IdentityManager {
                 IdentityProcessResult.Accepted(updated, isNew = false, isRotation = true)
             }
 
+            // T11: LEGACY_UNVERIFIED transitions to SEEN when a valid vNext announce arrives
+            existing.trustState == TrustState.LEGACY_UNVERIFIED -> {
+                val updated = existing.copy(trustState = TrustState.SEEN)
+                identityStore.upsert(updated)
+                IdentityProcessResult.Accepted(updated, isNew = false, isRotation = false)
+            }
+
             // Same keyVersion, same ekPub -> Unchanged active identity
             else -> {
                 IdentityProcessResult.Accepted(existing, isNew = false, isRotation = false)
             }
+        }
+    }
+
+    /**
+     * T2: Deep link / NFC import.
+     * Transitions (none) -> IMPORTED, or updates SEEN -> IMPORTED.
+     * ABSOLUTE PROTOCOL INVARIANT (S-17): A deep link / import MUST NEVER produce VERIFIED.
+     */
+    fun importIdentity(
+        identityStore: IdentityStore,
+        ikPub: ByteArray,
+        ekPub: ByteArray,
+        keyVersion: Long,
+        notBefore: Long,
+        ibcSignature: ByteArray,
+        packetTimestamp: Long = System.currentTimeMillis() / 1000L
+    ): IdentityProcessResult {
+        if (!PureCryptoEngine.validateIbc(ikPub, ekPub, keyVersion, notBefore, ibcSignature, packetTimestamp)) {
+            return IdentityProcessResult.RejectedInvalidIbc("IBC signature invalid or timestamp constraint violated")
+        }
+
+        val identityHash = PureCryptoEngine.deriveIdentityHash(ikPub)
+        val nodeId64 = PureCryptoEngine.deriveNodeId64(identityHash)
+        val existing = identityStore.get(identityHash)
+
+        if (existing == null) {
+            val colliding = identityStore.getAllByNodeId64(nodeId64)
+            if (colliding.isNotEmpty()) {
+                val updatedColliding = colliding.map { peer ->
+                    val conflicted = peer.copy(trustState = TrustState.CONFLICTED)
+                    identityStore.upsert(conflicted)
+                    conflicted
+                }
+                val newIdentity = PeerIdentity(
+                    identityHash = identityHash,
+                    ikPub = ikPub,
+                    ekPub = ekPub,
+                    keyVersion = keyVersion,
+                    lastAnnounceCounter = 0L,
+                    trustState = TrustState.CONFLICTED,
+                    nodeId64 = nodeId64
+                )
+                identityStore.upsert(newIdentity)
+                return IdentityProcessResult.CollisionDetected(updatedColliding + newIdentity)
+            }
+
+            val newIdentity = PeerIdentity(
+                identityHash = identityHash,
+                ikPub = ikPub,
+                ekPub = ekPub,
+                keyVersion = keyVersion,
+                lastAnnounceCounter = 0L,
+                trustState = TrustState.IMPORTED,
+                nodeId64 = nodeId64
+            )
+            identityStore.upsert(newIdentity)
+            return IdentityProcessResult.Accepted(newIdentity, isNew = true, isRotation = false)
+        }
+
+        // Frozen §5.2 T2: strictly (none) -> IMPORTED.
+        // If identity is already stored, import does not mutate its trust state.
+        val targetTrust = existing.trustState
+
+        val updated = existing.copy(
+            ekPub = ekPub,
+            keyVersion = keyVersion,
+            trustState = targetTrust
+        )
+        identityStore.upsert(updated)
+        return IdentityProcessResult.Accepted(updated, isNew = false, isRotation = false)
+    }
+
+    /**
+     * Staged Camera QR verification API (Step 1):
+     * Decodes and validates the QR identity cryptographically, reproducing nodeId64 and computing
+     * the 60-digit safety number. Does NOT mutate trust state to VERIFIED until explicitly confirmed.
+     */
+    fun prepareCameraQrCandidate(
+        identityStore: IdentityStore,
+        ourIdentityHash: ByteArray,
+        qrData: NodeQrData,
+        packetTimestamp: Long = System.currentTimeMillis() / 1000L,
+        expectedNodeId64: Long? = null
+    ): Result<VerificationCandidate> {
+        if (!PureCryptoEngine.validateIbc(
+                qrData.ikPub,
+                qrData.ekPub,
+                qrData.keyVersion,
+                qrData.notBefore,
+                qrData.ibcSignature,
+                packetTimestamp
+            )
+        ) {
+            return Result.failure(IllegalArgumentException("IBC signature invalid or timestamp constraint violated"))
+        }
+
+        val identityHash = PureCryptoEngine.deriveIdentityHash(qrData.ikPub)
+        val nodeId64 = PureCryptoEngine.deriveNodeId64(identityHash)
+
+        if (expectedNodeId64 != null && expectedNodeId64 != nodeId64) {
+            return Result.failure(IllegalArgumentException("NodeId mismatch: expected $expectedNodeId64 != derived $nodeId64"))
+        }
+
+        val safetyNumber = PureCryptoEngine.computeSafetyNumber(ourIdentityHash, identityHash)
+        val peerFingerprint = PureCryptoEngine.formatFullFingerprint(identityHash)
+        val ourFingerprint = PureCryptoEngine.formatFullFingerprint(ourIdentityHash)
+
+        val colliding = identityStore.getAllByNodeId64(nodeId64).filter { !it.identityHash.contentEquals(identityHash) }
+        val isCollisionResolution = colliding.isNotEmpty()
+
+        return Result.success(
+            VerificationCandidate(
+                identityHash = identityHash,
+                ikPub = qrData.ikPub,
+                ekPub = qrData.ekPub,
+                keyVersion = qrData.keyVersion,
+                notBefore = qrData.notBefore,
+                ibcSignature = qrData.ibcSignature,
+                nodeId64 = nodeId64,
+                alias = qrData.alias,
+                safetyNumber = safetyNumber,
+                peerFingerprint = peerFingerprint,
+                ourFingerprint = ourFingerprint,
+                isCollisionResolution = isCollisionResolution
+            )
+        )
+    }
+
+    /**
+     * Staged Camera QR verification API (Step 2):
+     * Executes T3 / T8 ONLY after explicit user confirmation of the 60-digit safety number.
+     * Transitions (none), SEEN, LINKED, IMPORTED, CONFLICTED -> VERIFIED.
+     * If resolving a collision (T8): candidate -> VERIFIED, colliding peers -> BLOCKED.
+     */
+    fun applyConfirmedVerification(
+        identityStore: IdentityStore,
+        candidate: VerificationCandidate
+    ): PeerIdentity {
+        val existing = identityStore.get(candidate.identityHash)
+        val colliding = identityStore.getAllByNodeId64(candidate.nodeId64).filter { !it.identityHash.contentEquals(candidate.identityHash) }
+
+        if (colliding.isNotEmpty()) {
+            for (peer in colliding) {
+                identityStore.upsert(peer.copy(trustState = TrustState.BLOCKED))
+            }
+        }
+
+        val verified = (existing ?: PeerIdentity(
+            identityHash = candidate.identityHash,
+            ikPub = candidate.ikPub,
+            ekPub = candidate.ekPub,
+            keyVersion = candidate.keyVersion,
+            lastAnnounceCounter = 0L,
+            trustState = TrustState.VERIFIED,
+            nodeId64 = candidate.nodeId64
+        )).copy(
+            ekPub = candidate.ekPub,
+            keyVersion = candidate.keyVersion,
+            trustState = TrustState.VERIFIED,
+            hasKeyChanged = false
+        )
+
+        identityStore.upsert(verified)
+        return verified
+    }
+
+    /**
+     * T3 / T8: In-app camera QR scan verification convenience method for programmatic / test use.
+     * Transitions (none), SEEN, LINKED, IMPORTED, CONFLICTED -> VERIFIED.
+     * If resolving a collision (T8): resolves collision, promoting this identity to VERIFIED and other colliding identities to BLOCKED.
+     */
+    fun verifyViaCameraQr(
+        identityStore: IdentityStore,
+        ikPub: ByteArray,
+        ekPub: ByteArray,
+        keyVersion: Long,
+        notBefore: Long,
+        ibcSignature: ByteArray,
+        packetTimestamp: Long = System.currentTimeMillis() / 1000L,
+        expectedNodeId64: Long? = null
+    ): IdentityProcessResult {
+        if (!PureCryptoEngine.validateIbc(ikPub, ekPub, keyVersion, notBefore, ibcSignature, packetTimestamp)) {
+            return IdentityProcessResult.RejectedInvalidIbc("IBC signature invalid or timestamp constraint violated")
+        }
+
+        val identityHash = PureCryptoEngine.deriveIdentityHash(ikPub)
+        val nodeId64 = PureCryptoEngine.deriveNodeId64(identityHash)
+
+        if (expectedNodeId64 != null && expectedNodeId64 != nodeId64) {
+            return IdentityProcessResult.RejectedInvalidIbc("NodeId mismatch: expected $expectedNodeId64 != derived $nodeId64")
+        }
+
+        val candidate = VerificationCandidate(
+            identityHash = identityHash,
+            ikPub = ikPub,
+            ekPub = ekPub,
+            keyVersion = keyVersion,
+            notBefore = notBefore,
+            ibcSignature = ibcSignature,
+            nodeId64 = nodeId64,
+            alias = "",
+            safetyNumber = "",
+            peerFingerprint = "",
+            ourFingerprint = ""
+        )
+
+        val verifiedIdentity = applyConfirmedVerification(identityStore, candidate)
+        val existing = identityStore.get(identityHash)
+        return IdentityProcessResult.Accepted(verifiedIdentity, isNew = existing == null, isRotation = false)
+    }
+
+    /**
+     * T4: LINK_AUTH CONFIRM verified on a live link (§3.4).
+     * Transitions SEEN, IMPORTED -> LINKED.
+     */
+    fun onLinkEstablished(identityStore: IdentityStore, identityHash: ByteArray) {
+        val existing = identityStore.get(identityHash) ?: return
+        if (existing.trustState == TrustState.SEEN || existing.trustState == TrustState.IMPORTED) {
+            identityStore.upsert(existing.copy(trustState = TrustState.LINKED))
+        }
+    }
+
+    /**
+     * T5: Link closed.
+     * Transitions LINKED -> SEEN.
+     */
+    fun onLinkClosed(identityStore: IdentityStore, identityHash: ByteArray) {
+        val existing = identityStore.get(identityHash) ?: return
+        if (existing.trustState == TrustState.LINKED) {
+            identityStore.upsert(existing.copy(trustState = TrustState.SEEN))
+        }
+    }
+
+    /**
+     * T9: Explicit user block.
+     * Transitions any -> BLOCKED.
+     */
+    fun blockIdentity(identityStore: IdentityStore, identityHash: ByteArray) {
+        val existing = identityStore.get(identityHash) ?: return
+        PureCryptoEngine.invalidateSessionKey(existing.nodeId64)
+        identityStore.upsert(existing.copy(trustState = TrustState.BLOCKED))
+    }
+
+    /**
+     * T10: Explicit user unblock.
+     * Transitions BLOCKED -> SEEN.
+     */
+    fun unblockIdentity(identityStore: IdentityStore, identityHash: ByteArray) {
+        val existing = identityStore.get(identityHash) ?: return
+        if (existing.trustState == TrustState.BLOCKED) {
+            identityStore.upsert(existing.copy(trustState = TrustState.SEEN))
         }
     }
 

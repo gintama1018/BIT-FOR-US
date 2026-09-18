@@ -22,7 +22,9 @@ import androidx.compose.material.icons.filled.Security
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import com.meshwhisper.app.ui.components.CameraQrScannerDialog
+import com.meshwhisper.app.ui.components.SafetyNumberConfirmationDialog
 import com.meshwhisper.app.ui.viewmodel.QrScanResult
+import com.meshwhisper.core.identity.VerificationCandidate
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -66,6 +68,7 @@ fun IdentitySettingsScreen(
     var showQrDialog by remember { mutableStateOf(false) }
     var showImportContactDialog by remember { mutableStateOf(false) }
     var showCameraScanner by remember { mutableStateOf(false) }
+    var verificationCandidate by remember { mutableStateOf<VerificationCandidate?>(null) }
     var importContactInput by remember { mutableStateOf("") }
     var showPanicDialog by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
@@ -89,7 +92,7 @@ fun IdentitySettingsScreen(
     }
 
     val qrContent = remember(myAlias, viewModel.myNodeIdHex, viewModel.myPublicKeyHex, identityVersion) {
-        "meshwhisper://node?id=${viewModel.myNodeIdHex}&alias=$myAlias&pub=${viewModel.myPublicKeyHex}"
+        viewModel.getNodeQrContent(myAlias)
     }
     val qrBitmap = remember(qrContent) { QrCodeGenerator.generateQrBitmap(qrContent, 400) }
     val isAppLockEnabled by viewModel.isAppLockEnabled.collectAsState()
@@ -365,7 +368,8 @@ fun IdentitySettingsScreen(
                         Spacer(modifier = Modifier.height(12.dp))
 
                         // 64-bit Hex Node ID
-                        Text(text = "NODE ID (64-BIT HEX)", color = SaharaOnSurfaceVariant, fontSize = 10.sp, fontFamily = ManropeFamily, fontWeight = FontWeight.Bold, letterSpacing = 0.5.sp)
+                        Text(text = "ROUTING NODE ID (64-BIT HEX • ROUTING LABEL)", color = SaharaOnSurfaceVariant, fontSize = 10.sp, fontFamily = ManropeFamily, fontWeight = FontWeight.Bold, letterSpacing = 0.5.sp)
+                        Text(text = "Routing identifier. The authoritative cryptographic anchor is the fingerprint below.", color = SaharaOutlineVariant, fontSize = 10.sp, fontFamily = ManropeFamily)
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
@@ -395,13 +399,14 @@ fun IdentitySettingsScreen(
                         Spacer(modifier = Modifier.height(8.dp))
 
                         // Public Key Fingerprint
-                        Text(text = "X25519 FINGERPRINT", color = SaharaOnSurfaceVariant, fontSize = 10.sp, fontFamily = ManropeFamily, fontWeight = FontWeight.Bold, letterSpacing = 0.5.sp)
+                        val canonicalFingerprint = remember { viewModel.getMyFingerprintHex() }
+                        Text(text = "CANONICAL IDENTITY FINGERPRINT (SHA-256)", color = SaharaOnSurfaceVariant, fontSize = 10.sp, fontFamily = ManropeFamily, fontWeight = FontWeight.Bold, letterSpacing = 0.5.sp)
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable {
-                                    clipboardManager.setText(AnnotatedString(viewModel.myFingerprint))
+                                    clipboardManager.setText(AnnotatedString(canonicalFingerprint))
                                     Toast.makeText(context, "Fingerprint copied", Toast.LENGTH_SHORT).show()
                                 }
                                 .padding(vertical = 4.dp)
@@ -409,9 +414,9 @@ fun IdentitySettingsScreen(
                             Icon(imageVector = Icons.Default.Fingerprint, contentDescription = null, tint = SaharaPrimary, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = viewModel.myFingerprint,
+                                text = canonicalFingerprint,
                                 color = SaharaPrimary,
-                                fontSize = 13.sp,
+                                fontSize = 12.sp,
                                 fontFamily = FontFamily.Monospace,
                                 fontWeight = FontWeight.Bold,
                                 modifier = Modifier.weight(1f)
@@ -660,13 +665,13 @@ fun IdentitySettingsScreen(
         )
     }
 
-    // Import / Verify Contact Code Dialog (Closes the Trust Loop)
+    // Import Contact Code Dialog (Enforces Invariant I-8: IMPORTED only, never VERIFIED)
     if (showImportContactDialog) {
         AlertDialog(
             onDismissRequest = { showImportContactDialog = false },
             title = {
                 Text(
-                    text = "Verify Peer Contact Link",
+                    text = "Import Peer Contact Link",
                     color = SaharaPrimary,
                     fontFamily = EBGaramondFamily,
                     fontSize = 20.sp,
@@ -688,7 +693,7 @@ fun IdentitySettingsScreen(
                         Text("Scan Screen with Camera")
                     }
                     Text(
-                        text = "Or paste a contact URI (meshwhisper://node?id=...&alias=...&pub=...) shared from another device:",
+                        text = "Or paste a contact URI (meshwhisper://node/v2?...) shared from another device (imported contacts remain unverified until verified in person):",
                         color = SaharaOnSurfaceVariant,
                         fontSize = 12.sp,
                         fontFamily = ManropeFamily
@@ -696,7 +701,7 @@ fun IdentitySettingsScreen(
                     OutlinedTextField(
                         value = importContactInput,
                         onValueChange = { importContactInput = it },
-                        placeholder = { Text("meshwhisper://node?id=...", color = SaharaOutline) },
+                        placeholder = { Text("meshwhisper://node/v2?ik=...", color = SaharaOutline) },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = false,
                         maxLines = 3,
@@ -711,30 +716,33 @@ fun IdentitySettingsScreen(
                 Button(
                     onClick = {
                         val uriString = importContactInput.trim()
-                        val uri = try { android.net.Uri.parse(uriString) } catch (_: Exception) { null }
-                        if (uri != null && uri.scheme == "meshwhisper" && uri.host == "node") {
-                            val idHex = uri.getQueryParameter("id")
-                            val alias = uri.getQueryParameter("alias") ?: "Verified Peer"
-                            val pubHex = uri.getQueryParameter("pub")
-                            if (!idHex.isNullOrBlank() && !pubHex.isNullOrBlank()) {
-                                try {
-                                    val nodeId = java.lang.Long.parseUnsignedLong(idHex, 16)
-                                    viewModel.registerScannedPeer(nodeId, alias, pubHex)
-                                    Toast.makeText(context, "Verified Contact Added: $alias", Toast.LENGTH_SHORT).show()
+                        if (uriString.startsWith("meshwhisper://node/v2")) {
+                            coroutineScope.launch {
+                                val res = viewModel.importPeerUri(uriString)
+                                if (res.isSuccess) {
+                                    val entity = res.getOrThrow()
+                                    Toast.makeText(
+                                        context,
+                                        "Contact imported: ${entity.alias} (Unverified - trust state IMPORTED)",
+                                        Toast.LENGTH_LONG
+                                    ).show()
                                     showImportContactDialog = false
-                                } catch (_: Exception) {
-                                    Toast.makeText(context, "Invalid node ID format", Toast.LENGTH_SHORT).show()
+                                    importContactInput = ""
+                                } else {
+                                    Toast.makeText(
+                                        context,
+                                        "Import failed: ${res.exceptionOrNull()?.message}",
+                                        Toast.LENGTH_LONG
+                                    ).show()
                                 }
-                            } else {
-                                Toast.makeText(context, "Incomplete contact link parameters", Toast.LENGTH_SHORT).show()
                             }
                         } else {
-                            Toast.makeText(context, "Invalid MeshWhisper URI", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "Invalid v2 URI format. Must start with meshwhisper://node/v2?", Toast.LENGTH_SHORT).show()
                         }
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = SaharaPrimary)
                 ) {
-                    Text("Verify & Save")
+                    Text("Import (Unverified)")
                 }
             },
             dismissButton = {
@@ -755,12 +763,8 @@ fun IdentitySettingsScreen(
                 showCameraScanner = false
                 coroutineScope.launch {
                     when (val res = viewModel.handleScannedQrContent(scannedContent)) {
-                        is QrScanResult.PeerVerified -> {
-                            Toast.makeText(
-                                context,
-                                "✓ Authenticated Peer: ${res.alias} (Safety Number Verified)",
-                                Toast.LENGTH_LONG
-                            ).show()
+                        is QrScanResult.VerificationReady -> {
+                            verificationCandidate = res.candidate
                         }
                         is QrScanResult.ChannelConfigured -> {
                             Toast.makeText(
@@ -784,6 +788,33 @@ fun IdentitySettingsScreen(
             },
             title = "Scan Peer Identity QR",
             subtitle = "Point camera at peer screen to verify out-of-band safety numbers"
+        )
+    }
+
+    // Staged Two-Step Verification Confirmation Modal
+    verificationCandidate?.let { candidate ->
+        SafetyNumberConfirmationDialog(
+            candidate = candidate,
+            onConfirm = {
+                coroutineScope.launch {
+                    val res = viewModel.confirmSafetyNumber(candidate)
+                    if (res.isSuccess) {
+                        Toast.makeText(
+                            context,
+                            "✓ Identity Verified! End-to-end cryptographic link authenticated with ${candidate.alias}.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    } else {
+                        Toast.makeText(
+                            context,
+                            "Verification failed: ${res.exceptionOrNull()?.message}",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                    verificationCandidate = null
+                }
+            },
+            onDismiss = { verificationCandidate = null }
         )
     }
 

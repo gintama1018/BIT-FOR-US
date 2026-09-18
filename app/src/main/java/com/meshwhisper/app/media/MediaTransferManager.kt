@@ -6,6 +6,7 @@ import android.util.Log
 import com.meshwhisper.app.crypto.CryptoEngine
 import com.meshwhisper.app.data.MeshDatabase
 import com.meshwhisper.app.data.model.MediaType
+import com.meshwhisper.app.storage.MediaAtRestManager
 import com.meshwhisper.app.data.model.MessageEntity
 import com.meshwhisper.app.data.model.MessageStatus
 import com.meshwhisper.app.protocol.MeshPacket
@@ -84,11 +85,20 @@ class MediaTransferManager(
     private val isWifiPeer: (nodeId: Long) -> Boolean = { false }
 ) {
     private val tag = "MediaTransferManager"
+    val mediaAtRestManager = MediaAtRestManager(context)
     private val exceptionHandler = kotlinx.coroutines.CoroutineExceptionHandler { _, throwable ->
         Log.e(tag, "Uncaught exception in MediaTransferManager: ${throwable.message}", throwable)
     }
     private val scope = CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO + exceptionHandler)
     private val outboundMutex = Mutex() // Global single outbound transfer cap
+
+    fun readFileBytes(file: File): ByteArray {
+        return if (mediaAtRestManager.isMediaFileEncrypted(file)) {
+            mediaAtRestManager.readAndDecryptMediaFile(file.name, file)
+        } else {
+            file.readBytes()
+        }
+    }
 
     private val _transferProgress = MutableSharedFlow<MediaTransferProgress>(extraBufferCapacity = 64)
     val transferProgress: SharedFlow<MediaTransferProgress> = _transferProgress.asSharedFlow()
@@ -389,7 +399,7 @@ class MediaTransferManager(
         } else {
             mediaBytes
         }
-        localFile.writeBytes(localFileBytes)
+        mediaAtRestManager.encryptAndWriteMediaFile(localFile.name, localFileBytes, localFile)
 
         val totalChunks = ceil(mediaBytes.size.toDouble() / MeshPacket.CHUNK_PAYLOAD_SIZE).toInt()
         val captionBytes = caption.toByteArray(Charsets.UTF_8).take(255).toByteArray()
@@ -766,7 +776,7 @@ class MediaTransferManager(
         if (mediaType == MediaType.AVATAR) {
             val existingPeer = database.peerDao().getPeerById(packet.senderId)
             if (existingPeer?.avatarUri != null && File(existingPeer.avatarUri).exists()) {
-                val currentFileBytes = File(existingPeer.avatarUri).readBytes()
+                val currentFileBytes = readFileBytes(File(existingPeer.avatarUri))
                 val currentSha = MediaCompressor.computeSha256(currentFileBytes)
                 if (Arrays.equals(currentSha, sha256)) {
                     Log.i(tag, "Avatar for peer ${packet.senderId} already has identical SHA-256; skipping transfer")
@@ -1111,7 +1121,7 @@ class MediaTransferManager(
             } else {
                 reassembledBytes
             }
-            FileOutputStream(destFile).use { it.write(finalFileBytes) }
+            mediaAtRestManager.encryptAndWriteMediaFile(destFile.name, finalFileBytes, destFile)
 
             if (isAvatar) {
                 val avatarHash = (reassembledBytes.fold(0) { acc, b -> (acc * 31 + b.toInt()) } and 0xFF).toByte()
@@ -1491,7 +1501,7 @@ class MediaTransferManager(
             }
         }
 
-        val bytes = file.readBytes()
+        val bytes = readFileBytes(file)
         sendMedia(
             recipientNodeId = message.recipientId,
             mediaType = message.mediaType,

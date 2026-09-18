@@ -529,44 +529,9 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun emergencyPanicWipe() {
-        viewModelScope.launch(Dispatchers.IO) {
-            android.util.Log.w("MeshViewModel", "EMERGENCY PANIC WIPE INITIATED — destroying all local data")
-            audioPlayer.stop()
-
-            // 1. Wipe local media and avatar directories first (no DB dependency)
-            val mediaDir = java.io.File(app.filesDir, "media")
-            mediaDir.deleteRecursively()
-            val avatarDir = java.io.File(app.filesDir, "avatars")
-            avatarDir.deleteRecursively()
-            _myAvatarUri.value = null
-
-            // 2. Wipe identity keys from SharedPreferences
-            cryptoEngine.resetIdentityKeys()
-
-            // 3. Delete identity master key from AndroidKeyStore (X25519 wrapping key)
-            try {
-                val keyStore = java.security.KeyStore.getInstance("AndroidKeyStore")
-                keyStore.load(null)
-                val identityAlias = "MeshWhisperIdentityMasterKey"
-                if (keyStore.containsAlias(identityAlias)) {
-                    keyStore.deleteEntry(identityAlias)
-                    android.util.Log.i("MeshViewModel", "Panic wipe: deleted identity Keystore key")
-                }
-            } catch (e: Exception) {
-                android.util.Log.e("MeshViewModel", "Panic wipe: failed to delete identity Keystore key", e)
-            }
-
-            // 4. Hard-wipe the SQLCipher database: close it, delete the file, destroy its Keystore key
-            com.meshwhisper.app.data.MeshDatabase.performHardWipe(app, database)
-            com.meshwhisper.app.data.MeshDatabase.resetDbSingleton()
-
-            android.util.Log.w("MeshViewModel", "Panic wipe complete — killing process for clean restart")
-
-            // 5. Kill the process. The OS will restart the foreground service cleanly,
-            //    and Room will open a brand-new DB on next launch.
-            android.os.Process.killProcess(android.os.Process.myPid())
-        }
+    fun emergencyPanicWipe(killProcess: Boolean = true): kotlinx.coroutines.Job {
+        android.util.Log.w("MeshViewModel", "EMERGENCY PANIC WIPE INITIATED — delegating to application-scoped coroutine per C-26")
+        return app.triggerPanicWipe(killProcess = killProcess)
     }
 
     fun clearAllData() {

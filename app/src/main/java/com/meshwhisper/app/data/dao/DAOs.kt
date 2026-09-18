@@ -261,4 +261,28 @@ interface ProfileDao {
     suspend fun deleteAll()
 }
 
+@Dao
+interface IdentityDao {
+    @Query("SELECT * FROM identities WHERE identityHashHex = :hashHex LIMIT 1")
+    suspend fun getByIdentityHash(hashHex: String): com.meshwhisper.app.data.model.IdentityEntity?
+
+    @Query("SELECT * FROM identities WHERE nodeId64 = :nodeId64 LIMIT 1")
+    suspend fun getByNodeId64(nodeId64: Long): com.meshwhisper.app.data.model.IdentityEntity?
+
+    @Query("SELECT * FROM identities WHERE nodeId64 = :nodeId64")
+    suspend fun getAllByNodeId64(nodeId64: Long): List<com.meshwhisper.app.data.model.IdentityEntity>
+
+    @Query("SELECT * FROM identities")
+    suspend fun getAll(): List<com.meshwhisper.app.data.model.IdentityEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertOrUpdate(identity: com.meshwhisper.app.data.model.IdentityEntity)
+
+    @Query("DELETE FROM identities WHERE identityHashHex = :hashHex")
+    suspend fun delete(hashHex: String)
+
+    @Query("DELETE FROM identities")
+    suspend fun deleteAll()
+}
+
 

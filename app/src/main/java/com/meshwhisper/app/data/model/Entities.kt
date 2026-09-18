@@ -19,7 +19,9 @@ data class PeerEntity(
     val avatarUri: String? = null,
     val avatarHash: Byte = 0,
     val isMuted: Boolean = false,
-    val isVerified: Boolean = false
+    val isVerified: Boolean = false,
+    val identityHashHex: String? = null,
+    val trustState: String = "LEGACY_UNVERIFIED"
 ) {
     val nodeIdHex: String
         get() = String.format("%016X", nodeId)
@@ -114,7 +116,10 @@ data class TopologyEdgeEntity(
     val fromNode: Long,
     val toNode: Long,
     val rssi: Int = 0,
-    val lastSeen: Long = System.currentTimeMillis()
+    val lastSeen: Long = System.currentTimeMillis(),
+    val state: String = "STAGED",
+    val fromIdentityHashHex: String? = null,
+    val toIdentityHashHex: String? = null
 )
 
 @Entity(tableName = "last_known_locations")
@@ -129,5 +134,23 @@ data class LastKnownLocationEntity(
     val nodeIdHex: String
         get() = String.format("%016X", nodeId)
 }
+
+/**
+ * vNext Identity entity representing persistent cryptographic identities in Room schema 12.
+ * Defined in NEXTGEN/01_VNEXT_PROTOCOL_FROZEN.md §2.1–§2.7 and NEXTGEN/02_VNEXT_IMPLEMENTATION_PLAN.md §11.3.
+ */
+@Entity(tableName = "identities")
+data class IdentityEntity(
+    @PrimaryKey val identityHashHex: String,
+    val ikPubHex: String,
+    val ekPubHex: String,
+    val keyVersion: Long = 1L,
+    val lastAnnounceCounter: Long = 0L,
+    val trustState: String = "SEEN",
+    val nodeId64: Long = 0L,
+    val alias: String? = null,
+    val createdAt: Long = System.currentTimeMillis(),
+    val lastSeenAt: Long = System.currentTimeMillis()
+)
 
 

@@ -7,7 +7,9 @@ import android.util.Log
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import com.meshwhisper.app.BuildConfig
 import com.meshwhisper.app.crypto.CryptoEngine
+import com.meshwhisper.app.data.dao.IdentityDao
 import com.meshwhisper.app.data.dao.LocationDao
 import com.meshwhisper.app.data.dao.MessageDao
 import com.meshwhisper.app.data.dao.PacketLogDao
@@ -16,6 +18,7 @@ import com.meshwhisper.app.data.dao.ProcessedPacketDao
 import com.meshwhisper.app.data.dao.ProfileDao
 import com.meshwhisper.app.data.dao.StoreForwardDao
 import com.meshwhisper.app.data.dao.TopologyEdgeDao
+import com.meshwhisper.app.data.model.IdentityEntity
 import com.meshwhisper.app.data.model.LastKnownLocationEntity
 import com.meshwhisper.app.data.model.MessageEntity
 import com.meshwhisper.app.data.model.PacketLogEntity
@@ -24,7 +27,10 @@ import com.meshwhisper.app.data.model.ProcessedPacketEntity
 import com.meshwhisper.app.data.model.ProfileEntity
 import com.meshwhisper.app.data.model.StoreForwardEntity
 import com.meshwhisper.app.data.model.TopologyEdgeEntity
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
+import java.io.File
 import java.security.KeyStore
 import java.security.SecureRandom
 import javax.crypto.Cipher
@@ -42,10 +48,11 @@ import javax.crypto.spec.SecretKeySpec
         ProcessedPacketEntity::class,
         TopologyEdgeEntity::class,
         LastKnownLocationEntity::class,
-        ProfileEntity::class
+        ProfileEntity::class,
+        IdentityEntity::class
     ],
-    version = 11,
-    exportSchema = false
+    version = 12,
+    exportSchema = true
 )
 abstract class MeshDatabase : RoomDatabase() {
 
@@ -57,14 +64,53 @@ abstract class MeshDatabase : RoomDatabase() {
     abstract fun processedPacketDao(): ProcessedPacketDao
     abstract fun topologyEdgeDao(): TopologyEdgeDao
     abstract fun locationDao(): LocationDao
+    abstract fun identityDao(): IdentityDao
 
     companion object {
         private const val TAG = "MeshDatabase"
         private const val ANDROID_KEYSTORE = "AndroidKeyStore"
-        private const val DB_KEYSTORE_ALIAS = "MeshWhisperDbMasterKey"
+        const val DB_KEYSTORE_ALIAS = "MeshWhisperDbMasterKey"
         private const val PREFS_DB_SECURITY = "meshwhisper_db_security_prefs"
         private const val PREF_DB_KEY_ENC = "db_passphrase_enc_hex"
         private const val PREF_DB_KEY_IV = "db_passphrase_iv_hex"
+
+        sealed class MigrationFailureState {
+            object None : MigrationFailureState()
+            data class Failed(val error: Throwable, val details: String) : MigrationFailureState()
+        }
+
+        @Volatile
+        var migrationFailureState: MigrationFailureState = MigrationFailureState.None
+            private set
+
+        fun exportDiagnostics(context: Context): String {
+            val dbFile = context.getDatabasePath("meshwhisper_encrypted_db")
+            val dbExists = dbFile.exists()
+            val dbSize = if (dbExists) dbFile.length() else 0L
+            val ksAvailable = isAndroidKeyStoreAvailable()
+            val prefs = context.getSharedPreferences(PREFS_DB_SECURITY, Context.MODE_PRIVATE)
+            val hasEncKey = prefs.contains(PREF_DB_KEY_ENC)
+            val state = migrationFailureState
+            val sb = java.lang.StringBuilder()
+            sb.appendLine("=== MESHWHISPER STORAGE DIAGNOSTICS ===")
+            sb.appendLine("Timestamp: ${System.currentTimeMillis()}")
+            sb.appendLine("Database File: ${dbFile.absolutePath} (exists=$dbExists, size=$dbSize bytes)")
+            sb.appendLine("AndroidKeyStore Available: $ksAvailable")
+            sb.appendLine("Encrypted DB Key Persisted: $hasEncKey")
+            sb.appendLine("Current Failure State: $state")
+            if (state is MigrationFailureState.Failed) {
+                sb.appendLine("Failure Details: ${state.details}")
+                sb.appendLine("Exception StackTrace:")
+                sb.appendLine(state.error.stackTraceToString())
+            }
+            return sb.toString()
+        }
+
+        suspend fun eraseAndStartFresh(context: Context) {
+            performHardWipe(context, INSTANCE, killProcess = false)
+            resetDbSingleton()
+            migrationFailureState = MigrationFailureState.None
+        }
 
         val MIGRATION_5_6 = object : androidx.room.migration.Migration(5, 6) {
             override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
@@ -81,8 +127,6 @@ abstract class MeshDatabase : RoomDatabase() {
             }
         }
 
-        // Migration 7→8: Remove the dead `retryCount` column from store_forward_queue.
-        // SQLite doesn't support DROP COLUMN on older APIs, so we recreate the table.
         val MIGRATION_7_8 = object : androidx.room.migration.Migration(7, 8) {
             override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
                 db.execSQL("""
@@ -139,11 +183,58 @@ abstract class MeshDatabase : RoomDatabase() {
                         updatedAt INTEGER NOT NULL DEFAULT 0
                     )
                 """.trimIndent())
-                // Seed initial profiles from legacy peers table without data loss
                 db.execSQL("""
                     INSERT OR IGNORE INTO profiles (nodeId, displayName, bio, avatarHashHex, avatarUri, version, updatedAt)
                     SELECT nodeId, alias, '', '', avatarUri, 1, lastSeen FROM peers
                 """.trimIndent())
+            }
+        }
+
+        /**
+         * Room Migration 11 → 12.
+         * Specified in NEXTGEN/02_VNEXT_IMPLEMENTATION_PLAN.md §11.3 and C-21:
+         * 1. Create `identities` table
+         * 2. Add `identityHashHex` (nullable) and `trustState` (default `LEGACY_UNVERIFIED`) to `peers`
+         * 3. Add `state`, `fromIdentityHashHex`, `toIdentityHashHex` to `topology_edges`
+         * 4. UPDATE messages SET status='EXPIRED' WHERE messageId IN (SELECT messageId FROM store_forward_queue)
+         * 5. DELETE FROM store_forward_queue
+         * 6. DELETE FROM processed_packets; DELETE FROM topology_edges; DELETE FROM packet_logs
+         */
+        val MIGRATION_11_12 = object : androidx.room.migration.Migration(11, 12) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                // 1. Create identities table
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS identities (
+                        identityHashHex TEXT NOT NULL PRIMARY KEY,
+                        ikPubHex TEXT NOT NULL,
+                        ekPubHex TEXT NOT NULL,
+                        keyVersion INTEGER NOT NULL DEFAULT 1,
+                        lastAnnounceCounter INTEGER NOT NULL DEFAULT 0,
+                        trustState TEXT NOT NULL DEFAULT 'SEEN',
+                        nodeId64 INTEGER NOT NULL DEFAULT 0,
+                        alias TEXT DEFAULT NULL,
+                        createdAt INTEGER NOT NULL,
+                        lastSeenAt INTEGER NOT NULL
+                    )
+                """.trimIndent())
+
+                // 2. Add identityHashHex and trustState to peers
+                db.execSQL("ALTER TABLE peers ADD COLUMN identityHashHex TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE peers ADD COLUMN trustState TEXT NOT NULL DEFAULT 'LEGACY_UNVERIFIED'")
+
+                // 3. Add state, fromIdentityHashHex, toIdentityHashHex to topology_edges
+                db.execSQL("ALTER TABLE topology_edges ADD COLUMN state TEXT NOT NULL DEFAULT 'STAGED'")
+                db.execSQL("ALTER TABLE topology_edges ADD COLUMN fromIdentityHashHex TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE topology_edges ADD COLUMN toIdentityHashHex TEXT DEFAULT NULL")
+
+                // 4. Targeted C-21 store_forward_queue migration
+                db.execSQL("UPDATE messages SET status = 'EXPIRED' WHERE messageId IN (SELECT messageId FROM store_forward_queue)")
+                db.execSQL("DELETE FROM store_forward_queue")
+
+                // 5. Truncate unauthenticated/stale v1 caches
+                db.execSQL("DELETE FROM processed_packets")
+                db.execSQL("DELETE FROM topology_edges")
+                db.execSQL("DELETE FROM packet_logs")
             }
         }
 
@@ -162,18 +253,33 @@ abstract class MeshDatabase : RoomDatabase() {
             } catch (t: Throwable) {
                 Log.e(TAG, "Error loading sqlcipher native library: ${t.message}", t)
             }
-            val dbPassphrase = getOrCreateDatabasePassphrase(appContext)
-            val supportFactory = SupportOpenHelperFactory(dbPassphrase)
 
-            return Room.databaseBuilder(
-                appContext,
-                MeshDatabase::class.java,
-                "meshwhisper_encrypted_db"
-            )
-                .openHelperFactory(supportFactory)
-                .addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11)
-                .fallbackToDestructiveMigration()
-                .build()
+            try {
+                val dbPassphrase = getOrCreateDatabasePassphrase(appContext)
+                val supportFactory = SupportOpenHelperFactory(dbPassphrase)
+
+                return Room.databaseBuilder(
+                    appContext,
+                    MeshDatabase::class.java,
+                    "meshwhisper_encrypted_db"
+                )
+                    .openHelperFactory(supportFactory)
+                    .addMigrations(
+                        MIGRATION_5_6,
+                        MIGRATION_6_7,
+                        MIGRATION_7_8,
+                        MIGRATION_8_9,
+                        MIGRATION_9_10,
+                        MIGRATION_10_11,
+                        MIGRATION_11_12
+                    )
+                    // Explicitly NO fallbackToDestructiveMigration() per C-20
+                    .build()
+            } catch (t: Throwable) {
+                Log.e(TAG, "Failed to open or migrate database — entering C-20 failure path", t)
+                migrationFailureState = MigrationFailureState.Failed(t, "Database initialization failed: ${t.message}")
+                throw t
+            }
         }
 
         private fun getOrCreateDatabasePassphrase(context: Context): ByteArray {
@@ -187,11 +293,14 @@ abstract class MeshDatabase : RoomDatabase() {
                     val iv = CryptoEngine.hexToBytes(ivHex)
                     return decryptDbKeyWithKeystore(cipherBytes, iv)
                 } catch (e: Exception) {
-                    Log.e(TAG, "Failed to decrypt DB passphrase from Keystore, generating new", e)
+                    Log.e(TAG, "Failed to decrypt existing DB passphrase from Keystore — FAILING CLOSED per C-20", e)
+                    val err = SecurityException("Failed to decrypt existing database key from Keystore. Refusing replacement key generation (C-20 fail closed).", e)
+                    migrationFailureState = MigrationFailureState.Failed(err, "Existing DB key decryption failed: ${e.message}")
+                    throw err
                 }
             }
 
-            // Generate fresh 256-bit random key for SQLCipher
+            // Only generate fresh random key for genuinely new / uninitialized database
             val random = SecureRandom()
             val rawKey = ByteArray(32)
             random.nextBytes(rawKey)
@@ -200,7 +309,7 @@ abstract class MeshDatabase : RoomDatabase() {
             prefs.edit()
                 .putString(PREF_DB_KEY_ENC, CryptoEngine.bytesToHex(encBytes))
                 .putString(PREF_DB_KEY_IV, CryptoEngine.bytesToHex(iv))
-                .apply()
+                .commit()
 
             return rawKey
         }
@@ -241,7 +350,10 @@ abstract class MeshDatabase : RoomDatabase() {
 
         private fun encryptDbKeyWithKeystore(rawKey: ByteArray): Pair<ByteArray, ByteArray> {
             if (!isAndroidKeyStoreAvailable()) {
-                // Software fallback for JVM Unit Test environments
+                if (!BuildConfig.DEBUG) {
+                    throw SecurityException("AndroidKeyStore unavailable in release build. Software fallback forbidden (S-6/T-KEY-01).")
+                }
+                // Software fallback only for JVM Unit Test / Debug environments
                 val fallbackKey = "SOFTWARE_FALLBACK_DB_MASTER_KEY".toByteArray(Charsets.UTF_8).take(32).toByteArray()
                 val iv = ByteArray(12).also { SecureRandom().nextBytes(it) }
                 val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -258,6 +370,9 @@ abstract class MeshDatabase : RoomDatabase() {
 
         private fun decryptDbKeyWithKeystore(ciphertext: ByteArray, iv: ByteArray): ByteArray {
             if (!isAndroidKeyStoreAvailable()) {
+                if (!BuildConfig.DEBUG) {
+                    throw SecurityException("AndroidKeyStore unavailable in release build. Software fallback forbidden (S-6/T-KEY-01).")
+                }
                 val fallbackKey = "SOFTWARE_FALLBACK_DB_MASTER_KEY".toByteArray(Charsets.UTF_8).take(32).toByteArray()
                 val cipher = Cipher.getInstance("AES/GCM/NoPadding")
                 cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(fallbackKey, "AES"), GCMParameterSpec(128, iv))
@@ -273,80 +388,142 @@ abstract class MeshDatabase : RoomDatabase() {
         }
 
         /**
-         * Performs a hard panic wipe in the correct sequence:
-         *   1. Closes the Room DB connection (flush WAL, release file handles)
-         *   2. Deletes the SQLCipher encrypted DB file from disk
-         *   3. Deletes the Keystore master key so the DB passphrase is permanently unrecoverable
-         *   4. Clears the encrypted DB passphrase from SharedPreferences
+         * Performs a hard panic wipe in the exact C-26 monotonic order:
+         *   1. notificationManager.cancelAll()
+         *   2. delete Keystore alias MeshWhisperDbMasterKey
+         *   3. delete Keystore alias MeshWhisperIdentityMasterKey
+         *   4. delete Keystore alias MeshWhisperMediaMasterKey
+         *   5. close DB; delete meshwhisper_encrypted_db{,-wal,-shm,-journal}
+         *   6. deleteRecursively filesDir/media, filesDir/avatars
+         *   7. clear ALL SharedPreferences files in shared_prefs/ (commit)
+         *   8. Process.killProcess(Process.myPid())
          *
-         * After calling this, call [resetDbSingleton] and then kill the process
-         * (e.g. Process.killProcess(Process.myPid())) so Room's static singleton
-         * is not used against a now-deleted database file.
-         *
-         * IMPORTANT: Do NOT continue using the [db] object after this call.
+         * Executed under NonCancellable. After Step 2, the DB is permanently undecryptable
+         * even if steps 5+ are interrupted.
          */
-        suspend fun performHardWipe(context: Context, db: MeshDatabase): Boolean {
-            return try {
-                // Step 1: Close the Room database (flushes WAL, releases file locks)
+        suspend fun performHardWipe(context: Context, db: MeshDatabase? = null, killProcess: Boolean = true): Boolean {
+            return withContext(NonCancellable) {
                 try {
-                    db.close()
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to close DB before wipe (continuing anyway)", e)
-                }
-
-                // Step 2: Delete the SQLCipher database file and its WAL/SHM siblings
-                val dbDir = context.getDatabasePath("meshwhisper_encrypted_db")
-                val dbFiles = listOf(
-                    dbDir,
-                    java.io.File(dbDir.path + "-wal"),
-                    java.io.File(dbDir.path + "-shm"),
-                    java.io.File(dbDir.path + "-journal")
-                )
-                for (f in dbFiles) {
-                    if (f.exists()) {
-                        val deleted = f.delete()
-                        Log.i(TAG, "Hard wipe: deleted ${f.name} = $deleted")
+                    // Step 1: cancel all notifications
+                    try {
+                        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? android.app.NotificationManager
+                        nm?.cancelAll()
+                        Log.i(TAG, "Hard wipe Step 1: notifications cancelled")
+                    } catch (e: Throwable) {
+                        Log.e(TAG, "Failed Step 1 (continuing)", e)
                     }
-                }
 
-                // Step 3: Delete DB master key from AndroidKeyStore so old ciphertext is permanently unreadable
-                try {
-                    val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE)
-                    keyStore.load(null)
-                    if (keyStore.containsAlias(DB_KEYSTORE_ALIAS)) {
-                        keyStore.deleteEntry(DB_KEYSTORE_ALIAS)
-                        Log.i(TAG, "Hard wipe: deleted Keystore alias $DB_KEYSTORE_ALIAS")
+                    // Step 2: delete Keystore alias MeshWhisperDbMasterKey
+                    try {
+                        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE)
+                        keyStore.load(null)
+                        if (keyStore.containsAlias(DB_KEYSTORE_ALIAS)) {
+                            keyStore.deleteEntry(DB_KEYSTORE_ALIAS)
+                            Log.i(TAG, "Hard wipe Step 2: deleted $DB_KEYSTORE_ALIAS")
+                        }
+                    } catch (e: Throwable) {
+                        Log.e(TAG, "Failed Step 2 (continuing)", e)
                     }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to delete DB Keystore key (continuing)", e)
-                }
 
-                // Step 4: Clear the encrypted DB passphrase prefs
-                try {
-                    val prefs = context.getSharedPreferences(PREFS_DB_SECURITY, Context.MODE_PRIVATE)
-                    prefs.edit().clear().commit() // commit() not apply() — we need synchronous flush
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to clear DB security prefs", e)
-                }
+                    // Step 3: delete Keystore alias MeshWhisperIdentityMasterKey
+                    try {
+                        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE)
+                        keyStore.load(null)
+                        val identityAlias = "MeshWhisperIdentityMasterKey"
+                        if (keyStore.containsAlias(identityAlias)) {
+                            keyStore.deleteEntry(identityAlias)
+                            Log.i(TAG, "Hard wipe Step 3: deleted $identityAlias")
+                        }
+                    } catch (e: Throwable) {
+                        Log.e(TAG, "Failed Step 3 (continuing)", e)
+                    }
 
-                Log.i(TAG, "Hard wipe complete — DB file deleted, Keystore key destroyed, prefs cleared")
-                true
-            } catch (e: Exception) {
-                Log.e(TAG, "Hard wipe failed", e)
-                false
+                    // Step 4: delete Keystore alias MeshWhisperMediaMasterKey
+                    try {
+                        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE)
+                        keyStore.load(null)
+                        val mediaAlias = "MeshWhisperMediaMasterKey"
+                        if (keyStore.containsAlias(mediaAlias)) {
+                            keyStore.deleteEntry(mediaAlias)
+                            Log.i(TAG, "Hard wipe Step 4: deleted $mediaAlias")
+                        }
+                    } catch (e: Throwable) {
+                        Log.e(TAG, "Failed Step 4 (continuing)", e)
+                    }
+
+                    // Step 5: close DB; delete meshwhisper_encrypted_db{,-wal,-shm,-journal}
+                    try {
+                        val activeDb = db ?: synchronized(this) { INSTANCE }
+                        activeDb?.close()
+                        resetDbSingleton()
+                    } catch (e: Throwable) {
+                        Log.e(TAG, "Failed closing DB (continuing)", e)
+                    }
+                    val dbDir = context.getDatabasePath("meshwhisper_encrypted_db")
+                    val dbFiles = listOf(
+                        dbDir,
+                        File(dbDir.path + "-wal"),
+                        File(dbDir.path + "-shm"),
+                        File(dbDir.path + "-journal")
+                    )
+                    for (f in dbFiles) {
+                        if (f.exists()) {
+                            f.delete()
+                        }
+                    }
+                    Log.i(TAG, "Hard wipe Step 5: DB closed and database files deleted")
+
+                    // Step 6: deleteRecursively filesDir/media, filesDir/avatars
+                    try {
+                        File(context.filesDir, "media").deleteRecursively()
+                        File(context.filesDir, "avatars").deleteRecursively()
+                        Log.i(TAG, "Hard wipe Step 6: media and avatars deleted")
+                    } catch (e: Throwable) {
+                        Log.e(TAG, "Failed Step 6 (continuing)", e)
+                    }
+
+                    // Step 7: clear ALL SharedPreferences files in shared_prefs/ (commit)
+                    try {
+                        val sharedPrefsDir = File(context.applicationInfo.dataDir, "shared_prefs")
+                        if (sharedPrefsDir.exists() && sharedPrefsDir.isDirectory) {
+                            val prefFiles = sharedPrefsDir.listFiles() ?: emptyArray()
+                            for (prefFile in prefFiles) {
+                                if (prefFile.name.endsWith(".xml")) {
+                                    val prefName = prefFile.name.removeSuffix(".xml")
+                                    context.getSharedPreferences(prefName, Context.MODE_PRIVATE)
+                                        .edit().clear().commit()
+                                }
+                            }
+                            sharedPrefsDir.deleteRecursively()
+                        }
+                        Log.i(TAG, "Hard wipe Step 7: shared_prefs cleared")
+                    } catch (e: Throwable) {
+                        Log.e(TAG, "Failed Step 7 (continuing)", e)
+                    }
+
+                    // Step 8: Process.killProcess(Process.myPid())
+                    if (killProcess) {
+                        Log.w(TAG, "Hard wipe Step 8: terminating process")
+                        android.os.Process.killProcess(android.os.Process.myPid())
+                    }
+                    true
+                } catch (e: Throwable) {
+                    Log.e(TAG, "Hard wipe error", e)
+                    false
+                }
             }
         }
 
-        /**
-         * Clears the in-process Room singleton so that [getInstance] will rebuild
-         * a fresh database on next call. Must be called after [performHardWipe].
-         */
         fun resetDbSingleton() {
             synchronized(this) {
                 INSTANCE = null
             }
         }
+
+        fun getActiveDbSingleton(): MeshDatabase? {
+            return synchronized(this) {
+                INSTANCE
+            }
+        }
     }
 }
-
-

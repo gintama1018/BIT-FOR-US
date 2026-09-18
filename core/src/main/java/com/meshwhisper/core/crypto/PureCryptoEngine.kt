@@ -666,6 +666,17 @@ object PureCryptoEngine {
     }
 
     /**
+     * Standard RFC 5869 HKDF-SHA256 key derivation.
+     */
+    fun hkdf(ikm: ByteArray, salt: ByteArray?, info: ByteArray?, outputLength: Int = 32): ByteArray {
+        val gen = HKDFBytesGenerator(SHA256Digest())
+        gen.init(HKDFParameters(ikm, salt, info))
+        val out = ByteArray(outputLength)
+        gen.generateBytes(out, 0, outputLength)
+        return out
+    }
+
+    /**
      * Builds deterministic 12-byte voice nonce:
      * nonce = direction(1) || 0x00 0x00 0x00 || seq(8)
      */

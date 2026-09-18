@@ -11,6 +11,7 @@ import com.meshwhisper.app.crypto.CryptoEngine
 import com.meshwhisper.app.data.MeshDatabase
 import com.meshwhisper.app.router.MeshRouter
 import com.meshwhisper.app.service.MeshForegroundService
+import kotlinx.coroutines.launch
 
 class MeshApplication : Application() {
 
@@ -20,6 +21,17 @@ class MeshApplication : Application() {
     lateinit var wifiEngine: com.meshwhisper.app.wifi.MeshWifiEngine private set
     lateinit var router: MeshRouter private set
     lateinit var locationHelper: com.meshwhisper.app.location.LocationHelper private set
+
+    val applicationScope: kotlinx.coroutines.CoroutineScope =
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO)
+
+    fun triggerPanicWipe(db: MeshDatabase? = null, killProcess: Boolean = true): kotlinx.coroutines.Job {
+        return applicationScope.launch(kotlinx.coroutines.NonCancellable) {
+            android.util.Log.w("MeshApplication", "APPLICATION-SCOPED PANIC WIPE TRIGGERED (C-26)")
+            val targetDb = db ?: if (::database.isInitialized) database else null
+            MeshDatabase.performHardWipe(this@MeshApplication, targetDb, killProcess)
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()

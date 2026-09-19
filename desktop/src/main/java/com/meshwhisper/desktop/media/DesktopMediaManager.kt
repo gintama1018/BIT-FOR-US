@@ -1,10 +1,11 @@
 package com.meshwhisper.desktop.media
 
-import com.meshwhisper.core.protocol.AdmittedChunk
-import com.meshwhisper.desktop.crypto.DesktopCryptoEngine
 import com.meshwhisper.core.logging.MeshLogger
+import com.meshwhisper.core.protocol.AdmittedChunk
 import com.meshwhisper.core.protocol.MeshPacket
 import com.meshwhisper.core.protocol.PacketType
+import com.meshwhisper.desktop.crypto.DesktopCryptoEngine
+import com.meshwhisper.desktop.crypto.DesktopPassphraseKeyStorage
 import com.meshwhisper.desktop.db.DesktopDatabase
 import com.meshwhisper.desktop.db.DesktopMessage
 import com.meshwhisper.desktop.wifi.DesktopWifiEngine
@@ -14,13 +15,21 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.MessageDigest
+import java.security.SecureRandom
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import javax.crypto.Cipher
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
+import javax.imageio.ImageIO
 
 data class InboundMediaSession(
     val mediaId: UUID,
@@ -45,12 +54,19 @@ data class InboundMediaSession(
 )
 
 /**
- * Desktop Media Transfer Engine.
- * Handles receiving, progressive 8x8/NxN chunk reassembly, disk persistence, and sending of Images, Voice Notes, and Files across the Mesh.
+ * Desktop Media Transfer Engine with Media At-Rest Encryption (Phase P7 / P9 parity).
+ *
+ * Security Invariants:
+ * - Plaintext media NEVER touches persistent disk or temporary files.
+ * - Files on disk are encrypted with AES-256-GCM under HKDF(mediaFileKey, salt=fileId, info="MW/FILE/v2").
+ * - File format: [8B MAGIC_HEADER "MWMEDIA1"] + [12B IV] + [Ciphertext + 16B Tag].
+ * - Atomic encrypted write via temporary .enc.tmp file.
+ * - Decryption happens in memory upon retrieval; corrupted files or invalid keys fail closed.
  */
 class DesktopMediaManager(
     private val myNodeId: Long,
     private val myPrivateKey: ByteArray,
+    private val keyStorage: DesktopPassphraseKeyStorage,
     private val database: DesktopDatabase,
     private val wifiEngine: DesktopWifiEngine,
     private val logger: MeshLogger,
@@ -59,6 +75,8 @@ class DesktopMediaManager(
     companion object {
         private const val TAG = "DesktopMediaManager"
         const val CHUNK_PAYLOAD_SIZE = 400
+        val MAGIC_HEADER = "MWMEDIA1".toByteArray(Charsets.US_ASCII)
+        val FILE_HKDF_INFO = "MW/FILE/v2".toByteArray(Charsets.UTF_8)
     }
 
     private val mediaStorageDir = File(File(System.getProperty("user.home"), ".meshwhisper"), "media").apply {
@@ -66,9 +84,105 @@ class DesktopMediaManager(
     }
 
     private val inboundSessions = ConcurrentHashMap<String, InboundMediaSession>()
+    private val secureRandom = SecureRandom()
 
     private val _mediaTransfersUpdated = MutableSharedFlow<DesktopMessage>(extraBufferCapacity = 64)
     val mediaTransfersUpdated = _mediaTransfersUpdated.asSharedFlow()
+
+    fun getOrCreateMediaFileKey(): ByteArray {
+        val existing = keyStorage.getMediaFileKey()
+        if (existing != null && existing.size == 32) return existing
+
+        val newKey = ByteArray(32).also { secureRandom.nextBytes(it) }
+        keyStorage.storeMediaFileKey(newKey)
+        return newKey
+    }
+
+    private fun derivePerFileKey(fileId: String): ByteArray {
+        val rootKey = getOrCreateMediaFileKey()
+        val salt = fileId.toByteArray(Charsets.UTF_8)
+        return DesktopCryptoEngine.hkdf(
+            ikm = rootKey,
+            salt = salt,
+            info = FILE_HKDF_INFO,
+            outputLength = 32
+        )
+    }
+
+    /**
+     * Encrypts plaintext bytes and writes to [destinationFile] atomically.
+     * Zero plaintext reaches persistent disk.
+     */
+    fun encryptAndWriteMediaFile(fileId: String, plaintextBytes: ByteArray, destinationFile: File) {
+        val fileKey = derivePerFileKey(fileId)
+        val iv = ByteArray(12).also { secureRandom.nextBytes(it) }
+
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(fileKey, "AES"), GCMParameterSpec(128, iv))
+        val ciphertext = cipher.doFinal(plaintextBytes)
+
+        val parentDir = destinationFile.parentFile
+        if (parentDir != null && !parentDir.exists()) {
+            parentDir.mkdirs()
+        }
+
+        val tempFile = File(destinationFile.parentFile, "${destinationFile.name}.enc.tmp")
+        try {
+            FileOutputStream(tempFile).use { fos ->
+                fos.write(MAGIC_HEADER)
+                fos.write(iv)
+                fos.write(ciphertext)
+                fos.flush()
+            }
+            if (!tempFile.renameTo(destinationFile)) {
+                tempFile.copyTo(destinationFile, overwrite = true)
+                tempFile.delete()
+            }
+        } catch (e: Exception) {
+            tempFile.delete()
+            throw e
+        }
+    }
+
+    /**
+     * Reads and decrypts an encrypted media file from disk into memory.
+     * Fails closed if corrupted or tampered.
+     */
+    fun readAndDecryptMediaFile(fileId: String, sourceFile: File): ByteArray {
+        if (!sourceFile.exists()) {
+            throw java.io.FileNotFoundException("Media file not found: ${sourceFile.absolutePath}")
+        }
+        val fileBytes = sourceFile.readBytes()
+        if (fileBytes.size < MAGIC_HEADER.size + 12 + 16) {
+            throw IllegalStateException("Corrupted or incomplete encrypted media file: ${sourceFile.name}")
+        }
+
+        val header = fileBytes.copyOfRange(0, MAGIC_HEADER.size)
+        if (!header.contentEquals(MAGIC_HEADER)) {
+            throw IllegalStateException("Invalid magic header on media file: ${sourceFile.name}")
+        }
+
+        val iv = fileBytes.copyOfRange(MAGIC_HEADER.size, MAGIC_HEADER.size + 12)
+        val ciphertext = fileBytes.copyOfRange(MAGIC_HEADER.size + 12, fileBytes.size)
+
+        val fileKey = derivePerFileKey(fileId)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(fileKey, "AES"), GCMParameterSpec(128, iv))
+        return cipher.doFinal(ciphertext)
+    }
+
+    fun isMediaFileEncrypted(file: File): Boolean {
+        if (!file.exists() || file.length() < MAGIC_HEADER.size) return false
+        return try {
+            FileInputStream(file).use { fis ->
+                val buf = ByteArray(MAGIC_HEADER.size)
+                val read = fis.read(buf)
+                read == MAGIC_HEADER.size && buf.contentEquals(MAGIC_HEADER)
+            }
+        } catch (_: Throwable) {
+            false
+        }
+    }
 
     fun handleMediaInit(packet: MeshPacket, plainBytes: ByteArray, isBroadcast: Boolean) {
         if (plainBytes.size < 62) return
@@ -113,7 +227,6 @@ class DesktopMediaManager(
             String(cBytes, Charsets.UTF_8)
         } else ""
 
-        // Parse 8x8 progressive tile metadata
         var gridCols = 1
         var gridRows = 1
         var imageWidthPx = 0
@@ -159,13 +272,13 @@ class DesktopMediaManager(
         )
         inboundSessions[sessionKey] = session
 
-        logger.i(TAG, "📥 Incoming $typeName transfer: $mediaId ($totalChunks chunks, $totalSizeBytes bytes, Grid=${gridCols}x${gridRows}) from 0x${String.format("%016X", packet.senderId)}")
+        logger.i(TAG, "Incoming $typeName transfer: $mediaId ($totalChunks chunks, $totalSizeBytes bytes) from 0x${String.format("%016X", packet.senderId)}")
 
         val textLabel = when (typeName) {
-            "IMAGE" -> "📷 Image Incoming (${gridCols}x${gridRows} Tiles) [0/$totalChunks]"
-            "VOICE" -> "🎙️ Voice Note Incoming (${durationMs / 1000}s) [0/$totalChunks]"
-            "FILE" -> "📁 File: $originalFileName [0/$totalChunks]"
-            else -> "📦 Media: $originalFileName [0/$totalChunks]"
+            "IMAGE" -> "Image Incoming (${gridCols}x${gridRows} Tiles) [0/$totalChunks]"
+            "VOICE" -> "Voice Note Incoming (${durationMs / 1000}s) [0/$totalChunks]"
+            "FILE" -> "File: $originalFileName [0/$totalChunks]"
+            else -> "Media: $originalFileName [0/$totalChunks]"
         }
 
         val msg = DesktopMessage(
@@ -199,11 +312,10 @@ class DesktopMediaManager(
 
         val received = session.chunks.size
         if (received % 10 == 0 || received == session.totalChunks) {
-            logger.i(TAG, "📦 Received chunk $received/${session.totalChunks} for ${session.mediaTypeName} $mediaId")
+            logger.i(TAG, "Received chunk $received/${session.totalChunks} for ${session.mediaTypeName} $mediaId")
         }
 
         if (received >= session.totalChunks) {
-            // Reassemble complete media file with tile stitching if tiled image
             assembleAndSaveMedia(session, chunk.isBroadcast)
             inboundSessions.remove(sessionKey)
         }
@@ -226,7 +338,7 @@ class DesktopMediaManager(
 
         val targetFile = File(mediaStorageDir, safeName)
         try {
-            // Concatenate all chunks
+            // Concatenate all chunks in memory
             val totalBytesSize = session.chunks.values.sumOf { it.size }
             val fullConcatenated = ByteArray(totalBytesSize)
             var offset = 0
@@ -236,18 +348,27 @@ class DesktopMediaManager(
                 offset += chunk.size
             }
 
-            // Check if Progressive 8x8 Tiled Image
-            if (session.gridCols > 1 && session.gridRows > 1 && session.paddedTileByteLengths.isNotEmpty() && session.imageWidthPx > 0 && session.imageHeightPx > 0) {
-                stitchTiledImageToDisk(fullConcatenated, session, targetFile)
+            val finalPlaintext = if (session.gridCols > 1 && session.gridRows > 1 &&
+                session.paddedTileByteLengths.isNotEmpty() &&
+                session.imageWidthPx > 0 && session.imageHeightPx > 0
+            ) {
+                stitchTiledImageInMemory(fullConcatenated, session)
             } else {
-                FileOutputStream(targetFile).use { it.write(fullConcatenated) }
+                fullConcatenated
             }
 
+            // ENCRYPT AT REST (Phase P7 / P9 parity): Zero plaintext on persistent disk
+            encryptAndWriteMediaFile(
+                fileId = safeName,
+                plaintextBytes = finalPlaintext,
+                destinationFile = targetFile
+            )
+
             val label = when (session.mediaTypeName) {
-                "IMAGE" -> "📷 Image Received (${session.gridCols}x${session.gridRows} Tiled)" + if (session.caption.isNotBlank()) ": ${session.caption}" else ""
-                "VOICE" -> "🎙️ Voice Note Received (${session.durationMs / 1000}s)"
-                "FILE" -> "📁 File Received: $safeName (${session.totalSizeBytes / 1024} KB)"
-                else -> "📦 Media: $safeName"
+                "IMAGE" -> "Image Received (${session.gridCols}x${session.gridRows} Tiled)" + if (session.caption.isNotBlank()) ": ${session.caption}" else ""
+                "VOICE" -> "Voice Note Received (${session.durationMs / 1000}s)"
+                "FILE" -> "File Received: $safeName (${session.totalSizeBytes / 1024} KB)"
+                else -> "Media: $safeName"
             }
 
             val updatedMsg = DesktopMessage(
@@ -268,17 +389,16 @@ class DesktopMediaManager(
             database.insertMessage(updatedMsg)
             _mediaTransfersUpdated.tryEmit(updatedMsg)
 
-            logger.i(TAG, "✅ Reassembled & Saved ${session.mediaTypeName} -> ${targetFile.absolutePath} (${targetFile.length() / 1024} KB)")
+            logger.i(TAG, "Reassembled & Encrypted at rest ${session.mediaTypeName} -> ${targetFile.absolutePath} (${targetFile.length()} bytes)")
         } catch (e: Exception) {
-            logger.e(TAG, "Failed to save reassembled media: ${e.message}")
+            logger.e(TAG, "Failed to assemble and save encrypted media: ${e.message}")
         }
     }
 
-    private fun stitchTiledImageToDisk(
+    private fun stitchTiledImageInMemory(
         concatenatedBytes: ByteArray,
-        session: InboundMediaSession,
-        targetFile: File
-    ) {
+        session: InboundMediaSession
+    ): ByteArray {
         val imgW = session.imageWidthPx
         val imgH = session.imageHeightPx
         val cols = session.gridCols
@@ -300,7 +420,7 @@ class DesktopMediaManager(
                 if (byteOffset + pLen <= concatenatedBytes.size) {
                     val tileBytes = concatenatedBytes.copyOfRange(byteOffset, byteOffset + pLen)
                     try {
-                        val tileImg = javax.imageio.ImageIO.read(java.io.ByteArrayInputStream(tileBytes))
+                        val tileImg = ImageIO.read(ByteArrayInputStream(tileBytes))
                         if (tileImg != null) {
                             val x = c * baseTileW
                             g2.drawImage(tileImg, x, y, null)
@@ -312,7 +432,10 @@ class DesktopMediaManager(
             }
         }
         g2.dispose()
-        javax.imageio.ImageIO.write(composite, "jpg", targetFile)
+
+        val baos = ByteArrayOutputStream()
+        ImageIO.write(composite, "jpg", baos)
+        return baos.toByteArray()
     }
 
     fun sendMediaFile(
@@ -322,7 +445,14 @@ class DesktopMediaManager(
         caption: String = ""
     ) {
         if (!file.exists() || !file.isFile) return
-        val fileBytes = file.readBytes()
+
+        // Read and decrypt into memory if encrypted, or read plain if fresh local file
+        val fileBytes = if (isMediaFileEncrypted(file)) {
+            readAndDecryptMediaFile(file.name, file)
+        } else {
+            file.readBytes()
+        }
+
         val mediaId = UUID.randomUUID()
         val timestampSec = System.currentTimeMillis() / 1000L
         val isBroadcast = (recipientNodeId == MeshPacket.BROADCAST_RECIPIENT_ID)
@@ -345,17 +475,17 @@ class DesktopMediaManager(
             putLong(mediaId.mostSignificantBits)
             putLong(mediaId.leastSignificantBits)
             put(typeCode)
-            put(1.toByte()) // version
+            put(1.toByte())
             putShort(totalChunks.toShort())
             putInt(fileBytes.size)
-            putInt(0) // durationMs
+            putInt(0)
             put(sha256)
             put(fnBytes.size.toByte())
             if (fnBytes.isNotEmpty()) put(fnBytes)
-            putShort(0.toShort()) // preview len = 0
+            putShort(0.toShort())
             put(captionBytes.size.toByte())
             if (captionBytes.isNotEmpty()) put(captionBytes)
-            put(0.toByte()) // tile count = 0
+            put(0.toByte())
         }.array()
 
         scope.launch(Dispatchers.IO) {
@@ -444,17 +574,17 @@ class DesktopMediaManager(
                 messageId = mediaId.toString(),
                 senderNodeId = myNodeId,
                 recipientNodeId = recipientNodeId,
-                text = "📁 Sent $mediaType: ${file.name} (${fileBytes.size / 1024} KB)",
+                text = "Sent $mediaType: ${file.name} (${fileBytes.size / 1024} KB)",
                 timestamp = timestampSec,
                 isIncoming = false,
                 isDelivered = true,
                 mediaType = mediaType,
                 mediaUri = file.absolutePath,
-                mediaSizeBytes = fileBytes.size.toLong()
+                mediaSizeBytes = file.length()
             )
             database.insertMessage(sentMsg)
             _mediaTransfersUpdated.tryEmit(sentMsg)
-            logger.i(TAG, "🚀 Sent all $totalChunks chunks for ${file.name} to 0x${String.format("%016X", recipientNodeId)}")
+            logger.i(TAG, "Sent all $totalChunks chunks for ${file.name} to 0x${String.format("%016X", recipientNodeId)}")
         }
     }
 }

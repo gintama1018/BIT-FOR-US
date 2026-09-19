@@ -3,11 +3,24 @@ package com.meshwhisper.desktop.db
 import java.io.File
 import java.sql.Connection
 import java.sql.DriverManager
-import java.sql.PreparedStatement
 import java.sql.ResultSet
+
+data class DesktopIdentity(
+    val identityHashHex: String,
+    val ikPubHex: String,
+    val ekPubHex: String,
+    val keyVersion: Long = 1L,
+    val lastAnnounceCounter: Long = 0L,
+    val trustState: String = "SEEN",
+    val nodeId64: Long = 0L,
+    val alias: String? = null,
+    val createdAt: Long = System.currentTimeMillis(),
+    val lastSeenAt: Long = System.currentTimeMillis()
+)
 
 data class DesktopPeer(
     val nodeId: Long,
+    val identityHashHex: String? = null,
     val publicKeyHex: String,
     val alias: String,
     val rssi: Int = -60,
@@ -15,7 +28,11 @@ data class DesktopPeer(
     val lastSeen: Long = System.currentTimeMillis(),
     val isPinned: Boolean = false,
     val isBlocked: Boolean = false,
-    val publicFingerprint: String = ""
+    val publicFingerprint: String = "",
+    val hasKeyChanged: Boolean = false,
+    val trustState: String = "LEGACY_UNVERIFIED",
+    val isVerified: Boolean = (trustState == "VERIFIED"),
+    val keyVersion: Long = 1L
 )
 
 data class DesktopMessage(
@@ -42,7 +59,21 @@ data class DesktopStoreForward(
     val packetData: ByteArray,
     val createdAt: Long,
     val expiresAt: Long
-)
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (javaClass != other?.javaClass) return false
+        other as DesktopStoreForward
+        return messageId == other.messageId && recipientId == other.recipientId && packetData.contentEquals(other.packetData)
+    }
+
+    override fun hashCode(): Int {
+        var result = messageId.hashCode()
+        result = 31 * result + recipientId.hashCode()
+        result = 31 * result + packetData.contentHashCode()
+        return result
+    }
+}
 
 data class DesktopPacketLog(
     val id: Long = 0L,
@@ -63,7 +94,7 @@ data class DesktopTopologyEdge(
 
 /**
  * Pure SQLite Database layer for MeshWhisper Desktop via sqlite-jdbc.
- * Manages all 6 core tables matching the Android schema parity.
+ * Manages all core tables matching the vNext Android schema parity.
  */
 class DesktopDatabase(
     private val dbFile: File = File(File(System.getProperty("user.home"), ".meshwhisper"), "meshwhisper.db")
@@ -87,10 +118,27 @@ class DesktopDatabase(
     private fun initSchema() {
         getConnection().use { conn ->
             conn.createStatement().use { stmt ->
-                // 1. Peers
+                // 1. Identities (vNext cryptographic identity authority)
+                stmt.execute("""
+                    CREATE TABLE IF NOT EXISTS identities (
+                        identityHashHex TEXT PRIMARY KEY,
+                        ikPubHex TEXT NOT NULL,
+                        ekPubHex TEXT NOT NULL,
+                        keyVersion INTEGER NOT NULL,
+                        lastAnnounceCounter INTEGER NOT NULL,
+                        trustState TEXT NOT NULL,
+                        nodeId64 INTEGER NOT NULL,
+                        alias TEXT,
+                        createdAt INTEGER NOT NULL,
+                        lastSeenAt INTEGER NOT NULL
+                    );
+                """.trimIndent())
+
+                // 2. Peers
                 stmt.execute("""
                     CREATE TABLE IF NOT EXISTS peers (
                         nodeId INTEGER PRIMARY KEY,
+                        identityHashHex TEXT,
                         publicKeyHex TEXT NOT NULL,
                         alias TEXT NOT NULL,
                         rssi INTEGER NOT NULL,
@@ -98,11 +146,21 @@ class DesktopDatabase(
                         lastSeen INTEGER NOT NULL,
                         isPinned INTEGER NOT NULL DEFAULT 0,
                         isBlocked INTEGER NOT NULL DEFAULT 0,
-                        publicFingerprint TEXT NOT NULL DEFAULT ''
+                        publicFingerprint TEXT NOT NULL DEFAULT '',
+                        hasKeyChanged INTEGER NOT NULL DEFAULT 0,
+                        trustState TEXT NOT NULL DEFAULT 'LEGACY_UNVERIFIED',
+                        isVerified INTEGER NOT NULL DEFAULT 0,
+                        keyVersion INTEGER NOT NULL DEFAULT 1
                     );
                 """.trimIndent())
 
-                // 2. Messages
+                try { stmt.execute("ALTER TABLE peers ADD COLUMN identityHashHex TEXT;") } catch (_: Exception) {}
+                try { stmt.execute("ALTER TABLE peers ADD COLUMN hasKeyChanged INTEGER NOT NULL DEFAULT 0;") } catch (_: Exception) {}
+                try { stmt.execute("ALTER TABLE peers ADD COLUMN trustState TEXT NOT NULL DEFAULT 'LEGACY_UNVERIFIED';") } catch (_: Exception) {}
+                try { stmt.execute("ALTER TABLE peers ADD COLUMN isVerified INTEGER NOT NULL DEFAULT 0;") } catch (_: Exception) {}
+                try { stmt.execute("ALTER TABLE peers ADD COLUMN keyVersion INTEGER NOT NULL DEFAULT 1;") } catch (_: Exception) {}
+
+                // 3. Messages
                 stmt.execute("""
                     CREATE TABLE IF NOT EXISTS messages (
                         messageId TEXT PRIMARY KEY,
@@ -127,7 +185,7 @@ class DesktopDatabase(
                 try { stmt.execute("ALTER TABLE messages ADD COLUMN mediaUri TEXT;") } catch (_: Exception) {}
                 try { stmt.execute("ALTER TABLE messages ADD COLUMN mediaSizeBytes INTEGER DEFAULT 0;") } catch (_: Exception) {}
 
-                // 3. Store and Forward
+                // 4. Store and Forward
                 stmt.execute("""
                     CREATE TABLE IF NOT EXISTS store_forward (
                         messageId TEXT PRIMARY KEY,
@@ -138,7 +196,7 @@ class DesktopDatabase(
                     );
                 """.trimIndent())
 
-                // 4. Packet Logs
+                // 5. Packet Logs
                 stmt.execute("""
                     CREATE TABLE IF NOT EXISTS packet_logs (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -151,7 +209,7 @@ class DesktopDatabase(
                     );
                 """.trimIndent())
 
-                // 5. Processed Packets (Dedup)
+                // 6. Processed Packets (Dedup)
                 stmt.execute("""
                     CREATE TABLE IF NOT EXISTS processed_packets (
                         dedupKey TEXT PRIMARY KEY,
@@ -159,7 +217,7 @@ class DesktopDatabase(
                     );
                 """.trimIndent())
 
-                // 6. Topology Edges (Mesh Radar Graph)
+                // 7. Topology Edges (Mesh Radar Graph)
                 stmt.execute("""
                     CREATE TABLE IF NOT EXISTS topology_edges (
                         sourceNodeId INTEGER NOT NULL,
@@ -173,31 +231,147 @@ class DesktopDatabase(
         }
     }
 
+    // --- Identity DAO Operations ---
+    @Synchronized
+    fun upsertIdentity(identity: DesktopIdentity) {
+        getConnection().use { conn ->
+            val sql = """
+                INSERT INTO identities (identityHashHex, ikPubHex, ekPubHex, keyVersion, lastAnnounceCounter, trustState, nodeId64, alias, createdAt, lastSeenAt)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(identityHashHex) DO UPDATE SET
+                    ikPubHex=excluded.ikPubHex,
+                    ekPubHex=excluded.ekPubHex,
+                    keyVersion=excluded.keyVersion,
+                    lastAnnounceCounter=excluded.lastAnnounceCounter,
+                    trustState=excluded.trustState,
+                    nodeId64=excluded.nodeId64,
+                    alias=excluded.alias,
+                    lastSeenAt=excluded.lastSeenAt;
+            """.trimIndent()
+            conn.prepareStatement(sql).use { stmt ->
+                stmt.setString(1, identity.identityHashHex)
+                stmt.setString(2, identity.ikPubHex)
+                stmt.setString(3, identity.ekPubHex)
+                stmt.setLong(4, identity.keyVersion)
+                stmt.setLong(5, identity.lastAnnounceCounter)
+                stmt.setString(6, identity.trustState)
+                stmt.setLong(7, identity.nodeId64)
+                stmt.setString(8, identity.alias)
+                stmt.setLong(9, identity.createdAt)
+                stmt.setLong(10, identity.lastSeenAt)
+                stmt.executeUpdate()
+            }
+        }
+    }
+
+    @Synchronized
+    fun getIdentity(identityHashHex: String): DesktopIdentity? {
+        getConnection().use { conn ->
+            conn.prepareStatement("SELECT * FROM identities WHERE identityHashHex = ?").use { stmt ->
+                stmt.setString(1, identityHashHex)
+                val rs = stmt.executeQuery()
+                return if (rs.next()) mapIdentity(rs) else null
+            }
+        }
+    }
+
+    @Synchronized
+    fun findIdentitiesByNodeId(nodeId64: Long): List<DesktopIdentity> {
+        getConnection().use { conn ->
+            conn.prepareStatement("SELECT * FROM identities WHERE nodeId64 = ?").use { stmt ->
+                stmt.setLong(1, nodeId64)
+                val rs = stmt.executeQuery()
+                val list = mutableListOf<DesktopIdentity>()
+                while (rs.next()) {
+                    list.add(mapIdentity(rs))
+                }
+                return list
+            }
+        }
+    }
+
+    /**
+     * Collision-safe routable identity lookup.
+     * Contract:
+     * - 0 matches -> null
+     * - 2+ matches -> null (collision detected, unicast suspended)
+     * - CONFLICTED -> null (unicast suspended)
+     * - BLOCKED -> null (traffic forbidden)
+     * - 1 routable identity (SEEN, LINKED, IMPORTED, VERIFIED) -> returns identity
+     */
+    @Synchronized
+    fun getUniqueIdentityByNodeId(nodeId64: Long): DesktopIdentity? {
+        val matches = findIdentitiesByNodeId(nodeId64)
+        if (matches.size != 1) return null
+        val identity = matches[0]
+        if (identity.trustState == "CONFLICTED" || identity.trustState == "BLOCKED") return null
+        return identity
+    }
+
+    @Synchronized
+    fun getAllIdentities(): List<DesktopIdentity> {
+        getConnection().use { conn ->
+            conn.prepareStatement("SELECT * FROM identities ORDER BY lastSeenAt DESC").use { stmt ->
+                val rs = stmt.executeQuery()
+                val list = mutableListOf<DesktopIdentity>()
+                while (rs.next()) {
+                    list.add(mapIdentity(rs))
+                }
+                return list
+            }
+        }
+    }
+
+    private fun mapIdentity(rs: ResultSet): DesktopIdentity {
+        return DesktopIdentity(
+            identityHashHex = rs.getString("identityHashHex"),
+            ikPubHex = rs.getString("ikPubHex"),
+            ekPubHex = rs.getString("ekPubHex"),
+            keyVersion = rs.getLong("keyVersion"),
+            lastAnnounceCounter = rs.getLong("lastAnnounceCounter"),
+            trustState = rs.getString("trustState"),
+            nodeId64 = rs.getLong("nodeId64"),
+            alias = rs.getString("alias"),
+            createdAt = rs.getLong("createdAt"),
+            lastSeenAt = rs.getLong("lastSeenAt")
+        )
+    }
+
     // --- Peer DAO Operations ---
     @Synchronized
     fun upsertPeer(peer: DesktopPeer) {
         getConnection().use { conn ->
             val sql = """
-                INSERT INTO peers (nodeId, publicKeyHex, alias, rssi, hops, lastSeen, isPinned, isBlocked, publicFingerprint)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO peers (nodeId, identityHashHex, publicKeyHex, alias, rssi, hops, lastSeen, isPinned, isBlocked, publicFingerprint, hasKeyChanged, trustState, isVerified, keyVersion)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(nodeId) DO UPDATE SET
+                    identityHashHex=excluded.identityHashHex,
                     publicKeyHex=excluded.publicKeyHex,
                     alias=excluded.alias,
                     rssi=excluded.rssi,
                     hops=excluded.hops,
                     lastSeen=excluded.lastSeen,
-                    publicFingerprint=excluded.publicFingerprint;
+                    publicFingerprint=excluded.publicFingerprint,
+                    hasKeyChanged=excluded.hasKeyChanged,
+                    trustState=excluded.trustState,
+                    isVerified=excluded.isVerified,
+                    keyVersion=excluded.keyVersion;
             """.trimIndent()
             conn.prepareStatement(sql).use { stmt ->
                 stmt.setLong(1, peer.nodeId)
-                stmt.setString(2, peer.publicKeyHex)
-                stmt.setString(3, peer.alias)
-                stmt.setInt(4, peer.rssi)
-                stmt.setInt(5, peer.hops)
-                stmt.setLong(6, peer.lastSeen)
-                stmt.setInt(7, if (peer.isPinned) 1 else 0)
-                stmt.setInt(8, if (peer.isBlocked) 1 else 0)
-                stmt.setString(9, peer.publicFingerprint)
+                stmt.setString(2, peer.identityHashHex)
+                stmt.setString(3, peer.publicKeyHex)
+                stmt.setString(4, peer.alias)
+                stmt.setInt(5, peer.rssi)
+                stmt.setInt(6, peer.hops)
+                stmt.setLong(7, peer.lastSeen)
+                stmt.setInt(8, if (peer.isPinned) 1 else 0)
+                stmt.setInt(9, if (peer.isBlocked) 1 else 0)
+                stmt.setString(10, peer.publicFingerprint)
+                stmt.setInt(11, if (peer.hasKeyChanged) 1 else 0)
+                stmt.setString(12, peer.trustState)
+                stmt.setInt(13, if (peer.trustState == "VERIFIED") 1 else 0)
+                stmt.setLong(14, peer.keyVersion)
                 stmt.executeUpdate()
             }
         }
@@ -208,6 +382,17 @@ class DesktopDatabase(
         getConnection().use { conn ->
             conn.prepareStatement("SELECT * FROM peers WHERE nodeId = ?").use { stmt ->
                 stmt.setLong(1, nodeId)
+                val rs = stmt.executeQuery()
+                return if (rs.next()) mapPeer(rs) else null
+            }
+        }
+    }
+
+    @Synchronized
+    fun getPeerByIdentityHash(identityHashHex: String): DesktopPeer? {
+        getConnection().use { conn ->
+            conn.prepareStatement("SELECT * FROM peers WHERE identityHashHex = ?").use { stmt ->
+                stmt.setString(1, identityHashHex)
                 val rs = stmt.executeQuery()
                 return if (rs.next()) mapPeer(rs) else null
             }
@@ -228,17 +413,76 @@ class DesktopDatabase(
         }
     }
 
+    @Synchronized
+    fun getPeersByTrustState(trustState: String): List<DesktopPeer> {
+        getConnection().use { conn ->
+            conn.prepareStatement("SELECT * FROM peers WHERE trustState = ? ORDER BY lastSeen DESC").use { stmt ->
+                stmt.setString(1, trustState)
+                val rs = stmt.executeQuery()
+                val list = mutableListOf<DesktopPeer>()
+                while (rs.next()) {
+                    list.add(mapPeer(rs))
+                }
+                return list
+            }
+        }
+    }
+
+    /**
+     * Low-level persistence primitive used exclusively by DesktopIdentityRepository.
+     * Updates peer trust state and keeps derived isVerified and isBlocked in sync.
+     */
+    @Synchronized
+    fun updatePeerTrustState(identityHashHex: String, trustState: String) {
+        val isVerifiedInt = if (trustState == "VERIFIED") 1 else 0
+        val isBlockedInt = if (trustState == "BLOCKED") 1 else 0
+        getConnection().use { conn ->
+            conn.prepareStatement("""
+                UPDATE peers 
+                SET trustState = ?, isVerified = ?, isBlocked = ? 
+                WHERE identityHashHex = ?
+            """.trimIndent()).use { stmt ->
+                stmt.setString(1, trustState)
+                stmt.setInt(2, isVerifiedInt)
+                stmt.setInt(3, isBlockedInt)
+                stmt.setString(4, identityHashHex)
+                stmt.executeUpdate()
+            }
+        }
+    }
+
+    @Synchronized
+    fun updatePeerKeyChange(identityHashHex: String, hasKeyChanged: Boolean) {
+        getConnection().use { conn ->
+            conn.prepareStatement("UPDATE peers SET hasKeyChanged = ? WHERE identityHashHex = ?").use { stmt ->
+                stmt.setInt(1, if (hasKeyChanged) 1 else 0)
+                stmt.setString(2, identityHashHex)
+                stmt.executeUpdate()
+            }
+        }
+    }
+
     private fun mapPeer(rs: ResultSet): DesktopPeer {
+        val tState = try { rs.getString("trustState") } catch (_: Exception) { null } ?: "LEGACY_UNVERIFIED"
+        val kVer = try { rs.getLong("keyVersion") } catch (_: Exception) { 1L }
+        val idHash = try { rs.getString("identityHashHex") } catch (_: Exception) { null }
+        val hasChanged = try { rs.getInt("hasKeyChanged") == 1 } catch (_: Exception) { false }
+
         return DesktopPeer(
             nodeId = rs.getLong("nodeId"),
+            identityHashHex = idHash,
             publicKeyHex = rs.getString("publicKeyHex"),
             alias = rs.getString("alias"),
             rssi = rs.getInt("rssi"),
             hops = rs.getInt("hops"),
             lastSeen = rs.getLong("lastSeen"),
             isPinned = rs.getInt("isPinned") == 1,
-            isBlocked = rs.getInt("isBlocked") == 1,
-            publicFingerprint = rs.getString("publicFingerprint") ?: ""
+            isBlocked = rs.getInt("isBlocked") == 1 || tState == "BLOCKED",
+            publicFingerprint = rs.getString("publicFingerprint") ?: "",
+            hasKeyChanged = hasChanged,
+            trustState = tState,
+            isVerified = (tState == "VERIFIED"),
+            keyVersion = maxOf(1L, kVer)
         )
     }
 

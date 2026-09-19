@@ -1337,53 +1337,18 @@ class MeshRouter(
         val timestamp = System.currentTimeMillis() / 1000L
 
         val peerPubKey = CryptoEngine.hexToBytes(peer.publicKeyHex)
-        val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey, timestamp)
-
-        val aad = MeshPacket.computeAad(
-            type = PacketType.DIRECT_MESSAGE,
-            messageId = msgId,
-            senderId = cryptoEngine.nodeId,
-            recipientId = recipientNodeId,
-            timestamp = timestamp
-        )
-
-        val encResult = cryptoEngine.encrypt(
-            plaintext = textBytes,
-            messageId = msgId,
-            aesKey = sessionKey,
-            aad = aad
-        )
-
-        val md = java.security.MessageDigest.getInstance("SHA-256")
-        md.update(encResult.ciphertext)
-        md.update(encResult.authTag)
-        val cipherHash = md.digest()
-
-        val transcript = MeshPacket.buildSigTranscript(
-            purposeTag = com.meshwhisper.core.protocol.ResourceLimits.PURPOSE_CONTENT,
-            protocolVersion = com.meshwhisper.core.protocol.ResourceLimits.PROTOCOL_VERSION.toByte(),
-            packetTypeByte = PacketType.DIRECT_MESSAGE.wireByte,
-            messageId = msgId,
-            senderIdentityHash = cryptoEngine.identityHash,
+        val packet = DirectMessagePacketBuilder.build(
             senderNodeId64 = cryptoEngine.nodeId,
+            senderIdentityHash = cryptoEngine.identityHash,
+            senderPrivateKey = cryptoEngine.getPrivateKey()!!,
             recipientNodeId64 = recipientNodeId,
-            timestamp = timestamp,
-            payloadLenExcludingSig = encResult.ciphertext.size,
-            ciphertextAndTagHash = cipherHash
-        )
-        val hopSig = cryptoEngine.sign(transcript)
-        val fullPayload = encResult.ciphertext + hopSig
-
-        val packet = MeshPacket(
-            type = PacketType.DIRECT_MESSAGE,
+            peerPublicKey = peerPubKey,
+            plaintext = textBytes,
+            timestampSec = timestamp,
             messageId = msgId,
-            senderId = cryptoEngine.nodeId,
-            recipientId = recipientNodeId,
-            ttl = MeshPacket.DEFAULT_TTL,
-            timestamp = timestamp,
-            payload = fullPayload,
-            authTag = encResult.authTag
+            ttl = MeshPacket.DEFAULT_TTL
         )
+
 
         val entity = MessageEntity(
             messageId = msgId.toString(),

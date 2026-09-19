@@ -1,51 +1,38 @@
 package com.meshwhisper.desktop.crypto
 
-import com.meshwhisper.core.identity.InMemoryIdentityStore
-import com.meshwhisper.core.identity.PeerIdentity
-import com.meshwhisper.core.identity.TrustState
 import com.meshwhisper.core.protocol.KeyProvider
 import com.meshwhisper.core.protocol.PacketPipeline
 import com.meshwhisper.core.protocol.PacketStore
 import com.meshwhisper.core.router.LruDedupCache
 import com.meshwhisper.core.util.Clock
 import com.meshwhisper.desktop.db.DesktopDatabase
+import com.meshwhisper.desktop.identity.DesktopIdentityRepository
 
 /**
  * Factory for creating PacketPipeline in Desktop environment.
  * Isolates IdentityStore and KeyProvider from router/ layer to satisfy T-ARCH-01.
+ * Enforces Phase P9 single authoritative IdentityStore instance constraint.
  */
 object DesktopPipelineFactory {
     fun create(
         myNodeId: Long,
-        myIdentityHash: ByteArray,
-        myPublicKey: ByteArray,
         myPrivateKey: ByteArray,
-        currentKeyVersion: Long,
         packetStore: PacketStore,
         database: DesktopDatabase,
+        identityRepository: DesktopIdentityRepository,
         clock: Clock,
         dedupCache: LruDedupCache<String, Long>
     ): PacketPipeline {
-        val ikPub = DesktopCryptoEngine.deriveSigningPublicKey(myPrivateKey)
-        val identityStore = InMemoryIdentityStore()
-        identityStore.upsert(
-            PeerIdentity(
-                identityHash = myIdentityHash,
-                ikPub = ikPub,
-                ekPub = myPublicKey,
-                keyVersion = currentKeyVersion,
-                lastAnnounceCounter = 0L,
-                trustState = TrustState.VERIFIED,
-                nodeId64 = myNodeId
-            )
-        )
+        // Enforce single authoritative runtime IdentityStore instance
+        val identityStore = identityRepository.identityStore
 
         val keyProvider = object : KeyProvider {
             override fun getPublicChannelKey(): ByteArray = DesktopCryptoEngine.derivePublicChannelKey()
             override fun getActiveChannelKey(): ByteArray? = null
             override fun getSessionKey(peerNodeId: Long, timestampSec: Long): ByteArray? {
-                val peer = database.getPeer(peerNodeId) ?: return null
-                val peerPubKey = DesktopCryptoEngine.hexToBytes(peer.publicKeyHex)
+                // Collision-safe routable identity lookup
+                val identity = database.getUniqueIdentityByNodeId(peerNodeId) ?: return null
+                val peerPubKey = DesktopCryptoEngine.hexToBytes(identity.ekPubHex)
                 return DesktopCryptoEngine.derivePeerSessionKey(myPrivateKey, peerPubKey, timestampSec)
             }
         }

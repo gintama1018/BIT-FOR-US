@@ -58,4 +58,11 @@ object DesktopCryptoEngine {
 
     fun generateFingerprint(publicKeyBytes: ByteArray): String =
         PureCryptoEngine.generateFingerprint(publicKeyBytes)
+
+    fun hkdf(
+        ikm: ByteArray,
+        salt: ByteArray?,
+        info: ByteArray,
+        outputLength: Int
+    ): ByteArray = PureCryptoEngine.hkdf(ikm, salt, info, outputLength)
 }

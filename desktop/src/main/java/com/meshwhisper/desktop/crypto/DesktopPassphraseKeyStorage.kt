@@ -14,7 +14,12 @@ import javax.crypto.spec.SecretKeySpec
 
 /**
  * Desktop Key Storage implementation using PBKDF2-HMAC-SHA256 passphrase-derived master encryption.
- * Stores encrypted private keys, alias, and public channel keys in ~/.meshwhisper/identity.vault.
+ * Stores encrypted private keys, keyVersion, alias, public channel keys, and media-at-rest root file keys
+ * in ~/.meshwhisper/identity.vault.
+ *
+ * Enforces Phase P7 / P9 Fail-Closed Invariant:
+ * - If identity.vault exists, any decryption or corruption failure MUST throw SecurityException.
+ * - NEVER generate replacement keys or overwrite an existing unreadable vault.
  */
 class DesktopPassphraseKeyStorage(
     private val vaultDirectory: File = File(System.getProperty("user.home"), ".meshwhisper"),
@@ -26,8 +31,10 @@ class DesktopPassphraseKeyStorage(
     private val masterKey: ByteArray
 
     private var cachedPrivateKey: ByteArray? = null
+    private var cachedKeyVersion: Long = 1L
     private var cachedAlias: String? = null
     private var cachedPublicChannelKey: ByteArray? = null
+    private var cachedMediaFileKey: ByteArray? = null
 
     init {
         if (!vaultDirectory.exists()) {
@@ -56,7 +63,11 @@ class DesktopPassphraseKeyStorage(
     }
 
     private fun loadVault() {
-        if (!vaultFile.exists() || vaultFile.length() < 28) return // 12B IV + 16B Tag minimum
+        if (!vaultFile.exists()) return
+
+        if (vaultFile.length() < 28) {
+            throw SecurityException("identity.vault is corrupted (file size ${vaultFile.length()} < 28 bytes). Refusing to generate replacement keys or overwrite vault.")
+        }
 
         try {
             val fileBytes = vaultFile.readBytes()
@@ -89,7 +100,24 @@ class DesktopPassphraseKeyStorage(
                 decBuf.get(pubKeyBytes)
                 cachedPublicChannelKey = pubKeyBytes
             }
-        } catch (_: Exception) {}
+
+            if (decBuf.remaining() >= 8) {
+                cachedKeyVersion = maxOf(1L, decBuf.getLong())
+            } else {
+                cachedKeyVersion = 1L
+            }
+
+            if (decBuf.remaining() >= 1) {
+                val mediaKeyLen = decBuf.get().toInt() and 0xFF
+                if (mediaKeyLen > 0 && decBuf.remaining() >= mediaKeyLen) {
+                    val mediaKeyBytes = ByteArray(mediaKeyLen)
+                    decBuf.get(mediaKeyBytes)
+                    cachedMediaFileKey = mediaKeyBytes
+                }
+            }
+        } catch (e: Exception) {
+            throw SecurityException("Failed to decrypt existing identity.vault. Refusing to regenerate keys or overwrite vault.", e)
+        }
     }
 
     @Synchronized
@@ -98,8 +126,9 @@ class DesktopPassphraseKeyStorage(
             val priv = cachedPrivateKey ?: ByteArray(0)
             val aliasBytes = (cachedAlias ?: "DesktopNode").toByteArray(Charsets.UTF_8)
             val pubKey = cachedPublicChannelKey ?: ByteArray(0)
+            val mediaKey = cachedMediaFileKey ?: ByteArray(0)
 
-            val plainSize = 1 + priv.size + 1 + aliasBytes.size + 1 + pubKey.size
+            val plainSize = 1 + priv.size + 1 + aliasBytes.size + 1 + pubKey.size + 8 + 1 + mediaKey.size
             val plainBuf = ByteBuffer.allocate(plainSize)
             plainBuf.put(priv.size.toByte())
             if (priv.isNotEmpty()) plainBuf.put(priv)
@@ -107,6 +136,9 @@ class DesktopPassphraseKeyStorage(
             if (aliasBytes.isNotEmpty()) plainBuf.put(aliasBytes)
             plainBuf.put(pubKey.size.toByte())
             if (pubKey.isNotEmpty()) plainBuf.put(pubKey)
+            plainBuf.putLong(cachedKeyVersion)
+            plainBuf.put(mediaKey.size.toByte())
+            if (mediaKey.isNotEmpty()) plainBuf.put(mediaKey)
 
             val iv = ByteArray(12).also { secureRandom.nextBytes(it) }
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -116,8 +148,17 @@ class DesktopPassphraseKeyStorage(
             val fileBuf = ByteBuffer.allocate(iv.size + ciphertext.size)
             fileBuf.put(iv)
             fileBuf.put(ciphertext)
-            vaultFile.writeBytes(fileBuf.array())
-        } catch (_: Exception) {}
+
+            // Write atomically via tmp file
+            val tmpFile = File(vaultDirectory, "identity.vault.tmp")
+            tmpFile.writeBytes(fileBuf.array())
+            if (!tmpFile.renameTo(vaultFile)) {
+                tmpFile.copyTo(vaultFile, overwrite = true)
+                tmpFile.delete()
+            }
+        } catch (e: Exception) {
+            throw IllegalStateException("Failed to persist identity.vault: ${e.message}", e)
+        }
     }
 
     override fun getPrivateKey(): ByteArray? = cachedPrivateKey
@@ -125,6 +166,31 @@ class DesktopPassphraseKeyStorage(
     override fun storePrivateKey(privateKey: ByteArray) {
         cachedPrivateKey = privateKey
         saveVault()
+    }
+
+    fun getKeyVersion(): Long = cachedKeyVersion
+
+    fun storeKeyVersion(version: Long) {
+        cachedKeyVersion = maxOf(1L, version)
+        saveVault()
+    }
+
+    fun getMediaFileKey(): ByteArray? = cachedMediaFileKey
+
+    fun storeMediaFileKey(key: ByteArray) {
+        cachedMediaFileKey = key
+        saveVault()
+    }
+
+    fun getIdentityHash(): ByteArray? {
+        val priv = cachedPrivateKey ?: return null
+        val ikPub = DesktopCryptoEngine.deriveSigningPublicKey(priv)
+        return DesktopCryptoEngine.deriveIdentityHash(ikPub)
+    }
+
+    fun getNodeId64(): Long? {
+        val hash = getIdentityHash() ?: return null
+        return DesktopCryptoEngine.deriveNodeId64(hash)
     }
 
     override fun readAlias(): String? = cachedAlias
@@ -143,8 +209,10 @@ class DesktopPassphraseKeyStorage(
 
     override fun clearAll() {
         cachedPrivateKey = null
+        cachedKeyVersion = 1L
         cachedAlias = null
         cachedPublicChannelKey = null
+        cachedMediaFileKey = null
         if (vaultFile.exists()) {
             vaultFile.delete()
         }

@@ -1,6 +1,5 @@
 package com.meshwhisper.desktop.ui
 
-import com.meshwhisper.core.crypto.PureCryptoEngine
 import com.meshwhisper.core.protocol.MeshPacket
 import com.meshwhisper.desktop.db.DesktopDatabase
 import com.meshwhisper.desktop.db.DesktopMessage
@@ -348,7 +347,8 @@ class DesktopMainWindow(
 
                     val isConnected = wifiEngine.isPeerConnected(value.nodeId)
                     val statusDot = if (isConnected) "🟢 " else "📡 "
-                    val title = JLabel("$statusDot${value.alias}").apply {
+                    val trustBadge = "[${value.trustState}]"
+                    val title = JLabel("$statusDot${value.alias} $trustBadge").apply {
                         font = ModernTheme.FONT_BODY_BOLD
                         foreground = ModernTheme.TEXT_MAIN
                     }
@@ -433,7 +433,7 @@ class DesktopMainWindow(
         if (peer != null) {
             val isLan = wifiEngine.isPeerConnected(peer.nodeId)
             val status = if (isLan) "🟢 Active LAN Socket (TCP Direct)" else "📡 Mesh Relay (${peer.hops} hops)"
-            dmChatTitleLabel.text = "🔒 Encrypted Chat with ${peer.alias} (0x${String.format("%016X", peer.nodeId).takeLast(6)}) — $status"
+            dmChatTitleLabel.text = "🔒 [${peer.trustState}] Encrypted Chat with ${peer.alias} (0x${String.format("%016X", peer.nodeId).takeLast(6)}) — $status"
         } else {
             dmChatTitleLabel.text = "Select a peer to start encrypted chat"
         }
@@ -522,7 +522,7 @@ class DesktopMainWindow(
         identityBox.add(JLabel("Node ID (64-bit Hex):").apply { font = ModernTheme.FONT_BODY_BOLD; foreground = ModernTheme.TEXT_MAIN })
         identityBox.add(JLabel("0x${router.myNodeIdHex}").apply { font = ModernTheme.FONT_MONO; foreground = ModernTheme.TEXT_MUTED })
         identityBox.add(JLabel("Public Key Fingerprint:").apply { font = ModernTheme.FONT_BODY_BOLD; foreground = ModernTheme.TEXT_MAIN })
-        identityBox.add(JLabel(PureCryptoEngine.generateFingerprint(router.myPublicKey)).apply { font = ModernTheme.FONT_MONO; foreground = ModernTheme.TEXT_MUTED })
+        identityBox.add(JLabel(router.myFingerprint).apply { font = ModernTheme.FONT_MONO; foreground = ModernTheme.TEXT_MUTED })
         identityBox.add(JLabel("Key Storage Vault:").apply { font = ModernTheme.FONT_BODY_BOLD; foreground = ModernTheme.TEXT_MAIN })
         identityBox.add(JLabel("~/.meshwhisper/identity.vault (PBKDF2-HMAC-SHA256)").apply { font = ModernTheme.FONT_MONO; foreground = ModernTheme.TEXT_MUTED })
 

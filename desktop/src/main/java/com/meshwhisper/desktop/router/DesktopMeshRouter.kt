@@ -11,6 +11,7 @@ import com.meshwhisper.desktop.crypto.DesktopCryptoEngine
 import com.meshwhisper.desktop.crypto.DesktopPassphraseKeyStorage
 import com.meshwhisper.desktop.crypto.DesktopPipelineFactory
 import com.meshwhisper.desktop.db.*
+import com.meshwhisper.desktop.identity.DesktopIdentityRepository
 import com.meshwhisper.desktop.wifi.DesktopWifiEngine
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -53,6 +54,8 @@ class DesktopMeshRouter(
         private set
     var myIdentityHash: ByteArray
         private set
+    var myFingerprint: String
+        private set
 
     private var currentAnnounceCounter: Long = 1L
     private var currentKeyVersion: Long = 1L
@@ -62,6 +65,8 @@ class DesktopMeshRouter(
 
     private val _sosAlerts = MutableSharedFlow<DesktopMessage>(extraBufferCapacity = 32)
     val sosAlerts: SharedFlow<DesktopMessage> = _sosAlerts.asSharedFlow()
+
+    val identityRepository: DesktopIdentityRepository
 
     lateinit var mediaManager: com.meshwhisper.desktop.media.DesktopMediaManager
         private set
@@ -85,16 +90,22 @@ class DesktopMeshRouter(
         myIdentityHash = DesktopCryptoEngine.deriveIdentityHash(ikPub)
         myNodeId = DesktopCryptoEngine.deriveNodeId64(myIdentityHash)
         myNodeIdHex = java.lang.Long.toUnsignedString(myNodeId, 16).padStart(16, '0').uppercase()
+        myFingerprint = DesktopCryptoEngine.generateFingerprint(ikPub)
         myAlias = keyStorage.readAlias() ?: "Desktop-${myNodeIdHex.takeLast(4)}"
+
+        identityRepository = DesktopIdentityRepository(
+            database = database,
+            keyStorage = keyStorage,
+            clock = clock,
+            logger = logger
+        )
 
         pipeline = DesktopPipelineFactory.create(
             myNodeId = myNodeId,
-            myIdentityHash = myIdentityHash,
-            myPublicKey = myPublicKey,
             myPrivateKey = myPrivateKey,
-            currentKeyVersion = currentKeyVersion,
             packetStore = packetStore,
             database = database,
+            identityRepository = identityRepository,
             clock = clock,
             dedupCache = dedupCache
         )
@@ -102,6 +113,7 @@ class DesktopMeshRouter(
         mediaManager = com.meshwhisper.desktop.media.DesktopMediaManager(
             myNodeId = myNodeId,
             myPrivateKey = myPrivateKey,
+            keyStorage = keyStorage,
             database = database,
             wifiEngine = wifiEngine,
             logger = logger,
@@ -174,10 +186,18 @@ class DesktopMeshRouter(
     fun bindLink(proof: LinkAuthProof) {
         require(proof.peerIdentityHash.size == 32) { "identityHash must be 32 bytes" }
         authenticatedLinks[proof.linkHandle] = proof.peerIdentityHash
+        scope.launch {
+            identityRepository.onLinkEstablished(proof.peerIdentityHash)
+        }
     }
 
     fun unbindLink(linkHandle: String) {
-        authenticatedLinks.remove(linkHandle)
+        val idHash = authenticatedLinks.remove(linkHandle)
+        if (idHash != null) {
+            scope.launch {
+                identityRepository.onLinkDisconnected(idHash)
+            }
+        }
     }
 
     fun isLinkAuthenticated(linkHandle: String): Boolean {
@@ -326,16 +346,9 @@ class DesktopMeshRouter(
         val packet = authPacket.packet
         val announce = PeerAnnouncePayload.deserialize(authPacket.decryptedPayload, packet.senderId, packet.ttl) ?: return
 
-        val peer = DesktopPeer(
-            nodeId = packet.senderId,
-            publicKeyHex = DesktopCryptoEngine.bytesToHex(announce.ekPub),
-            alias = announce.alias,
-            rssi = -50,
-            hops = maxOf(1, MeshPacket.DEFAULT_TTL - packet.ttl),
-            lastSeen = System.currentTimeMillis(),
-            publicFingerprint = DesktopCryptoEngine.generateFingerprint(announce.ikPub)
-        )
-        database.upsertPeer(peer)
+        scope.launch {
+            identityRepository.onAuthenticatedAnnounce(authPacket.senderIdentity, announce)
+        }
         logger.i(TAG, "Discovered mesh peer: ${announce.alias} (0x${String.format("%016X", packet.senderId)})")
     }
 
@@ -419,52 +432,21 @@ class DesktopMeshRouter(
     }
 
     fun sendDirectMessage(recipientNodeId: Long, text: String): String? {
-        val peer = database.getPeer(recipientNodeId) ?: return null
+        val identity = database.getUniqueIdentityByNodeId(recipientNodeId) ?: return null
+        val peerPubKey = DesktopCryptoEngine.hexToBytes(identity.ekPubHex)
         val msgId = UUID.randomUUID()
         val timestamp = System.currentTimeMillis() / 1000L
         val plainBytes = text.toByteArray(Charsets.UTF_8)
 
-        val peerPubKey = DesktopCryptoEngine.hexToBytes(peer.publicKeyHex)
-        val sessionKey = DesktopCryptoEngine.derivePeerSessionKey(myPrivateKey, peerPubKey, timestamp)
-        val aad = MeshPacket.computeAad(
-            type = PacketType.DIRECT_MESSAGE,
-            messageId = msgId,
-            senderId = myNodeId,
-            recipientId = recipientNodeId,
-            timestamp = timestamp
-        )
-
-        val encResult = DesktopCryptoEngine.encrypt(plainBytes, msgId, sessionKey, aad)
-
-        val md = MessageDigest.getInstance("SHA-256")
-        md.update(encResult.ciphertext)
-        md.update(encResult.authTag)
-        val cipherHash = md.digest()
-
-        val transcript = MeshPacket.buildSigTranscript(
-            purposeTag = ResourceLimits.PURPOSE_CONTENT,
-            protocolVersion = ResourceLimits.PROTOCOL_VERSION.toByte(),
-            packetTypeByte = PacketType.DIRECT_MESSAGE.wireByte,
-            messageId = msgId,
-            senderIdentityHash = myIdentityHash,
+        val packet = DirectMessagePacketBuilder.build(
             senderNodeId64 = myNodeId,
+            senderIdentityHash = myIdentityHash,
+            senderPrivateKey = myPrivateKey,
             recipientNodeId64 = recipientNodeId,
-            timestamp = timestamp,
-            payloadLenExcludingSig = encResult.ciphertext.size,
-            ciphertextAndTagHash = cipherHash
-        )
-        val hopSig = DesktopCryptoEngine.sign(myPrivateKey, transcript)
-        val fullPayload = encResult.ciphertext + hopSig
-
-        val packet = MeshPacket(
-            type = PacketType.DIRECT_MESSAGE,
-            messageId = msgId,
-            senderId = myNodeId,
-            recipientId = recipientNodeId,
-            ttl = MeshPacket.DEFAULT_TTL,
-            timestamp = timestamp,
-            payload = fullPayload,
-            authTag = encResult.authTag
+            peerPublicKey = peerPubKey,
+            plaintext = plainBytes,
+            timestampSec = timestamp,
+            messageId = msgId
         )
 
         val raw = MeshPacket.serialize(packet)
@@ -493,7 +475,8 @@ class DesktopMeshRouter(
     }
 
     private fun sendAck(recipientNodeId: Long, originalMsgId: UUID) {
-        val peer = database.getPeer(recipientNodeId) ?: return
+        val identity = database.getUniqueIdentityByNodeId(recipientNodeId) ?: return
+        val peerPubKey = DesktopCryptoEngine.hexToBytes(identity.ekPubHex)
         val ackPacketId = UUID.randomUUID()
         val timestamp = System.currentTimeMillis() / 1000L
 
@@ -510,7 +493,6 @@ class DesktopMeshRouter(
             timestamp = timestamp
         )
 
-        val peerPubKey = DesktopCryptoEngine.hexToBytes(peer.publicKeyHex)
         val sessionKey = DesktopCryptoEngine.derivePeerSessionKey(myPrivateKey, peerPubKey, timestamp)
         val encResult = DesktopCryptoEngine.encrypt(plainPayload, ackPacketId, sessionKey, aad)
 

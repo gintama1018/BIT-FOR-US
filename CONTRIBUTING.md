@@ -24,18 +24,18 @@ The codebase is organized into three decoupled Gradle modules:
 
 ```
 MeshWhisper/
-├── core/       # Pure Kotlin JVM library (protocol wire framing, pure crypto, LRU cache)
-├── app/        # Android application (BLE GATT, Wi-Fi UDP/TCP, Room v11, Jetpack Compose, audio)
-└── desktop/    # JVM station console (pure Java sockets, SQLite, CLI management)
+├── core/       # Pure Kotlin JVM library (protocol wire framing, pure crypto, admission pipeline, LRU cache)
+├── app/        # Android application (BLE GATT, Wi-Fi UDP/TCP, Room v12, Jetpack Compose, audio)
+└── desktop/    # JVM station workstation (Wi-Fi sockets, fail-closed SQLite vault, desktop UI)
 ```
 
 ### Module Responsibilities & Constraints
 
 | Module | Permitted Dependencies | Forbidden Dependencies | Primary Responsibilities |
 | :--- | :--- | :--- | :--- |
-| **`:core`** | Kotlin Stdlib, Coroutines, BouncyCastle (`bcprov-jdk18on`) | `android.*`, AndroidX, Jetpack Compose, Room, SQLCipher | 56-byte wire framing (`MeshPacket`), `PureCryptoEngine`, `LruDedupCache`, `MeshLogger` |
-| **`:app`** | AndroidX, Jetpack Compose, Room, SQLCipher, CameraX, BouncyCastle | Cloud SDKs, external analytics, remote push notification libraries | `MeshBleEngine`, `MeshWifiEngine`, `MeshRouter`, `VoiceCallManager`, `AdpcmCodec`, `MeshDatabase` |
-| **`:desktop`** | Kotlin Stdlib, Coroutines, BouncyCastle, `sqlite-jdbc` | Android SDK, GUI heavy frameworks | `DesktopWifiEngine`, `DesktopMeshRouter`, `DesktopDatabase`, CLI console |
+| **`:core`** | Kotlin Stdlib, Coroutines, BouncyCastle (`bcprov-jdk18on`) | `android.*`, AndroidX, Jetpack Compose, Room, SQLCipher | 56-byte wire framing (`MeshPacket`), `PacketPipeline`, `PureCryptoEngine`, `DirectMessagePacketBuilder`, `TrustStateMachine` |
+| **`:app`** | AndroidX, Jetpack Compose, Room (v12), SQLCipher, CameraX, BouncyCastle | Cloud SDKs, external analytics, remote push notification libraries | `MeshBleEngine`, `MeshWifiEngine`, `MeshRouter`, `VoiceCallManager`, `MediaAtRestManager`, `MeshDatabase` |
+| **`:desktop`** | Kotlin Stdlib, Coroutines, BouncyCastle, `sqlite-jdbc` | `android.*`, AndroidX, Jetpack Compose, Room, SQLCipher (T-ARCH-01) | `DesktopWifiEngine`, `DesktopMeshRouter`, `DesktopIdentityRepository`, `DesktopDatabase`, `DesktopPassphraseKeyStorage` |
 
 ---
 
@@ -155,9 +155,10 @@ If introducing a new protocol packet type:
    - `docs:` Documentation corrections or synchronization.
 3. **Pre-Submission Checklist**:
    - [ ] Project builds successfully (`assembleDebug`).
-   - [ ] All 118 automated tests pass locally (`.\gradlew.bat test`).
-   - [ ] No Android classes imported into `:core`.
+   - [ ] All 331 automated tests pass locally (`.\gradlew.bat :core:test :app:testDebugUnitTest :desktop:test`).
+   - [ ] No Android classes imported into `:core` or `:desktop` (T-ARCH-01 zero-Android rule).
    - [ ] Voice logic strictly honors direct 1-hop constraint ($ttl = 1$).
+   - [ ] Cryptographic operations use `:core` authorities without duplicated primitives.
    - [ ] Relevant documentation in `docs/` updated.
 4. **Submit PR**: Open a Pull Request against `main` on GitHub detailing:
    - The problem addressed or capability added.

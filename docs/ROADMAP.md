@@ -12,7 +12,7 @@ Last Updated: **September 2026**
 - Dual-role BLE GATT engine (Central + Peripheral) with deterministic symmetry tie-breaking.
 - Offline Wi-Fi LAN/Hotspot UDP discovery (port 42425) and TCP streaming (port 42426).
 - End-to-end encryption via X25519 ECDH and AES-256-GCM.
-- SQLCipher hardware-wrapped encrypted database (Room v11).
+- SQLCipher hardware-wrapped encrypted database (Room v11; upgraded to Room v12 in Phase P7).
 - Out-of-band Safety Numbers with CameraX QR scanner.
 - Emergency SOS GPS broadcast and offline radar compass.
 
@@ -45,12 +45,24 @@ Last Updated: **September 2026**
 - Full signaling state machine (`VoiceCallManager`): `OFFER`, `ANSWER`, `DECLINE`, `HANGUP`, `BUSY`, with 30-second ringing timeout and link-loss disconnect detection.
 - Sahara call HUD: direct chat top-bar trigger, ringing dialog with pulsing avatar animation, call timer (`mm:ss`), mute mic toggle, and speakerphone toggle.
 
+### vNext Implementation Milestone (Phases P0–P10)
+- **Phase P0/P1 (Protocol Freeze)**: Canonical 56-byte binary wire framing, trailing 64B hop signatures ($C\text{-}01$), 115-byte `SIG_TRANSCRIPT` ($C\text{-}06$), 37-byte AAD binding.
+- **Phase P2 (Pipeline)**: 8-stage gate pipeline (S0–S7), pre-auth dedup read-only cache poisoning immunity ($C\text{-}05$), anti-spoofing check ($C\text{-}02$), CPU signature rate limit ($C\text{-}16$).
+- **Phase P3/P4 (Transport Security)**: `LINK_AUTH` mutual handshake with $K_{\text{link}}$ derivation ($C\text{-}09$, $C\text{-}10$) and 5-connection hard ceiling.
+- **Phase P5 (Relay Custody)**: Deterministic custody handoffs (`CUSTODY_OFFER`, `CUSTODY_ACCEPT`, `CUSTODY_ACK`) and store-and-forward buffer bounds.
+- **Phase P6 (Media & Voice Pinning)**: Call key epoch pinning ($C\text{-}13$), broadcast chunk write-once and SHA-256 commit backstop ($C\text{-}14$).
+- **Phase P7 (Media At-Rest & Wipe)**: `MWMEDIA1` per-file HKDF AES-GCM encryption, panic station wipe, Room v12 migration (`MIGRATION_11_12`).
+- **Phase P8 (Trust State Machine)**: Monotonic trust transitions $T_1$–$T_{11}$ and $T_{12}$ migration, $T_7$ collision detection, $T_8$ out-of-band CameraX QR resolution, $T_6$ rotation demotion ($C\text{-}12$).
+- **Phase P9 (Desktop Parity)**: Single `:core` protocol authority, shared `DirectMessagePacketBuilder`, fail-closed PBKDF2 AES-GCM vault, real OS socket integration test `P9-NET-01` (`testP9RealNetworkSocketTransportFlow`).
+- **Phase P10 (Documentation & Hygiene)**: Implementation-independent `docs/PROTOCOL.md`, concrete `docs/SECURITY.md`, honest `docs/LIMITATIONS.md`, complete `docs/TESTING.md`, synchronized `README.md`, and 331 tests verified.
+
 ---
 
 ## 2. Current Status
 
-- **Phase**: Comprehensive documentation re-engineering, specification alignment, and architecture truth audit.
-- **Verification**: **118 automated tests passing 100% offline** (38 `:core`, 77 `:app`, 3 `:desktop`).
+- **Phase**: vNext Implementation Milestone (Phases P0–P10) **COMPLETED & FROZEN**.
+- **Verification**: **331 automated tests passing 100% offline** (191 `:core`, 119 `:app`, 21 `:desktop`).
+- **Physical Acceptance**: Physical Android $\leftrightarrow$ Desktop real Wi-Fi LAN acceptance pending field execution.
 
 ---
 

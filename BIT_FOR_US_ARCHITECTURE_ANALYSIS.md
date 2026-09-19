@@ -1,9 +1,9 @@
 # BIT FOR US (MeshWhisper) — Architecture Analysis & Re-Engineering Plan
 
 > [!NOTE]
-> **IMPLEMENTATION STATUS: COMPLETED & VERIFIED**
-> All high-priority architectural findings (**P7, P6, P1, P2, P5, P3, and P4**) outlined in Section 2 and Section 14 have been fully implemented and verified.
-> The build compiles 100% offline with **70 passing automated tests and 0 failures**. Refer to `ARCHITECTURE.md` (Sections 8, 9, and 10) for the current production specification.
+> **IMPLEMENTATION STATUS: vNext PHASES P0–P10 COMPLETED & VERIFIED**
+> All high-priority architectural findings (**P7, P6, P1, P2, P5, P3, and P4**) and vNext Protocol & Security Phases (**P0 through P10**) have been fully implemented, frozen, and verified.
+> The multi-module build compiles 100% offline with **331 passing automated tests and 0 failures** (191 `:core`, 119 `:app`, 21 `:desktop`). Refer to `docs/ARCHITECTURE.md`, `docs/PROTOCOL.md`, and `docs/SECURITY.md` for the authoritative production specifications.
 
 **Scope of this pass:** `core/` (pure-Kotlin, shared with desktop) and `app/` (Android). I read the full BLE engine (816 lines), the full router (1409 lines), the media transfer manager (1389 lines, focused read), the full Wi-Fi engine (494 lines), the full BLE frame framer, the database + DAOs + migrations, the foreground service, the application/DI wiring, and the crypto engine (both Android and core layers) — tracing real execution paths, not filenames or the existing `ARCHITECTURE.md`. Every claim below is tied to a specific file.
 

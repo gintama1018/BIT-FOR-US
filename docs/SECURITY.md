@@ -1,120 +1,195 @@
-# BIT FOR US — Cryptography & Security Specification
+# BIT FOR US / MeshWhisper — Security Architecture & Evidence Specification
 
-Version: **v1.4 (Synchronized with Codebase)**  
-Last Updated: **September 2026**
-
----
-
-## 1. Cryptographic Primitives & Standards
-
-BIT FOR US uses modern, standard cryptographic primitives without custom or proprietary ciphers. All mathematical operations are implemented using BouncyCastle on pure JVM (`:core`) and Android KeyStore hardware backing (`:app`).
-
-| Primitive | Standard / RFC | Key Size | Implementation Class | Purpose |
-| :--- | :--- | :---: | :--- | :--- |
-| **X25519** | RFC 7748 | 256-bit | `PureCryptoEngine.kt` | Elliptic-curve Diffie-Hellman (ECDH) key agreement for unicast messaging. |
-| **Ed25519** | RFC 8032 | 256-bit | `PureCryptoEngine.kt` | Digital signatures on presence beacons, SOS distress alerts, and profile updates. |
-| **AES-256-GCM** | NIST SP 800-38D | 256-bit | `PureCryptoEngine.kt` | Authenticated Encryption with Associated Data (AEAD) using 96-bit random IVs and 128-bit auth tags. |
-| **HKDF-SHA256** | RFC 5869 | 256-bit | `PureCryptoEngine.kt` | Key derivation for peer-to-peer session keys, refreshed on 1-hour epochs. |
-| **PBKDF2-HMAC-SHA256** | RFC 2898 | 256-bit | `PureCryptoEngine.kt` | Channel key derivation from passphrases using 100,000 iterations and salt. |
-| **SHA-256** | FIPS 180-4 | 256-bit | `MessageDigest` | Chunked media integrity verification and avatar hashing. |
-| **SQLCipher** | AES-256-CBC | 256-bit | `MeshDatabase.kt` | Hardware-wrapped encrypted SQLite persistence for all local tables. |
-| **AndroidKeyStore** | Hardware TEE / SE | 256-bit | `CryptoEngine.kt` | Hardware-isolated AES-GCM master key protecting local credentials and database passphrases. |
+**Status:** FROZEN Normative Specification  
+**Security Model:** Zero-Trust Decentralized Mesh  
+**Applies to:** `:core`, `:app`, `:desktop`  
+**Supersedes:** Legacy Security Specification v1.4  
 
 ---
 
-## 2. Key Hierarchy & Lifecycle
+## 1. Security Architecture & Trust Boundaries
 
-```mermaid
-graph TD
-    subgraph Hardware_TEE["Hardware TEE / StrongBox (AndroidKeyStore)"]
-        MasterKey["Master Keystore Key<br>AES-256-GCM"]
-    end
+MeshWhisper treats all physical radio environments (BLE advertisements, GATT characteristics, and Wi-Fi broadcast/multicast packets) as untrusted, hostile transport media. 
 
-    subgraph Encrypted_Storage["Encrypted Private Storage"]
-        MasterKey -->|Unwraps| IdentityKeys["Device Identity<br>Ed25519 Signing Key<br>X25519 Static Private Key"]
-        MasterKey -->|Unwraps| DbKey["SQLCipher Database Passphrase"]
-    end
-
-    subgraph Ephemeral_Derivation["Runtime Key Derivation (Memory Only)"]
-        IdentityKeys -->|"X25519 ECDH with Peer Public Key"| SharedSecret["Shared Secret: 32 bytes"]
-        SharedSecret -->|"HKDF-SHA256 and 1-Hour Epoch Salt"| SessionKey["Peer Session Key<br>Rotated Hourly, 256-entry LRU"]
-        Passphrase["Channel Passphrase"] -->|"PBKDF2-SHA256 100k rounds"| ChannelKey["Public Channel Key"]
-    end
-
-    SessionKey -->|"Encrypts and Decrypts"| DirectPackets["DIRECT_MESSAGE (E2EE)"]
-    ChannelKey -->|"Encrypts and Decrypts"| PublicPackets["BROADCAST_MESSAGE"]
+```
+                                Hostile Radio Airwaves (BLE / Wi-Fi)
+                                                  │
+ ┌────────────────────────────────────────────────▼────────────────────────────────────────────────┐
+ │ S0: Transport & Link Authentication Boundary (LINK_AUTH, K_link frame encryption)              │
+ ├────────────────────────────────────────────────────────────────────────────────────────────────┤
+ │ S1–S3: Pre-Authentication Gate (Length validation, freshness window, read-only dedup cache)    │
+ ├────────────────────────────────────────────────────────────────────────────────────────────────┤
+ │ S4–S6: Cryptographic Verification (Identity binding, AEAD tag check, Ed25519 hop signature)    │
+ ├────────────────────────────────────────────────────────────────────────────────────────────────┤
+ │ S7: Admission & State Commitment (Atomic processed_packets commit, route/custody dispatch)    │
+ ├────────────────────────────────────────────────────────────────────────────────────────────────┤
+ │ Storage Boundary (Room v12 SQLCipher TEE-backed on Android / PBKDF2 AES-GCM Vault on Desktop)  │
+ └────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 2.1. Node ID Derivation
-A node's 64-bit address (`Node ID: Long`) is cryptographically bound to its Ed25519 identity:
-```kotlin
-val digest = MessageDigest.getInstance("SHA-256").digest(ed25519PublicKeyBytes)
-val buffer = ByteBuffer.wrap(digest).order(ByteOrder.BIG_ENDIAN)
-val nodeId = buffer.getLong()
+### Core Security Invariants
+1. **Fail-Closed by Default (I-1)**: Any packet, frame, certificate, signature, or vault record that fails structural, cryptographic, or freshness validation is immediately discarded. Missing or ambiguous state never defaults to permissive admission.
+2. **Cryptographic Identity Attribution (I-2)**: Node addresses (`nodeId64`) are mathematically derived from Ed25519 identity public keys. Senders cannot spoof or claim addresses they do not cryptographically control.
+3. **No Unauthenticated State Mutation (I-10)**: Deduplication caches, databases, session registries, and trust state machines are never modified by pre-auth or malformed packets.
+4. **Single Protocol Authority (T-ARCH-01)**: Desktop and Android execute identical cryptographic validation rules via the shared `:core` module.
+
+---
+
+## 2. Packet Admission Pipeline (S0–S7)
+
+Every packet arriving at a node passes through a strict, non-bypassable 8-stage gate pipeline ([`PacketPipeline.kt`](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/core/src/main/java/com/meshwhisper/core/protocol/PacketPipeline.kt)):
+
 ```
-An attacker cannot spoof or claim an arbitrary Node ID without possessing the corresponding private key matching the public key that derives it.
+[Packet Ingress]
+       │
+       ▼
+   Stage S0: Transport Admission & Link State Check
+       │     (Drops non-discovery traffic if link is not AUTHENTICATED)
+       ▼
+   Stage S1: Framing & Wire Format Sanity
+       │     (protocolVersion == 1, 56B overhead, length == 56 + payloadLen, non-zero auth tag)
+       ▼
+   Stage S2: Freshness Window Enforcement
+       │     (Rejects future skew > 120s or packets older than PAST_WINDOW[type])
+       ▼
+   Stage S3: Pre-Authentication Deduplication Check (READ-ONLY)
+       │     (Checks RAM LRU & DB; NO insertions allowed to prevent pre-auth cache poisoning)
+       ▼
+   Stage S4: Identity Resolution & Anti-Spoofing Check
+       │     (Validates BE_u64(identityHash[0..8]) == header.senderId; checks IBC)
+       ▼
+   Stage S5: AEAD Payload Decryption
+       │     (Validates 37-byte AAD; verifies AES-256-GCM auth tag; decrypts payload)
+       ▼
+   Stage S6: Hop Signature Verification (Budget-Enforced)
+       │     (Verifies Ed25519 signature on 115B transcript; rate-limited to 32 verifications/s/link)
+       ▼
+   Stage S7: Admission, Atomic Dedup Commit & Dispatch
+       │     (Atomically writes processed_packets; emits AuthenticatedPacket to UI/Relay)
+       ▼
+[Accepted & Committed]
+```
 
-### 2.2. Session Key Epoch Rotation
-Direct messages use pairwise session keys derived via:
-$$\text{SessionKey} = \text{HKDF-Expand}(\text{HKDF-Extract}(\text{ECDH}(sk_A, pk_B)), \text{info} = \text{epoch})$$
-where $\text{epoch} = \lfloor \text{timestamp} / 3600 \rfloor$.
-This bounds the cryptographic exposure of any single session key to 1 hour. To minimize expensive curve multiplications during chat bursts, derived session keys are cached in a bounded in-memory LRU cache of capacity 256.
-
----
-
-## 3. Trust Model & Identity Verification
-
-### 3.1. Trust-On-First-Use (TOFU) with Key Rotation Alerts
-1. When a node discovers a peer for the first time via `PEER_ANNOUNCE`, it records the peer's public key and fingerprint in the encrypted database.
-2. If a subsequent announcement arrives claiming the same Node ID or alias but presenting a *different* public key, `MeshRouter` immediately:
-   - Rejects silent key replacement.
-   - Flags `hasKeyChanged = true` on the peer entity.
-   - Invalidates all cached session keys for that peer.
-   - Surfaces a high-priority **Security Warning Banner** in the direct chat UI:  
-     `"SECURITY WARNING: SAFETY NUMBER CHANGED"`.
-
-### 3.2. Out-of-Band Safety Number Verification
-To achieve cryptographic certainty against active Man-in-the-Middle (MITM) relay attacks:
-- Each peer pair generates a deterministic **60-digit / 12-group Safety Number** calculated from the sorted concatenation of both nodes' public keys.
-- Users can visually compare safety numbers or scan each other's screen using the built-in **CameraX QR Scanner**.
-- Once verified, the peer is stamped with `isVerified = true`, displaying a verified green shield badge in the chat UI.
-
----
-
-## 4. Profile Anti-Rollback Architecture
-
-User profiles (display name, bio, avatar hash) are strictly decoupled from the underlying cryptographic Node ID. To prevent malicious relays from reverting a user's profile to an older state, profile broadcasts enforce monotonic versioning:
-
-1. Every profile update carries a 64-bit monotonically increasing `version` counter.
-2. The entire payload (`PROF` magic, version, node ID, display name, bio, avatar hash) is signed by the user's Ed25519 identity key.
-3. Receiving nodes verify the signature using the peer's stored public key.
-4. **Anti-Rollback Rule**: If $\text{version} \le \text{storedVersion}$, the update is discarded immediately as stale or replayed.
-
----
-
-## 5. Panic Wipe (Zero-Trace Storage Erasure)
-
-In tactical or hostile physical seizure scenarios, the user can trigger the **Emergency Station Wipe**:
-1. Closes active Room database connections.
-2. Securely overwrites and deletes the SQLite database, WAL file (`-wal`), and shared-memory file (`-shm`).
-3. Deletes the master key alias from the Android KeyStore hardware provider.
-4. Clears all private SharedPreferences and cached avatar files from the application directory.
-5. Immediately terminates the application process via `Process.killProcess(Process.myPid())`.
+### Pipeline Details & Defenses
+- **S0 (Transport Admission)**: Enforces that unauthenticated physical links only exchange `LINK_AUTH` and initial discovery packets. Any data, chat, voice, or media packets arriving on a pending link are discarded.
+- **S1 (Wire Sanity)**: Rejects retired packet types (`KEY_EXCHANGE` `0x02`), invalid protocol versions ($\ne 1$), payload lengths exceeding 2048 bytes, and non-conforming lengths. Auth tags must be non-zero for all types except `LINK_AUTH` ($C\text{-}08$).
+- **S2 (Freshness)**: Defends against replay attacks by enforcing $-120\text{ s} \le \text{age} \le \text{PAST\_WINDOW}[\text{type}]$. Out-of-window packets are dropped without state mutation.
+- **S3 (Read-Only Dedup)**: Defends against **Pre-Auth Cache Poisoning ($C\text{-}05$)**. Attackers observing a message ID in flight cannot send a malformed pre-auth packet to poison the deduplication cache. Cache insertion happens only at S7.
+- **S4 (Identity Anti-Spoofing)**: Enforces $\text{BE\_u64}(\text{identityHash}[0..8]) == \text{header.senderId}$ ($C\text{-}02$). Mismatched packets are dropped immediately.
+- **S5 (AEAD Verification)**: Authenticates the 37-byte header AAD. Prevents header mutation, recipient redirection, or ciphertext bit-flipping.
+- **S6 (Signature Verification & CPU DoS Protection)**: Verifies the 64-byte trailing Ed25519 signature against the 115-byte canonical transcript. Protected by a **32 verifications/second/link** rate limit ($C\text{-}16$, $C\text{-}17$), preventing signature flood attacks from starving the CPU.
+- **S7 (Atomic Commitment)**: Atomically executes `INSERT OR IGNORE INTO processed_packets` and populates the RAM LRU read-through cache.
 
 ---
 
-## 6. Threat Model & Mitigation Matrix
+## 3. Link-Layer Transport Security (LINK_AUTH)
 
-| Threat | Attack Vector | Codebase Mitigation | Remaining Risk |
-| :--- | :--- | :--- | :--- |
-| **Passive Eavesdropping** | RF sniffing of BLE advertisements or Wi-Fi packets. | Direct messages are encrypted with AES-256-GCM. Public broadcasts require channel passphrase. | Metadata (sender/recipient Node IDs, timestamps, hop counts) is transmitted in clear header. |
-| **Ciphertext Tampering** | Bit-flipping ciphertext in transit over radio links. | AES-GCM 128-bit authentication tag verified over entire packet; invalid tags are dropped. | None; tampering results in immediate cryptographic rejection. |
-| **Header Substitution** | Modifying recipient ID to redirect packets to another node. | Additional Authenticated Data (AAD) binds the 40-byte header to the ciphertext tag. | None; altering recipient ID breaks tag verification. |
-| **Replay Attacks** | Capturing and replaying legitimate direct messages. | 24-hour timestamp validity window + atomic `INSERT OR IGNORE` in `processed_packets` table. | Packets replayed within seconds before LRU eviction can trigger duplicate delivery ACK. |
-| **Sybil Node ID Spoofing** | Attacker claims a victim's Node ID in announcements. | Node ID is mathematically derived from Ed25519 public key. Announcement requires valid Ed25519 signature. | None; forged signatures are rejected before peer insertion. |
-| **Profile Rollback** | Malicious relay sends an old profile update. | Monotonically increasing version counter signed by Ed25519; versions $\le$ current are dropped. | None; replay of old updates is detected and discarded. |
-| **Rogue Relay Drop / Blackhole** | Malicious intermediate relay drops forwarded packets. | Sender tracks delivery ACKs. Link failure detection triggers automatic reroute failover ($A \to D \to C$). | If all paths through the mesh contain adversarial nodes, messages will buffer until direct link. |
-| **Connection Exhaustion** | Flooding GATT server or Wi-Fi port with connections. | `MAX_CONCURRENT_GATT_CONNECTIONS = 5`, `MAX_CONCURRENT_WIFI_CONNECTIONS = 8`, rate limits (50/sec). | Attacker can exhaust available connection slots for nearby peers on the same radio. |
-| **Flash Wearout via Voice Frames** | Flooding high-frequency voice frames to trigger DB I/O. | Real-time voice frames (`VOICE_FRAME`) are intercepted by fast-path and bypass SQLite DB. | Memory allocation if frame buffer overflows (bounded by `JitterBuffer` capacity of 8 frames). |
-| **Physical Device Extraction** | Forensic extraction of flash memory from seized device. | SQLCipher encryption with AES-256 key wrapped in hardware TEE (AndroidKeyStore). | Cold-boot attacks or devices compromised by hardware rootkits prior to seizure. |
-| **RF Jamming** | Wideband RF noise saturating 2.4 GHz spectrum. | Dual-radio diversity: can switch between BLE and local Wi-Fi LAN sockets. | High-power RF barrage can jam both 2.4 GHz radios within physical line-of-sight. |
+Direct peer connections (BLE GATT connections and Wi-Fi TCP streams) execute mutual cryptographic authentication before establishing an active session.
+
+- **Handshake Protocol**: Two-stage mutual exchange: Stage `0x01` HELLO (169 B) followed by Stage `0x02` CONFIRM (65 B).
+- **Transcript Binding**: Both nodes compute $T = \text{SHA-256}(\text{"MW/TCP/v2"} \parallel 0\text{x}00 \parallel \text{HELLO}_{\text{lo}} \parallel \text{HELLO}_{\text{hi}})$.
+- **Key Derivation ($K_{\text{link}}$)**:
+  $$K_{\text{link}} = \text{HKDF-SHA256}(\text{X25519}(EK_{\text{sk}}, EK_{\text{pk\_peer}}), \text{salt} = \text{"MW/LINK/SALT/v2"}, \text{info} = \text{"MW/LINK/KEY/v2"} \parallel T, 32)$$
+- **SIGMA Identity-Misbinding Defense ($C\text{-}09$)**: Both $\text{identityHash}_{\text{self}}$ and $\text{identityHash}_{\text{peer}}$ are bound inside the signed CONFIRM preimage, preventing MITM identity-substitution attacks.
+- **Cutover to Encrypted Transport**: Upon mutual confirmation, all post-auth TCP frames are encrypted with AES-256-GCM under $K_{\text{link}}$ (12B IV + plaintext + 16B tag).
+- **Session Registry Limits**: Strict ceiling of **5 concurrent authenticated links** (`ResourceLimits.MAX_WIFI_AUTHENTICATED_SESSIONS`). Duplicate active identities on simultaneous connections are rejected.
+
+---
+
+## 4. Key Management, Rotation & Anti-Equivocation
+
+```
+                           Incoming Announcement with Valid IBC
+                                             │
+                                             ▼
+                        Compare keyVersion with Stored Key Version
+                                             │
+                      ┌──────────────────────┼──────────────────────┐
+                      ▼                      ▼                      ▼
+             keyVersion > stored    keyVersion == stored   keyVersion < stored
+                      │                      │                      │
+                      ▼                      ▼                      ▼
+                 [Accepted]             [Check ekPub]           [Rejected]
+                 Update EK              ┌──────┴──────┐          Rollback
+              Demote T6 if VERIFIED     ▼             ▼          Drop Packet
+             hasKeyChanged = true     Matches       Differs
+                                     [Ignored]   [Equivocation]
+                                     No change    Drop Packet
+                                                 Security Alert
+```
+
+- **EK Key Rotation ($T_6$)**: If a peer rotates its ephemeral key with a valid IBC signed by $IK_{\text{sk}}$ and $\text{keyVersion} > \text{storedVersion}$:
+  - The new $EK_{\text{pk}}$ is accepted.
+  - Cached session keys are invalidated.
+  - If the peer was `VERIFIED`, it is automatically demoted to `LINKED` ($T_6$) with `hasKeyChanged = true` to alert the user of key changes.
+- **Equivocation Defense ($C\text{-}12$)**: If an announcement arrives with $\text{keyVersion} == \text{storedVersion}$ but a different $EK_{\text{pk}}$, it is dropped as an equivocation attack. No state change is applied, preventing attackers from disabling peers.
+- **Rollback Defense ($C\text{-}12$)**: Announcements with $\text{keyVersion} < \text{storedVersion}$ are dropped as stale or replayed.
+
+---
+
+## 5. Trust State Machine & Identity Verification
+
+MeshWhisper strictly isolates trust state authority to the `:core` state machine ([`TrustStateMachine.kt`](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/core/src/main/java/com/meshwhisper/core/identity/TrustStateMachine.kt)), removing legacy mutable verification booleans.
+
+### 5.1. Runtime Trust Transitions ($T_1$–$T_{11}$)
+- **$T_1$ (`(none) -> SEEN`)**: First discovery of an identity via authenticated announce.
+- **$T_2$ (`SEEN -> VERIFIED`)**: User scans peer's QR code out-of-band via CameraX.
+- **$T_3$ (`LINKED -> VERIFIED`)**: User scans connected peer's QR code out-of-band via CameraX.
+- **$T_4$ (`SEEN / IMPORTED -> LINKED`)**: Mutual `LINK_AUTH` completed on active physical link.
+- **$T_5$ (`LINKED -> SEEN`)**: Physical connection closed (for non-verified peers).
+- **$T_6$ (`VERIFIED -> LINKED`)**: Accepted EK key rotation demotes trust and flags `hasKeyChanged = true`.
+- **$T_7$ (`(any) -> CONFLICTED`)**: Collision detected — two distinct identity hashes share the same `nodeId64`. Unicast routing to this node ID is immediately suspended.
+- **$T_8$ (`CONFLICTED -> VERIFIED`)**: Camera QR collision resolution — the scanned peer transitions to `VERIFIED`; the colliding impostor transitions to `BLOCKED`.
+- **$T_9$ (`(any) -> BLOCKED`)**: Explicit user block; drops all packets from peer.
+- **$T_{10}$ (`BLOCKED -> SEEN`)**: Explicit user unblock; restores basic discovery.
+- **$T_{11}$ (`LEGACY_UNVERIFIED -> SEEN`)**: First authenticated vNext announcement from a legacy pre-vNext contact.
+
+### 5.2. Migration Transition ($T_{12}$)
+- Executed exclusively during Room/SQLite schema migrations:
+  - Pre-vNext unverified contacts migrate to `LEGACY_UNVERIFIED`.
+  - Pre-vNext verified contacts migrate to `IMPORTED` (receives a +1 routing cost penalty until re-verified via vNext QR scan).
+
+---
+
+## 6. Storage Security & Fail-Closed Vaults
+
+### 6.1. Android Storage Security
+- **Database Encryption**: Room v12 backed by SQLCipher AES-256-CBC.
+- **Hardware Protection**: Database passphrase and master seed are wrapped using AES-256-GCM with a hardware-backed key inside AndroidKeyStore (TEE / StrongBox).
+- **Panic Wipe (`P8PanicWipeTest`)**: Securely deletes SQLite database, `-wal`, and `-shm` files, erases the KeyStore alias, and clears in-memory state.
+
+### 6.2. Desktop Storage Security (`DesktopPassphraseKeyStorage`)
+- **Key Vault**: `identity.vault` encrypted with AES-256-GCM.
+- **Key Derivation**: PBKDF2-HMAC-SHA256 with 100,000 iterations and a random 16-byte salt.
+- **Fail-Closed Guarantee**: If `identity.vault` exists but cannot be decrypted (wrong passphrase or corrupted ciphertext), startup throws `SecurityException` and terminates. Replacement keys are never silently generated, and corrupt vaults are never overwritten.
+
+### 6.3. Media At-Rest Encryption (`DesktopMediaManager` & `MediaAtRestManager`)
+- **Format**: Magic header `MWMEDIA1` (8 bytes) + IV (12 bytes) + Ciphertext + Auth Tag (16 bytes).
+- **Key Derivation**: Per-file encryption key derived via HKDF-SHA256:
+  $$K_{\text{file}} = \text{HKDF-SHA256}(\text{ikm} = \text{masterMediaKey}, \text{salt} = \text{fileId}, \text{info} = \text{"MW/FILE/v2"}, 32)$$
+- **Tamper Detection**: Altering any byte of the encrypted file causes AES-GCM tag validation failure; read operations fail closed and return zero plaintext.
+
+---
+
+## 7. Security Claims to Evidence Mapping Table
+
+Every security guarantee made by BIT FOR US / MeshWhisper is backed by automated test suites and architectural enforcement:
+
+| Security Claim | Architectural Enforcement Location | Test ID / Evidence | Status |
+| :--- | :--- | :--- | :---: |
+| **No Pre-Auth Dedup Cache Poisoning ($C\text{-}05$)** | [`PacketPipeline.kt`](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/core/src/main/java/com/meshwhisper/core/protocol/PacketPipeline.kt) (S3 read-only, S7 commit) | `T-RES-05`, `PacketPipelineTest` | **VERIFIED ✅** |
+| **Node ID Anti-Spoofing ($C\text{-}02$)** | [`PacketPipeline.kt`](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/core/src/main/java/com/meshwhisper/core/protocol/PacketPipeline.kt) (S4 derivation check) | `T-RES-02`, `PacketPipelineTest` | **VERIFIED ✅** |
+| **Single Hop Signature Placement ($C\text{-}01$)** | [`MeshPacket.kt`](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/core/src/main/java/com/meshwhisper/core/protocol/MeshPacket.kt) (Trailing 64B of payload) | `T-ROUTE-01`, `DirectMessagePacketBuilderTest` | **VERIFIED ✅** |
+| **SIGMA Identity-Misbinding Defense ($C\text{-}09$)** | [`LinkAuth.kt`](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/core/src/main/java/com/meshwhisper/core/transport/LinkAuth.kt) (Both ID hashes in CONFIRM) | `P9-LINK-01`, `LinkAuthTest` | **VERIFIED ✅** |
+| **CPU Verification Budget Limit ($C\text{-}16$)** | [`PacketPipeline.kt`](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/core/src/main/java/com/meshwhisper/core/protocol/PacketPipeline.kt) (32 sigs/sec/link cap) | `T-RES-07`, `PacketPipelineTest` | **VERIFIED ✅** |
+| **Equivocation & Rollback Defense ($C\text{-}12$)** | [`IdentityManager.kt`](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/core/src/main/java/com/meshwhisper/core/identity/IdentityManager.kt) | `P9-ID-04`, `P9-ID-05` | **VERIFIED ✅** |
+| **NodeId Collision Fail-Closed ($T_7$)** | [`TrustStateMachine.kt`](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/core/src/main/java/com/meshwhisper/core/identity/TrustStateMachine.kt), `getUniqueIdentityByNodeId` | `P9-COLLISION-01`, `T-TRUST-07` | **VERIFIED ✅** |
+| **Camera QR Collision Winner/Loser ($T_8$)** | [`TrustStateMachine.kt`](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/core/src/main/java/com/meshwhisper/core/identity/TrustStateMachine.kt), `P8CameraQrScanner` | `P8CameraQrScanTest` | **VERIFIED ✅** |
+| **Shared Direct Message Construction** | [`DirectMessagePacketBuilder.kt`](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/core/src/main/java/com/meshwhisper/core/protocol/DirectMessagePacketBuilder.kt) (Core authority) | `P9-DM-01` | **VERIFIED ✅** |
+| **Desktop Passphrase Vault Fail-Closed** | [`DesktopPassphraseKeyStorage.kt`](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/desktop/src/main/java/com/meshwhisper/desktop/crypto/DesktopPassphraseKeyStorage.kt) | `P9-ID-01`, `P9-ID-02` | **VERIFIED ✅** |
+| **Media At-Rest Encryption Parity** | [`DesktopMediaManager.kt`](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/desktop/src/main/java/com/meshwhisper/desktop/media/DesktopMediaManager.kt), `MediaAtRestManager.kt` | `P9-MEDIA-01` | **VERIFIED ✅** |
+| **Real OS Socket Wire LINK_AUTH & DM** | [`DesktopWifiEngine.kt`](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/desktop/src/main/java/com/meshwhisper/desktop/wifi/DesktopWifiEngine.kt) (TCP :42426) | `P9-NET-01` (`testP9RealNetworkSocketTransportFlow`) | **VERIFIED ✅** |
+| **Station Restart Identity Continuity** | [`DesktopMeshRouter.kt`](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/desktop/src/main/java/com/meshwhisper/desktop/router/DesktopMeshRouter.kt), SQLite reload | `P9-INTEROP-04` | **VERIFIED ✅** |
+| **T-ARCH-01 Desktop Architectural Purity** | Zero Android SDK imports in `:desktop` and `:core` | `P9-A01`, `P9-A02`, `P8ArchitectureRulesTest` | **VERIFIED ✅** |
+| **Database Migration Integrity** | Room v12 migration (`MIGRATION_11_12`) | `P8MigrationTest` | **VERIFIED ✅** |
+| **Zero-Trace Panic Wipe** | Secure file overwrite + KeyStore alias deletion | `P8PanicWipeTest` | **VERIFIED ✅** |

@@ -1,86 +1,103 @@
-# BIT FOR US — Engineering Limitations & Real-World Constraints
+# BIT FOR US / MeshWhisper — Engineering Limitations & Verification Matrix
 
-Version: **v1.4 (Synchronized with Codebase)**  
-Last Updated: **September 2026**
-
----
-
-## 1. Introduction
-
-BIT FOR US is engineered with technical honesty. Building decentralized mesh networks on consumer mobile hardware involves severe physical, radio frequency, and operating system constraints.
-
-This document outlines the **confirmed architectural and physical limitations** of the current system.
+**Status:** Honest Technical Grounding  
+**Applies to:** `:core`, `:app`, `:desktop`  
+**Supersedes:** Legacy Limitations Specification v1.4  
 
 ---
 
-## 2. Voice Call Limitations
+## 1. Engineering Philosophy & Verification Classification
 
-### 2.1. Strictly Direct 1-Hop Only
-> [!IMPORTANT]
-> **Real-time multi-hop voice is explicitly NOT supported.**
+MeshWhisper is engineered with complete technical transparency. Building decentralized, offline mesh networks on consumer mobile and desktop hardware involves fundamental radio frequency, cryptographic, operating system, and battery constraints.
 
-- Voice calls (`VOICE_CALL_SIGNAL` and `VOICE_FRAME`) require an active direct radio link (BLE GATT direct connection or local Wi-Fi direct socket).
-- Packets enforce `ttl = 1`. Intermediate mesh nodes will never forward, relay, or queue voice frames.
-- **Rationale**: Streaming 50 audio frames per second across a multi-hop BLE mesh causes compounding per-hop latency (>500–1200ms) and severe packet collision cascades, rendering bidirectional voice unintelligible.
-- **Workaround for Multi-Hop**: Multi-hop voice communication is supported asynchronously via chunked **Voice Notes** (recorded AAC/MP4 memos transferred through store-and-forward media transfer).
+Every claim and capability in this repository is categorized into one of four explicit verification tiers:
 
-### 2.2. Audio Codec Fidelity
-- The real-time voice pipeline uses 4-bit IMA ADPCM sampled at 8,000 Hz mono (32 kbps).
-- While clear and intelligible for tactical coordination and walkie-talkie telephony, it has voice-band telephone quality (comparable to G.711 / standard cellular 2G calls) and does not provide wideband high-fidelity audio.
+| Verification Tier | Definition | Current Systems in This Tier |
+| :--- | :--- | :--- |
+| **`PROVEN`** | Formally tested and deterministically verified by automated tests in continuous integration. | Wire serialization, cryptographic derivations, admission pipeline S0–S7, trust state machine ($T_1$–$T_{11}$), fail-closed vaults, media-at-rest encryption, localhost OS socket transport flow (`P9-NET-01`). |
+| **`TESTED IN SIMULATION`** | Verified algorithmically across simulated multi-node virtual meshes on JVM. | Dijkstra shortest-path routing, link failure quarantine, store-and-forward custody handoffs, packet dedup loops. |
+| **`MANUAL / PENDING`** | Fully implemented in software but awaiting physical field validation on hardware. | Physical Android $\leftrightarrow$ Desktop real Wi-Fi LAN acceptance, multi-device dense BLE mesh field trials. |
+| **`KNOWN LIMITATION`** | Unavoidable physical, operating system, or protocol boundary documented by design. | Strict 1-hop voice boundary, BLE peripheral caps, Android Doze mode throttling, unauthenticated broadcast media chunk race ($C\text{-}14$), plaintext routing headers. |
 
 ---
 
-## 3. Bluetooth Low Energy (BLE) Constraints
+## 2. Protocol & Cryptographic Boundaries
 
-### 3.1. Hardware Connection Limits
-- Most consumer Android Bluetooth chipsets impose a physical limit of **3 to 7 concurrent peripheral GATT connections**.
-- The codebase enforces a hard ceiling of `MAX_CONCURRENT_GATT_CONNECTIONS = 5`.
-- In dense peer environments, a node can maintain direct links with at most 5 physical neighbors simultaneously. Other peers must be reached via multi-hop relay or local Wi-Fi.
+### 2.1. Unauthenticated Broadcast Media Chunk Race ($C\text{-}14$)
+- **Classification**: `KNOWN LIMITATION`
+- **Description**: For broadcast media transfers (channel public images), `MEDIA_CHUNK` packets carry no digital signature to avoid doubling BLE frame overhead on high-volume traffic. 
+- **Residual Risk**: A local attacker within radio range can transmit fabricated chunks for an in-flight broadcast `mediaId`, causing the reassembled image to fail its final SHA-256 integrity check and be discarded.
+- **Mitigations Enforced**:
+  1. **Write-Once per Chunk Index**: The first chunk received for an index within a session is final. Attackers can only race the legitimate sender, not overwrite a clean transmission.
+  2. **No NACK Retransmission Storms**: Broadcast SHA-256 mismatches discard the file silently without emitting NACKs.
+  3. **Sender Rate Limits**: Maximum 2 re-attempts per `mediaId` from a given `senderId64` per hour.
+  4. **Directed Transfers Immune**: Direct media transfers are encrypted with pairwise AEAD session keys, making chunk forgery cryptographically impossible.
 
-### 3.2. BLE ATT MTU Variance
-- Although the protocol formats frames to fit within typical negotiated MTUs (185–512 bytes), BLE MTU negotiation is controlled by Android OS and peer hardware.
-- If a low-end peer negotiates the minimum default BLE MTU of 23 bytes (20-byte payload), the `BleFrameFramer` must fragment packets across multiple GATT writes, reducing effective throughput.
+### 2.2. Absence of Central PKI & Clock Revocation ($C\text{-}11$)
+- **Classification**: `KNOWN LIMITATION`
+- **Description**: In an offline disaster mesh, nodes have no access to NTP time servers, certificate authorities, or revocation lists (CRLs).
+- **Enforcement**: Identity Binding Certificates (IBC) enforce ordering via `keyVersion` and validate $\text{notBefore} \le \text{packet.timestamp} + 120\text{s}$, but certificates never expire based on wall-clock time. Revocation of compromised identity keys is impossible without out-of-band communication.
 
-### 3.3. RF Interference in 2.4 GHz Spectrum
-- BLE and Wi-Fi share the crowded 2.4 GHz ISM band. In dense environments with active Wi-Fi routers, microwaves, or dozens of broadcasting smartphones, packet error rates (PER) increase significantly, requiring link rerouting or packet retransmissions.
-
----
-
-## 4. Android Operating System Restrictions
-
-### 4.1. Background Execution & Doze Mode
-- When an Android device is unplugged, stationary, and the screen is off, the OS enters **Doze Mode**.
-- While `MeshForegroundService` maintains a persistent notification and wake locks, certain aggressive OEM battery managers (e.g., Xiaomi MIUI, Huawei EMUI, Samsung OneUI) may still throttle background BLE scanning or terminate background services after prolonged inactivity.
-- **Requirement**: Users must manually exempt the app from battery optimization ("Unrestricted" battery setting).
-
-### 4.2. Bluetooth Peripheral Mode Support
-- Certain older or budget Android smartphones do not support BLE Peripheral Mode (advertising).
-- While these devices can function as Central scanners, they cannot be discovered by other Central-only devices.
+### 2.3. Network Metadata & Traffic Analysis
+- **Classification**: `KNOWN LIMITATION`
+- **Description**: The 40-byte packet header (`senderId`, `recipientId`, `messageId`, `timestamp`, `ttl`) is transmitted in plaintext over radio hops so intermediate relay nodes can make routing and deduplication decisions without holding payload encryption keys.
+- **Residual Risk**: An adversary monitoring RF airwaves can observe network topology, active node IDs, communication frequencies, and hop counts. Onion routing and cover-traffic padding are not implemented.
 
 ---
 
-## 5. Storage & Store-and-Forward Capacity
+## 3. Real-Time Voice Calling Limitations
 
-To prevent SQLite database bloat and flash memory wear, store-and-forward persistence enforces strict quotas:
-- **Per-Recipient Limit**: At most **50 pending direct messages** are queued per offline peer.
-- **Global Queue Limit**: At most **500 total messages** can be buffered in `store_forward_queue`.
-- **Expiration**: Queued messages automatically expire after **24 hours**.
+### 3.1. Strict 1-Hop Constraint ($ttl = 1$)
+- **Classification**: `KNOWN LIMITATION`
+- **Description**: Real-time voice calls (`VOICE_CALL_SIGNAL` and `VOICE_FRAME`) are strictly point-to-point between direct radio neighbors. Voice packets enforce $ttl = 1$ and are rejected by multi-hop relay pipelines.
+- **Engineering Rationale**: Streaming 50 audio packets per second across multi-hop BLE relays causes compounding latency (>500–1500ms), packet loss bursts, and channel saturation, rendering duplex voice unintelligible.
+- **Asynchronous Alternative**: Multi-hop voice communication is supported asynchronously via recorded **Voice Notes** transmitted through the store-and-forward media pipeline.
+
+### 3.2. Audio Codec Fidelity
+- **Classification**: `PROVEN`
+- **Description**: Real-time voice uses 4-bit IMA ADPCM sampled at 8,000 Hz mono (32 kbps). Audio quality is comparable to standard telephone voice-band (G.711) and does not support wideband audio.
+
+### 3.3. Voice Key Setup Pinning ($C\text{-}13$)
+- **Classification**: `PROVEN`
+- **Description**: Call encryption keys ($K_{\text{call}}$) are derived once from the epoch of the `OFFER` packet and pinned for the duration of the call, preventing key disagreement across 1-hour boundaries.
 
 ---
 
-## 6. Privacy & Metadata Exposure
+## 4. Hardware & Operating System Constraints
 
-While message payloads and voice streams are end-to-end encrypted:
-1. **Network Metadata**: The 40-byte packet header (containing `senderId`, `recipientId`, `messageId`, `timestamp`, and `ttl`) is transmitted in plaintext to allow intermediate nodes to make routing and deduplication decisions.
-2. **Traffic Analysis**: An adversary intercepting RF packets can observe which Node IDs are communicating, the frequency of communication, and approximate hop distances. The protocol does not currently implement onion routing or cover-traffic padding.
+### 4.1. Android OS Doze Mode & OEM Battery Throttling
+- **Classification**: `KNOWN LIMITATION`
+- **Description**: While `MeshForegroundService` maintains a persistent notification and CPU wake locks, aggressive OEM battery management frameworks (e.g., Xiaomi MIUI/HyperOS, Huawei EMUI, Samsung OneUI) may suppress background BLE scanning or kill foreground services during deep device sleep.
+- **Mitigation**: Users must manually exempt the app from battery optimization ("Unrestricted" battery setting).
+
+### 4.2. Bluetooth Low Energy Hardware Caps
+- **Classification**: `KNOWN LIMITATION`
+- **Description**: Consumer smartphone Bluetooth chipsets support a maximum of 3 to 7 concurrent peripheral GATT connections. The codebase enforces a hard ceiling of `MAX_CONCURRENT_GATT_CONNECTIONS = 5`.
+- **Impact**: A single node can maintain direct physical BLE links with at most 5 neighbors. Denser meshes rely on multi-hop forwarding or Wi-Fi.
+
+### 4.3. Platform Transport Parity
+- **Classification**: `PROVEN` (Architectural Parity) / `KNOWN LIMITATION` (Radio Support)
+- **Description**: 
+  - Android nodes support dual-radio transports: BLE Central/Peripheral + Wi-Fi TCP/UDP.
+  - Desktop nodes (Windows / macOS) currently support **Wi-Fi TCP/UDP only**. Desktop nodes do not currently implement BLE GATT host drivers.
 
 ---
 
-## 7. Real-Device Physical Validation Gap
+## 5. Network Scale & Verification Status
 
-> [!WARNING]
-> **Status: 118 automated tests pass 100% offline on JVM.**
+### 5.1. Simulated vs. Physical Evidence
+- **Automated Unit & Integration Test Suite**: **331 / 331 tests passing (100%)**.
+- **Real OS Socket Integration (`P9-NET-01`)**: **`PROVEN`**. Verifies live OS TCP socket loopback (`127.0.0.1:42426`) with full `LINK_AUTH`, $K_{\text{link}}$ derivation, bidirectional encrypted direct messaging, automated ACKs, socket closure $T_5$, and reconnect $T_4$ continuity.
+- **Physical Multi-Device Android ↔ Desktop LAN Acceptance**: **`MANUAL / PENDING`**. Fully wired and ready for execution using `.\gradlew.bat :desktop:run`, but awaiting recorded physical execution on a live multi-device Wi-Fi router.
+- **Dense Physical Multi-Device RF Mesh**: **`MANUAL / PENDING`**. Meshes beyond 5 physical hardware devices under heavy RF interference require dedicated operational field testing.
 
-While the automated test suite thoroughly verifies protocol serialization, cryptographic algorithms, state machine transitions, Dijkstra shortest paths, and failover logic:
-- **Physical Multi-Device Validation**: The system has not yet undergone dense multi-phone field trials (e.g., 20+ real phones placed across physical buildings under heavy RF interference).
-- Edge cases related to specific Android hardware Bluetooth stack crashes, OEM Bluetooth bugs, or extreme radio attenuation must be validated through physical device testing.
+---
+
+## 6. Storage & Capacity Quotas
+
+To prevent database bloating and memory exhaustion on embedded hardware, strict quotas are enforced:
+- **Per-Peer Store & Forward Buffer**: Maximum **50 messages** per offline recipient.
+- **Global Store & Forward Buffer**: Maximum **500 total messages** buffered across all peers.
+- **Message Expiration**: Queued store-and-forward messages expire automatically after **24 hours**.
+- **Inbound Media Transfers**: Maximum **16 concurrent inbound transfers**, automatically cleaned up after 60 seconds of inactivity.
+- **Dedup RAM Cache**: Bounded at **4,000 entries** with LRU eviction, backed by persistent SQLite storage.

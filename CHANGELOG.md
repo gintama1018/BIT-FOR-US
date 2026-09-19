@@ -4,6 +4,56 @@ All notable changes to the **MeshWhisper / BIT FOR US** platform are documented 
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres to semantic development milestones.
 
+## [vNext Implementation Milestone] - Phases P0–P10 (2026-09-19)
+### Architecture, Security, Protocol Freeze & Desktop Parity
+
+#### Added
+- **vNext Binary Wire Protocol (Phases P0–P1)**:
+  - Canonical 56-byte header with protocolVersion (Byte 0), UUID messageId (16B), senderId (8B), recipientId (8B), TTL (1B), timestamp (4B), payloadLength (2B), and AES-GCM authTag (16B).
+  - Single signature placement ($C\text{-}01$): Trailing 64-byte Ed25519 hop signature outside AEAD on all signed types.
+  - 115-byte canonical `SIG_TRANSCRIPT` with purpose tag `CONTENT = 0x02` ($C\text{-}06$).
+  - Canonical 37-byte AAD binding header to ciphertext.
+  - Retired legacy `KEY_EXCHANGE` (`0x02`); added `LINK_AUTH` (`0x31`), `CUSTODY_OFFER` (`0x11`), `CUSTODY_ACCEPT` (`0x12`), and `CUSTODY_ACK` (`0x13`).
+- **Packet Admission Pipeline S0–S7 (Phase P2)**:
+  - Non-bypassable 8-stage gate pipeline in `:core` (`PacketPipeline.kt`).
+  - Read-only S3 deduplication cache check, eliminating pre-auth cache poisoning ($C\text{-}05$).
+  - Anti-spoofing validation: `BE_u64(identityHash[0..8]) == header.senderId` ($C\text{-}02$).
+  - Rate-limited CPU signature verification budget (max 32 verifications/sec/link) protecting relays ($C\text{-}16$).
+  - Zero auth-tag whitelist exemption strictly for `LINK_AUTH` ($C\text{-}08$).
+- **Transport Security & LINK_AUTH (Phases P3–P4)**:
+  - Mutual two-stage transport handshake (HELLO 169B, CONFIRM 65B) deriving symmetric session key $K_{\text{link}}$ with SIGMA identity-misbinding defense ($C\text{-}09$, $C\text{-}10$).
+  - Post-auth AES-256-GCM encrypted transport frames on Wi-Fi TCP streams.
+  - Hard cap of 5 concurrent authenticated links with duplicate active-identity rejection.
+- **Relay Custody & Store-and-Forward (Phase P5)**:
+  - Deterministic custody handoff protocol with bounded capacity (max 50/peer, 500 global, 24-hour expiration).
+- **Voice Key Epoch Pinning & Media Integrity (Phase P6)**:
+  - Pinned $K_{\text{call}}$ derived from OFFER packet epoch ($C\text{-}13$), preventing key disagreement across 1-hour boundaries.
+  - Write-once per chunk index for broadcast media with SHA-256 commit backstop ($C\text{-}14$).
+- **Media At-Rest Encryption & Panic Wipe (Phase P7)**:
+  - Zero-plaintext media storage with `MWMEDIA1` header, HKDF per-file key derivation, and fail-closed tamper detection.
+  - Emergency Station Wipe zero-fill erasing SQLite database, WAL, and SHM files, and deleting KeyStore alias.
+  - Migrated Android database to Room v12 (`MIGRATION_11_12`).
+- **Authoritative Trust State Machine (Phase P8)**:
+  - Pure `:core` trust state machine (`TrustStateMachine.kt`) governing runtime transitions $T_1$–$T_{11}$ and migration transition $T_{12}$.
+  - NodeId64 collision detection ($T_7$) transitioning colliding records to `CONFLICTED` and suspending unicast routing.
+  - Out-of-band CameraX QR collision resolution ($T_8$) marking verified winner `VERIFIED` and imposter `BLOCKED`.
+  - Ephemeral key rotation demotion ($T_6$) for verified peers; equivocation and rollback defenses ($C\text{-}12$).
+- **Desktop Parity & Single Protocol Authority (Phase P9)**:
+  - Desktop workstation node directly reuses `:core` for `PacketPipeline`, `LinkAuthSession`, `TrustStateMachine`, `InMemoryIdentityStore`, and `DirectMessagePacketBuilder`.
+  - Shared `DirectMessagePacketBuilder` in `:core` used by both Android and Desktop.
+  - Fail-closed PBKDF2-HMAC-SHA256 (100k iterations) AES-256-GCM `identity.vault`.
+  - Collision-safe unicast destination lookup (`getUniqueIdentityByNodeId`).
+  - Real OS network socket integration test `P9-NET-01` (`testP9RealNetworkSocketTransportFlow`) testing live TCP handshake, encrypted DMs, ACKs, disconnect $T_5$, and reconnect $T_4$ continuity.
+  - T-ARCH-01 architectural purity: zero Android dependencies in `:desktop`.
+- **Comprehensive Documentation & Release Hygiene (Phase P10)**:
+  - Created implementation-independent `docs/PROTOCOL.md`, concrete `docs/SECURITY.md`, honest `docs/LIMITATIONS.md`, and complete `docs/TESTING.md`.
+  - Synchronized `README.md`, `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, and `CONTRIBUTING.md`.
+  - Test suite expanded to **331 passing tests with 0 failures and 0 ignored** across `:core` (191), `:app` (119), and `:desktop` (21).
+
+#### Changed
+- Deprecated legacy mutable verification booleans; Room v12 and SQLite database trust state driven exclusively by `:core` `TrustStateMachine`.
+- Direct-message packet construction unified across Android and Desktop under shared `DirectMessagePacketBuilder`.
+
 ---
 
 ## [Milestone 4] - 2026-09-04

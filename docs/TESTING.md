@@ -1,177 +1,185 @@
-# BIT FOR US — Verification & Testing Specification
+# BIT FOR US / MeshWhisper — Verification & Testing Specification
 
-Version: **v1.4 (Synchronized with Codebase)**  
-Last Updated: **September 2026**
+**Status:** Up to Date with Phase P9/P10  
+**Applies to:** `:core`, `:app`, `:desktop`  
+**Supersedes:** Legacy Testing Specification v1.4  
 
 ---
 
 ## 1. Executive Testing Summary
 
-All automated tests build and pass **100% offline** without requiring active internet connectivity, external mock servers, Android emulators, or physical Bluetooth hardware.
+All automated unit and integration tests compile and run **100% offline** without requiring active internet access, external mock servers, Android emulators, or physical Bluetooth hardware.
 
 ```powershell
-gradlew.bat test
+.\gradlew.bat :core:test :app:testDebugUnitTest :desktop:test
 ```
 
-```
-BUILD SUCCESSFUL in 4m 22s
-59 actionable tasks: 15 executed, 44 up-to-date
-```
+### Verified Test Matrix (331 / 331 Tests Passing, 0 Failures, 0 Ignored)
 
-| Module | Passing Unit Tests | Failures | Skipped | Status |
-| :--- | :---: | :---: | :---: | :---: |
-| **`:core`** (Pure Kotlin JVM) | **38** | **0** | **0** | **100% PASS** |
-| **`:app`** (Android Unit Tests) | **77** | **0** | **0** | **100% PASS** |
-| **`:desktop`** (Companion JVM Station) | **3** | **0** | **0** | **100% PASS** |
-| **TOTAL** | **118** | **0** | **0** | **100% PASS** |
+| Module | Subsystem | Test Command | Tests | Passing | Failing | Skipped | Status |
+| :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: |
+| **`:core`** | Protocol, Pipeline, Crypto, Audio | `.\gradlew.bat :core:test` | **191** | **191** | **0** | **0** | **100% PASS ✅** |
+| **`:app`** | Android UI, DB v12, Voice, Migrations | `.\gradlew.bat :app:testDebugUnitTest` | **119** | **119** | **0** | **0** | **100% PASS ✅** |
+| **`:desktop`** | Workstation Parity, Vault, Real Socket | `.\gradlew.bat :desktop:test` | **21** | **21** | **0** | **0** | **100% PASS ✅** |
+| **Combined** | Full Repository Multi-Module Suite | `.\gradlew.bat test` | **331** | **331** | **0** | **0** | **100% PASS ✅** |
 
 ---
 
-## 2. Test Suite Breakdown by Subsystem
+## 2. Test Suite Breakdown by Module
 
-### 2.1. Core Module (`:core` — 38 Tests)
+### 2.1. Core Module (`:core` — 191 Tests)
 Located in [`core/src/test/java/com/meshwhisper/core/`](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/core/src/test/java/com/meshwhisper/core/):
 
-- **`router/MeshRouteEngineTest.kt` (8 tests)**:
-  - 1-hop direct route resolution.
-  - 2-hop linear path ($A \to B \to C$) resolution.
-  - 4-node linear multi-hop chain ($A \to B \to C \to D$).
-  - Diamond topology shortest-path selection ($A \to B \to D$ vs $A \to C \to D$).
-  - Dynamic link failure quarantine and failover rerouting.
-  - Topology edge expiration after 120 seconds.
-  - Acyclic loop prevention in cyclic graphs.
-  - Reachable route discovery across disconnected subgraphs.
-- **`audio/AdpcmAndJitterBufferTest.kt` (5 tests)**:
-  - Exact 4:1 compression ratio (160 samples / 320 bytes PCM $\to$ 80 bytes ADPCM).
-  - 440 Hz test tone waveform reconstruction fidelity (quantization error verification).
-  - Extreme amplitude clamping and silence encoding.
-  - Jitter buffer 40–80ms preloading and in-order popping.
-  - Out-of-order packet reordering and duplicate/late frame dropping.
-  - Packet loss skipping without stalling audio pipeline.
-- **`protocol/TrafficControllerTest.kt` (5 tests)**:
-  - Emergency Tier 0 (SOS) preemption over standard and bulk queues.
-  - High interactive Tier 1 (ACK, Voice) scheduling.
-  - Anti-starvation deficit-weighted scheduling.
-  - Bounded queue capacity enforcement (max 100 packets/tier).
-  - Packet lifetime expiration drop (30s lifetime).
-- **`protocol/ProfilePayloadTest.kt` (4 tests)**:
-  - Canonical binary framing serialization and parsing (`PROF` magic).
-  - Ed25519 digital signature generation and verification.
-  - Monotonically increasing version counter validation.
-  - Forged signature detection and rejection.
-- **`protocol/CoreProtocolAndCryptoTest.kt` (8 tests)**:
-  - 56-byte header binary serialization and deserialization.
-  - Additional Authenticated Data (AAD) generation and tamper detection.
-  - Key agreement and AEAD encryption/decryption roundtrip.
-- **`MultiHopRelayAndSecurityMeshTest.kt` (8 tests)**:
-  - Multi-hop relay propagation.
-  - Channel isolation using PBKDF2-derived keys.
-  - Replay attack rejection.
+- **`protocol/PacketPipelineTest.kt`**:
+  - Sequential gate enforcement (S0 through S7).
+  - Pre-auth deduplication cache poisoning immunity ($C\text{-}05$).
+  - Future timestamp skew rejection (>120s) and past window expiration drops.
+  - CPU signature budget rate-limiting (max 32 verifications/sec/link, $C\text{-}16$).
+  - Anti-spoofing enforcement: `BE_u64(identityHash[0..8]) != header.senderId` drops ($C\text{-}02$).
+  - Zero-auth-tag whitelist exemption strictly for `LINK_AUTH` ($C\text{-}08$).
+- **`transport/LinkAuthTest.kt`**:
+  - Deterministic HELLO (169B) and CONFIRM (65B) serialization and parsing.
+  - Transcript $T$ construction and $K_{\text{link}}$ key derivation.
+  - SIGMA identity-misbinding defense: rejection of modified self/peer identity hashes in CONFIRM.
+  - Reflection attack detection: rejection when peer identity matches local identity.
+- **`identity/TrustStateMachineTest.kt`**:
+  - Monotonic transitions $T_1$ through $T_{11}$ and migration rule $T_{12}$.
+  - NodeId64 collision detection ($T_7$) transitioning colliding records to `CONFLICTED`.
+  - Camera QR collision resolution ($T_8$) marking winner `VERIFIED` and loser `BLOCKED`.
+  - Key rotation demotion ($T_6$) for verified peers vs. preservation for unverified peers.
+- **`crypto/PureCryptoEngineTest.kt`**:
+  - X25519 ECDH key exchange and Ed25519 digital signature roundtrips.
+  - Canonical `identityHash` derivation: `SHA-256("MW/NODE/v2" || 0x00 || IK_pk)`.
+  - Hourly epoch session key derivation and bounded 256-entry LRU cache.
+  - AES-256-GCM authenticated encryption and 37-byte AAD tamper detection.
+- **`protocol/DirectMessagePacketBuilderTest.kt`**:
+  - Shared authoritative packet assembly for direct messages.
+  - Content transcript building (115 bytes) and trailing hop signature placement ($C\text{-}01$).
+- **`router/MeshRouteEngineTest.kt`**:
+  - Dijkstra shortest-path calculations over direct links and topology edges.
+  - Transport weighting (Wi-Fi = 1, BLE = 5) and quarantine penalties (+50).
+  - Dynamic rerouting upon link failure.
+- **`audio/AdpcmAndJitterBufferTest.kt`**:
+  - 4-bit IMA ADPCM 4:1 compression fidelity (160 samples PCM $\to$ 80 bytes ADPCM).
+  - Jitter buffer sequence reordering, loss concealment, and late frame dropping.
+- **`protocol/TrafficControllerTest.kt`**:
+  - 4-tier QoS scheduling (Tier 0 Emergency preemption over standard and bulk traffic).
+  - Anti-starvation deficit-weighted scheduling across queues.
 
 ---
 
-### 2.2. Android App Module (`:app` — 77 Tests)
+### 2.2. Android Application Module (`:app` — 119 Tests)
 Located in [`app/src/test/java/com/meshwhisper/app/`](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/app/src/test/java/com/meshwhisper/app/):
 
-- **`voice/VoiceCallManagerTest.kt` (10 tests)**:
-  - Direct 1-hop link prerequisite verification (call start fails if peer is not direct).
-  - Outgoing call setup (`OFFER` signal generation with `ttl = 1`).
-  - Incoming call offer handling and ringing state transition.
-  - Call accept flow: transition to `CONNECTED`, `ANSWER` signal generation, audio stream start.
-  - Call decline flow: transition to `ENDED`, `DECLINE` signal generation.
-  - Busy rejection: third-party caller receives `BUSY` signal while active call is maintained.
-  - Ringing timeout: automatic call termination after 30 seconds of unheeded ringing.
-  - Direct link loss detection: immediate call termination (`CallEndReason.LINK_LOST`) when BLE/Wi-Fi disconnects.
-  - Real-time voice frame routing directly to audio stream.
-  - Real-time microphone mute and speakerphone routing toggles.
-- **`router/DirectedStoreForwardAndPriorityTest.kt` (6 tests)**:
-  - Traffic priority mapping across all 17 packet types.
-  - Voice packets (`VOICE_CALL_SIGNAL` and `VOICE_FRAME`) mapped to Tier 1 (`HIGH_INTERACTIVE`).
-  - Voice queue preemption over chat messages and bulk media.
-  - Directed store-and-forward negative property (never broadcasts direct store-and-forward drainage).
-  - Voice packets strict 1-hop invariant ($ttl = 1$).
-- **`router/MultiHopRelayReliabilityTest.kt` (6 tests)**:
-  - Full end-to-end delivery: $A \to B \to C \to ACK \to B \to A$.
-  - Lost-ACK recovery: retransmitted DM causes re-emission of delivery ACK without duplicate DB rows.
-  - Dynamic relay failover: disappearing relay $B$ automatically switches path through alternative node $D$.
-  - Intermediate relay custody handoff and queue drainage.
-  - TTL decrement and drop at 0.
-  - Ingress split-horizon filter preventing broadcast echo loops.
-- **`router/ProfileAntiRollbackTest.kt` (4 tests)**:
-  - Profile update acceptance with higher version number.
-  - Profile rollback rejection when update presents $\text{version} \le \text{current}$.
-  - Forged profile signature rejection.
-  - Avatar hash update detection.
-- **`crypto/CryptoTest.kt` (8 tests)**:
-  - X25519 ECDH key agreement.
-  - Ed25519 digital signature signing and verification.
-  - 1-hour epoch session key rotation.
-  - AES-256-GCM AEAD encryption and decryption.
-  - Safety number calculation and fingerprint consistency.
-- **`media/ReliableTransferTest.kt` & `MediaTransferTest.kt` (12 tests)**:
-  - Media session initialization (`MEDIA_INIT`).
-  - Chunked transfer, SHA-256 hash verification.
-  - Selective retransmission via NACK.
-  - Transfer abort and timeout cleanup.
-- **`ble/BleFrameFramerTest.kt` & `GattWriteRateLimiterTest.kt` (8 tests)**:
-  - Frame chunking across MTU boundaries.
-  - Ingress rate limiter enforcement (50 writes/sec).
-- **`wifi/WifiConnectionLimitTest.kt` (5 tests)**:
-  - TCP connection limit enforcement (max 8 concurrent sockets).
-  - Handshake socket timeout protection.
-- **`ui/graph/GraphPhysicsTest.kt` & `SecurityAndRoutingTest.kt` (18 tests)**:
-  - Radar force-directed physics computation.
-  - AAD tamper detection and packet serialization boundaries.
+- **`ui/TrustStateUiP8Test.kt`**:
+  - Live UI rendering of trust state badges (`[VERIFIED]`, `[LINKED]`, `[SEEN]`, `[CONFLICTED]`, `[BLOCKED]`).
+  - Security warning banners on key changes (`hasKeyChanged = true`).
+  - Strict UI isolation from direct trust mutation.
+- **`arch/P8ArchitectureRulesTest.kt`**:
+  - Enforces that no Android UI or router components manufacture trust states directly.
+  - Validates that Room v12 entities do not expose independent mutable verification booleans.
+- **`identity/P8SecurityEdgeCasesTest.kt`**:
+  - Equivocation attacks ($C\text{-}12$): same `keyVersion`, different `ekPub` drops packet without state mutation.
+  - Rollback attacks ($C\text{-}12$): lower `keyVersion` drops packet.
+  - Rapid connect/disconnect cycling maintaining trust state consistency ($T_4 \leftrightarrow T_5$).
+- **`identity/P8CameraQrScanTest.kt`**:
+  - Out-of-band QR code payload parsing and mutual key binding.
+  - Collision resolution flow: scanning one party in a collision transitions it to `VERIFIED` and marks the imposter `BLOCKED`.
+- **`data/P8MigrationTest.kt`**:
+  - Room database schema migration from v11 to v12 (`MIGRATION_11_12`).
+  - Column additions for media-at-rest encryption and trust state mappings ($T_{12}$).
+- **`data/P8PanicWipeTest.kt`**:
+  - Emergency panic wipe flow: closing database connections, zero-fill wiping SQLite/WAL/SHM files, and deleting AndroidKeyStore alias.
+- **`voice/VoiceCallManagerTest.kt`**:
+  - Strict direct 1-hop constraint ($ttl = 1$).
+  - Signaling state machine (`OFFER`, `ANSWER`, `DECLINE`, `HANGUP`, `BUSY`).
+  - Ringing timeout (30s) and heartbeat disconnect detection.
+- **`wifi/WifiConnectionLimitTest.kt`**:
+  - Enforces the hard connection cap of 5 concurrent authenticated sessions.
+- **`router/MultiHopRelayReliabilityTest.kt`**:
+  - End-to-end multi-hop delivery, lost-ACK recovery, and intermediate custody cleanup.
 
 ---
 
-### 2.3. Desktop Module (`:desktop` — 3 Tests)
+### 2.3. Desktop Module (`:desktop` — 21 Tests)
 Located in [`desktop/src/test/java/com/meshwhisper/desktop/`](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/desktop/src/test/java/com/meshwhisper/desktop/):
-- SQLite embedded database storage and retrieval.
-- Desktop Wi-Fi packet processing.
-- Multiplatform router integration.
+
+- **`DesktopParityP9Test.kt` (21 Tests)**:
+  - `P9-A01`: T-ARCH-01 Architecture check — Desktop does not import Android SDK packages or reference forbidden tokens in router/media.
+  - `P9-A02`: Desktop UI architecture check — `DesktopMainWindow` contains zero crypto logic or `PureCryptoEngine` imports.
+  - `P9-LINK-01`: Deterministic LINK_AUTH handshake between Android credentials and Desktop node.
+  - `P9-LINK-02`: Transport ingress with valid LINK_AUTH accepted as `AUTHENTICATED`.
+  - `P9-LINK-03`: Transport ingress with pending link drops non-discovery traffic with `Link is PENDING` in S0.
+  - `P9-LINK-04`: Transport disconnection transitions peer `LINKED -> SEEN` ($T_5$).
+  - `P9-ID-01`: `DesktopPassphraseKeyStorage` encrypts and recovers identically across station restarts.
+  - `P9-ID-02`: Fail-closed vault — wrong passphrase or corrupted file throws `SecurityException` and refuses to overwrite.
+  - `P9-ID-03`: Fresh authenticated announce creates `SEEN` identity ($T_1$) in SQLite and runtime store.
+  - `P9-ID-04`: Key rotation — `VERIFIED` peer rotating EK demotes to `LINKED` ($T_6$) with `hasKeyChanged = true`.
+  - `P9-ID-05`: Key rotation — `SEEN`, `LINKED`, or `IMPORTED` peer rotating EK updates key material and preserves current trust state.
+  - `P9-COLLISION-01`: NodeId64 collision detection ($T_7$) — distinct identity hashes with colliding `nodeId64` transition to `CONFLICTED`; unicast routing fails closed.
+  - `P9-DB-01`: `DesktopDatabase` schema contains all required tables matching Room parity.
+  - `P9-DB-02`: `getUniqueIdentityByNodeId` strict routing contracts verified.
+  - `P9-DM-01`: Direct message built by `DirectMessagePacketBuilder` is decrypted and verified by recipient pipeline.
+  - `P9-MEDIA-01`: Media at rest encryption starts with `MWMEDIA1`, uses per-file HKDF, and fails closed upon tampering.
+  - `P9-INTEROP-04`: Node restart parity — restarted station reloads existing keys and identities from encrypted vault and SQLite database.
+  - `P9-NET-01`: **Real OS Network Socket Transport Integration (`testP9RealNetworkSocketTransportFlow`)** (detailed below).
 
 ---
 
-## 3. How to Run the Test Suite
+## 3. Real OS Socket Transport Integration (`P9-NET-01`)
 
-### Run All Tests
-```powershell
-# Windows (PowerShell / Command Prompt)
-set JAVA_HOME=C:\Program Files\Microsoft\jdk-17.0.20.8-hotspot
-.\gradlew.bat test
+The test **`testP9RealNetworkSocketTransportFlow`** explicitly exercises real host operating system TCP sockets against port `42426` (`127.0.0.1:42426`).
 
-# macOS / Linux
-export JAVA_HOME=/path/to/jdk-17
-./gradlew test
-```
+### What This Test Exercises
+1. Binds a real OS `ServerSocket` on TCP port `42426` inside `DesktopWifiEngine`.
+2. Connects a real client `Socket` simulating an Android peer over `127.0.0.1`.
+3. Exchanges wire-level plaintext frames (`WifiFrameCodec.readFrame` / `writePlaintextFrame`) to complete the mutual `LINK_AUTH` handshake:
+   - Android client reads Desktop's `HELLO` (169 B).
+   - Android client sends its `HELLO` (169 B).
+   - Android client reads Desktop's `CONFIRM` (65 B).
+   - Android client sends its `CONFIRM` (65 B).
+4. Verifies mutual derivation of $K_{\text{link}}$ and triggers transition $T_4$ (`SEEN -> LINKED`) in both `DesktopIdentityRepository` and persistent SQLite database.
+5. Transmits an AES-256-GCM encrypted `DIRECT_MESSAGE` frame from Android to Desktop; verifies pipeline acceptance, SQLite storage, and UI emission.
+6. Verifies Desktop automatically derives and dispatches an encrypted `ACK` back over the TCP socket.
+7. Transmits an encrypted `DIRECT_MESSAGE` from Desktop to Android over the socket; decrypts and verifies content.
+8. Closes the client socket; verifies Desktop detects socket closure and triggers $T_5$ (`LINKED -> SEEN`).
+9. Reconnects with a new client socket on port `42426`; verifies full re-handshake and $T_4$ re-linking with preserved identity continuity.
 
-### Run Core Module Tests Only
-```powershell
-.\gradlew.bat :core:test
-```
-
-### Run Android App Unit Tests Only
-```powershell
-.\gradlew.bat :app:testDebugUnitTest
-```
+> [!IMPORTANT]
+> **Distinction Between Localhost and Physical Wi-Fi**:
+> `P9-NET-01` verifies that real network byte streams, socket framers, and encryption work correctly over the OS network stack. It **does NOT** test physical Wi-Fi radio propagation, physical router NAT traversal, RF interference, or multi-device wireless latencies.
 
 ---
 
-## 4. Real-Device Validation Status Matrix
+## 4. Physical Android ↔ Desktop LAN Acceptance
 
-To maintain rigorous technical transparency, we explicitly document the validation maturity of each layer:
+**Status: PENDING** *(Awaiting physical execution with a live Android phone and Desktop PC on a shared Wi-Fi router).*
 
-| Subsystem | JVM Unit Tests | Android Emulator | Physical Device (1-to-1) | Physical Mesh (Multi-Device) |
-| :--- | :---: | :---: | :---: | :---: |
-| **Packet Protocol & Serialization** | ✅ Verified (100%) | ✅ Verified | ✅ Verified | ✅ Verified |
-| **Cryptographic Engine (ECDH, AEAD)** | ✅ Verified (100%) | ✅ Verified | ✅ Verified | ✅ Verified |
-| **Dijkstra Dynamic Routing Engine** | ✅ Verified (100%) | ✅ Verified | ⚠️ Bench Tested | ⏳ Field Trial Pending |
-| **Directed Forwarding & Relay Custody**| ✅ Verified (100%) | ✅ Verified | ⚠️ Bench Tested | ⏳ Field Trial Pending |
-| **QoS Traffic Controller (4 Tiers)** | ✅ Verified (100%) | ✅ Verified | ✅ Verified | ⏳ Field Trial Pending |
-| **Profile Signing & Anti-Rollback** | ✅ Verified (100%) | ✅ Verified | ✅ Verified | ⏳ Field Trial Pending |
-| **IMA ADPCM Audio Codec** | ✅ Verified (100%) | ✅ Verified | ✅ Verified | N/A (1-hop only) |
-| **Bounded Jitter Buffer** | ✅ Verified (100%) | ✅ Verified | ✅ Verified | N/A (1-hop only) |
-| **1-Hop Real-Time Voice Calls** | ✅ Verified (100%) | ✅ Verified | ⚠️ Bench Tested | N/A (1-hop only) |
-| **BLE GATT Multi-Connection Stability** | ⚠️ Mocked/Isolated | ✅ Functional | ⚠️ Chipset-dependent | ⏳ Dense RF Trial Pending |
-| **Wi-Fi Socket Discovery & Streaming** | ✅ Verified (100%) | ✅ Verified | ✅ Verified | ⏳ Field Trial Pending |
+### Field Verification Runbook
+
+To physically prove end-to-end communication across real hardware:
+
+1. **Launch Desktop Station**:
+   ```powershell
+   .\gradlew.bat :desktop:run
+   ```
+   - Enter your passphrase to unlock `identity.vault`.
+   - Desktop UI starts listening on TCP port `42426` and broadcasts UDP beacons on port `42425`.
+   - Note the Desktop IP displayed in the window status bar (e.g., `192.168.1.105`).
+2. **Launch Android App**:
+   - Connect the physical Android device to the **same Wi-Fi router**.
+   - Launch MeshWhisper on Android.
+3. **Observe Automated Authentication**:
+   - Both nodes discover each other via UDP beacons on port `42425`.
+   - Android connects to Desktop on TCP port `42426`.
+   - Mutual `LINK_AUTH` executes; Desktop logs show:
+     ```
+     [INFO] [DesktopIdentityRepository] T4 transition: ... transitioned SEEN -> LINKED upon mutual LINK_AUTH
+     ```
+   - Android appears in the Desktop peer list with the badge **`[LINKED]`**.
+4. **Bidirectional Direct Messaging**:
+   - Send a direct message from Android to Desktop; confirm delivery and automatic ACK.
+   - Send a direct message from Desktop to Android; confirm receipt on phone screen.
+5. **Disconnect & Reconnect**:
+   - Toggle Wi-Fi OFF on Android; Desktop logs $T_5$ (`LINKED -> SEEN`) and badge updates to **`[SEEN]`**.
+   - Toggle Wi-Fi ON on Android; nodes reconnect, execute `LINK_AUTH`, and badge updates back to **`[LINKED]`** with full chat history preserved.

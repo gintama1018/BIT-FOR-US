@@ -1,6 +1,7 @@
 package com.meshwhisper.app.ui.screens
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -39,6 +40,7 @@ import com.meshwhisper.app.ui.components.ImageMessageBubble
 import com.meshwhisper.app.ui.components.NodeAvatar
 import com.meshwhisper.app.ui.components.VoiceNoteBubble
 import com.meshwhisper.app.ui.components.TrustBadge
+import com.meshwhisper.app.ui.components.RescueLocationCard
 import com.meshwhisper.app.ui.components.SafetyNumberConfirmationDialog
 import com.meshwhisper.core.identity.VerificationCandidate
 import com.meshwhisper.app.ui.theme.*
@@ -74,6 +76,7 @@ fun DirectChatDetailScreen(
     var textInput by remember { mutableStateOf("") }
     var showSafetyNumberDialog by remember { mutableStateOf(false) }
     var showCameraScanner by remember { mutableStateOf(false) }
+    var showBeaconConfirmDialog by remember { mutableStateOf(false) }
     var verificationCandidate by remember { mutableStateOf<VerificationCandidate?>(null) }
     var computedSafetyNumber by remember { mutableStateOf<String?>(null) }
     var myFingerprintHex by remember { mutableStateOf("") }
@@ -175,6 +178,45 @@ fun DirectChatDetailScreen(
                                     style = MaterialTheme.typography.labelSmall,
                                     color = Color(0xFF4CAF50),
                                     fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+
+                        // Anti-Stalking Per-Contact Location Sharing Opt-in (Default OFF)
+                        Surface(
+                            color = SaharaSurfaceContainerLow,
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Emergency Location Beacons",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp,
+                                        color = SaharaOnSurface
+                                    )
+                                    Text(
+                                        text = "Allow this contact to receive your dying gasp & emergency location beacons",
+                                        fontSize = 10.sp,
+                                        color = SaharaOnSurfaceVariant
+                                    )
+                                }
+                                Switch(
+                                    checked = peer?.shareLocationWithContact == true,
+                                    onCheckedChange = { checked ->
+                                        viewModel.toggleLocationSharingWithContact(peerNodeId, checked)
+                                    },
+                                    colors = SwitchDefaults.colors(
+                                        checkedThumbColor = SaharaOnPrimary,
+                                        checkedTrackColor = SaharaPrimary
+                                    )
                                 )
                             }
                         }
@@ -464,6 +506,15 @@ fun DirectChatDetailScreen(
                     )
                 }
 
+                IconButton(onClick = { showBeaconConfirmDialog = true }) {
+                    Icon(
+                        imageVector = Icons.Default.LocationOn,
+                        contentDescription = "Send Emergency Location Beacon",
+                        tint = SaharaPrimary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+
                 IconButton(onClick = { showSafetyNumberDialog = true }) {
                     Icon(
                         imageVector = if (peer?.trustState == "CONFLICTED") Icons.Default.Warning else if (isVerified) Icons.Default.VerifiedUser else Icons.Default.Shield,
@@ -475,7 +526,62 @@ fun DirectChatDetailScreen(
             }
         }
 
+        // Manual Beacon Confirmation Dialog
+        if (showBeaconConfirmDialog) {
+            AlertDialog(
+                onDismissRequest = { showBeaconConfirmDialog = false },
+                title = { Text("Send Location Beacon?") },
+                text = {
+                    Text(
+                        "This will immediately send your current hardware GPS coordinates, battery level, and offline Plus Code directly and securely to ${peer?.alias ?: "this contact"}.",
+                        fontSize = 13.sp,
+                        color = SaharaOnSurfaceVariant
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            showBeaconConfirmDialog = false
+                            viewModel.sendManualLocationBeacon(peerNodeId)
+                            android.widget.Toast.makeText(context, "Location beacon dispatched to ${peer?.alias ?: "contact"}", android.widget.Toast.LENGTH_SHORT).show()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = SaharaPrimary)
+                    ) {
+                        Text("Send Beacon")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showBeaconConfirmDialog = false }) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
+
         HorizontalDivider(color = SaharaSurfaceContainerHigh, thickness = 0.8.dp)
+
+        // Pinned Rescue Location Card for Verified Contacts
+        val peerLocation by viewModel.getLocationForPeerFlow(peerNodeId).collectAsState(initial = null)
+        val myLocation = remember { viewModel.getMyLocation() }
+
+        if (isVerified && peerLocation != null) {
+            RescueLocationCard(
+                location = peerLocation!!,
+                myLatitude = myLocation?.latitude,
+                myLongitude = myLocation?.longitude,
+                onOpenMap = {
+                    val lat = peerLocation!!.latitude
+                    val lon = peerLocation!!.longitude
+                    val geoUri = Uri.parse("geo:$lat,$lon?q=$lat,$lon(${Uri.encode(peer?.alias ?: "Peer")})")
+                    val mapIntent = Intent(Intent.ACTION_VIEW, geoUri)
+                    try {
+                        context.startActivity(mapIntent)
+                    } catch (_: Exception) {
+                        android.widget.Toast.makeText(context, "No map application found. Coordinates copied.", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                }
+            )
+        }
 
         // Node ID Collision Security Alert Banner (C-23)
         if (peer?.trustState == "CONFLICTED") {

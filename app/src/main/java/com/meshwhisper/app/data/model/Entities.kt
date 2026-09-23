@@ -1,6 +1,7 @@
 package com.meshwhisper.app.data.model
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 @Entity(tableName = "peers")
@@ -21,7 +22,8 @@ data class PeerEntity(
     val isMuted: Boolean = false,
     val isVerified: Boolean = false,
     val identityHashHex: String? = null,
-    val trustState: String = "LEGACY_UNVERIFIED"
+    val trustState: String = "LEGACY_UNVERIFIED",
+    val shareLocationWithContact: Boolean = false
 ) {
     val nodeIdHex: String
         get() = String.format("%016X", nodeId)
@@ -129,11 +131,36 @@ data class LastKnownLocationEntity(
     val latitude: Double,
     val longitude: Double,
     val accuracyMeters: Float = 0f,
-    val timestamp: Long = System.currentTimeMillis()
+    val timestamp: Long = System.currentTimeMillis(), // Hardware GPS fix timestamp (fixTimestampMillis)
+    val sequenceNumber: Long = 1L,
+    val receivedTimestamp: Long = System.currentTimeMillis(),
+    val altitude: Double = 0.0,
+    val batteryPercent: Int = -1,
+    val triggerType: Int = 1,
+    val note: String? = null
 ) {
     val nodeIdHex: String
         get() = String.format("%016X", nodeId)
 }
+
+@Entity(
+    tableName = "breadcrumb_history",
+    indices = [Index(value = ["nodeId", "sequenceNumber"], unique = true)]
+)
+data class BreadcrumbHistoryEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val nodeId: Long,
+    val sequenceNumber: Long,
+    val latitude: Double,
+    val longitude: Double,
+    val altitude: Double = 0.0,
+    val accuracyMeters: Float = 0.0f,
+    val batteryPercent: Int = -1,
+    val triggerType: Int = 1,
+    val sentTimestamp: Long = System.currentTimeMillis(),
+    val receivedTimestamp: Long = System.currentTimeMillis(),
+    val note: String? = null
+)
 
 /**
  * vNext Identity entity representing persistent cryptographic identities in Room schema 12.

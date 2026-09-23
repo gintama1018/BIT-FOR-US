@@ -36,12 +36,17 @@ import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Surface
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.platform.LocalContext
+import com.meshwhisper.app.util.PlusCodeHelper
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.TabRowDefaults
@@ -261,6 +266,7 @@ fun MeshRadarScreen(
                     OfflineCampusMapView(
                         locations = locations,
                         peers = peers,
+                        connectedNodeIds = connectedNodeIds,
                         myNodeId = viewModel.myNodeId,
                         myAlias = viewModel.myAlias.collectAsState().value,
                         onPeerClick = { nodeId ->
@@ -770,10 +776,15 @@ private fun RadarPeerCard(
 fun OfflineCampusMapView(
     locations: List<com.meshwhisper.app.data.model.LastKnownLocationEntity>,
     peers: List<PeerEntity>,
+    connectedNodeIds: Set<Long> = emptySet(),
     myNodeId: Long,
     myAlias: String,
     onPeerClick: (Long) -> Unit
 ) {
+    val context = LocalContext.current
+    val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
+    var selectedLocationForSheet by remember { mutableStateOf<com.meshwhisper.app.data.model.LastKnownLocationEntity?>(null) }
+
     val infiniteTransition = rememberInfiniteTransition(label = "MapPulse")
     val pulse by infiniteTransition.animateFloat(
         initialValue = 0.4f,
@@ -792,7 +803,31 @@ fun OfflineCampusMapView(
             .background(WarmSurface)
             .border(1.dp, WarmCardBorder, RoundedCornerShape(12.dp))
     ) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
+        Canvas(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(locations, peers) {
+                    detectTapGestures { tapOffset ->
+                        val cx = size.width / 2f
+                        val cy = size.height / 2f
+                        val maxR = minOf(cx, cy) * 0.9f
+
+                        for (loc in locations) {
+                            if (loc.nodeId == myNodeId) continue
+                            val angle = (loc.nodeId.hashCode() % 360) * (Math.PI / 180.0)
+                            val distanceRatio = ((loc.nodeId.hashCode() and 0x7FFFFFFF) % 65 + 25) / 100f * maxR
+                            val px = cx + (cos(angle) * distanceRatio).toFloat()
+                            val py = cy + (sin(angle) * distanceRatio).toFloat()
+
+                            val distToTap = kotlin.math.sqrt((tapOffset.x - px) * (tapOffset.x - px) + (tapOffset.y - py) * (tapOffset.y - py))
+                            if (distToTap <= 35f) {
+                                selectedLocationForSheet = loc
+                                break
+                            }
+                        }
+                    }
+                }
+        ) {
             val cx = size.width / 2f
             val cy = size.height / 2f
             val maxR = minOf(cx, cy) * 0.9f
@@ -844,11 +879,10 @@ fun OfflineCampusMapView(
                 center = Offset(cx, cy)
             )
 
-            // 3. Draw Discovered Peer Pins
+            // 3. Draw Discovered Peer Pins (Live or Ghost)
             val activePeers = if (locations.isNotEmpty()) {
                 locations
             } else {
-                // Synthesize positions from direct peer RSSI/hop count if no GPS fix
                 peers.mapIndexed { idx, p ->
                     val angle = (idx.toDouble() / maxOf(1, peers.size)) * 2.0 * Math.PI
                     val dist = (p.hopCount * 0.35).coerceAtMost(0.85)
@@ -864,33 +898,77 @@ fun OfflineCampusMapView(
 
             for (loc in activePeers) {
                 if (loc.nodeId == myNodeId) continue
+                val peerEntity = peers.firstOrNull { it.nodeId == loc.nodeId }
+                val isConnected = connectedNodeIds.contains(loc.nodeId)
+                val isVerified = peerEntity?.trustState == "VERIFIED"
+                val isEmergency = loc.triggerType == 4 || loc.triggerType == 5
+
                 // Map coordinates relative to center
                 val angle = (loc.nodeId.hashCode() % 360) * (Math.PI / 180.0)
                 val distanceRatio = ((loc.nodeId.hashCode() and 0x7FFFFFFF) % 65 + 25) / 100f * maxR
-                val px = cx + (cos(angle) * distanceRatio).toFloat()
-                val py = cy + (sin(angle) * distanceRatio).toFloat()
+                val rawPx = cx + (cos(angle) * distanceRatio).toFloat()
+                val rawPy = cy + (sin(angle) * distanceRatio).toFloat()
 
-                // Glow ring
-                drawCircle(
-                    color = WarmGreen.copy(alpha = 0.25f * pulse),
-                    radius = 12.dp.toPx(),
-                    center = Offset(px, py)
-                )
-                // Core Pin
-                drawCircle(
-                    color = WarmGreen,
-                    radius = 5.dp.toPx(),
-                    center = Offset(px, py)
-                )
+                val isOutOfBounds = rawPx < 15f || rawPx > size.width - 15f || rawPy < 15f || rawPy > size.height - 15f
+                val px = rawPx.coerceIn(20f, size.width - 20f)
+                val py = rawPy.coerceIn(20f, size.height - 20f)
 
-                // Label
-                val labelPaint = android.graphics.Paint().apply {
-                    color = android.graphics.Color.DKGRAY
-                    textSize = 24f
-                    typeface = android.graphics.Typeface.DEFAULT_BOLD
-                    isAntiAlias = true
+                val pinColor = when {
+                    isEmergency -> SaharaError
+                    isConnected -> WarmGreen
+                    isVerified -> SaharaWarning
+                    else -> Color.Gray
                 }
-                drawContext.canvas.nativeCanvas.drawText("📍 ${loc.alias}", px + 14f, py + 8f, labelPaint)
+
+                if (isOutOfBounds) {
+                    // Draw Out-of-bounds boundary arrow
+                    drawCircle(
+                        color = pinColor,
+                        radius = 6.dp.toPx(),
+                        center = Offset(px, py)
+                    )
+                    val arrowPaint = android.graphics.Paint().apply {
+                        color = android.graphics.Color.rgb(150, 68, 7)
+                        textSize = 20f
+                        isAntiAlias = true
+                        typeface = android.graphics.Typeface.DEFAULT_BOLD
+                    }
+                    drawContext.canvas.nativeCanvas.drawText("↗ ${loc.alias}", px + 8f, py + 4f, arrowPaint)
+                } else {
+                    // 2x Confidence search radius circle for verified offline breadcrumbs
+                    if (!isConnected && isVerified && loc.accuracyMeters > 0f) {
+                        val accuracyRadiusPx = (loc.accuracyMeters * 2).coerceIn(12f, 40f)
+                        drawCircle(
+                            color = pinColor.copy(alpha = 0.4f * pulse),
+                            radius = accuracyRadiusPx,
+                            center = Offset(px, py),
+                            style = Stroke(width = 1.5.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(4f, 4f)))
+                        )
+                    }
+
+                    // Glow ring
+                    drawCircle(
+                        color = pinColor.copy(alpha = 0.25f * pulse),
+                        radius = 12.dp.toPx(),
+                        center = Offset(px, py)
+                    )
+                    // Core Pin
+                    drawCircle(
+                        color = pinColor,
+                        radius = 5.dp.toPx(),
+                        center = Offset(px, py)
+                    )
+
+                    // Label
+                    val labelPaint = android.graphics.Paint().apply {
+                        color = android.graphics.Color.DKGRAY
+                        textSize = 24f
+                        typeface = android.graphics.Typeface.DEFAULT_BOLD
+                        isAntiAlias = true
+                    }
+                    val iconPrefix = if (isEmergency) "🚨 " else if (!isConnected && isVerified) "👻 " else "📍 "
+                    drawContext.canvas.nativeCanvas.drawText("$iconPrefix${loc.alias}", px + 14f, py + 8f, labelPaint)
+                }
             }
         }
 
@@ -908,11 +986,72 @@ fun OfflineCampusMapView(
             Icon(imageVector = Icons.Default.Explore, contentDescription = null, tint = BurntSienna, modifier = Modifier.size(12.dp))
             Spacer(modifier = Modifier.width(4.dp))
             Text(
-                text = "100% Offline Grid • ${locations.size} GPS fixes",
+                text = "100% Offline Grid • ${locations.size} GPS fixes (Tap pin for Plus Code)",
                 color = TextPrimary,
                 fontSize = 10.sp,
                 fontFamily = ManropeFamily,
                 fontWeight = FontWeight.Bold
+            )
+        }
+
+        // Selected Pin Inspection Dialog / Bottom Modal
+        selectedLocationForSheet?.let { loc ->
+            val plusCode = PlusCodeHelper.encode(loc.latitude, loc.longitude)
+            val coords = String.format(java.util.Locale.US, "%.6f, %.6f", loc.latitude, loc.longitude)
+            val ageMins = ((System.currentTimeMillis() - loc.timestamp).coerceAtLeast(0L)) / 60_000L
+
+            AlertDialog(
+                onDismissRequest = { selectedLocationForSheet = null },
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(imageVector = Icons.Default.LocationOn, contentDescription = null, tint = SaharaPrimary)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(loc.alias, fontWeight = FontWeight.Bold)
+                    }
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("Fix Age: Last fix ${ageMins}m ago", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                        Text(
+                            text = if (loc.accuracyMeters > 0f) "Search Radius: ±${(loc.accuracyMeters * 2).toInt()}m (Reported ±${loc.accuracyMeters.toInt()}m)" else "Search Radius: Unknown",
+                            fontSize = 12.sp,
+                            color = SaharaOnSurfaceVariant
+                        )
+                        if (loc.batteryPercent >= 0) {
+                            Text("Battery Level: ${loc.batteryPercent}%", fontSize = 12.sp, color = SaharaOnSurfaceVariant)
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Surface(
+                            color = SaharaSurfaceContainerLow,
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
+                        ) {
+                            Column(modifier = Modifier.padding(8.dp)) {
+                                Text("Offline Plus Code: $plusCode", fontWeight = FontWeight.Bold, fontSize = 12.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+                                Text("GPS: $coords", fontSize = 11.sp, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            selectedLocationForSheet = null
+                            onPeerClick(loc.nodeId)
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = SaharaPrimary)
+                    ) {
+                        Text("Start Homing")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        clipboardManager.setText(androidx.compose.ui.text.AnnotatedString("$coords (Plus Code: $plusCode)"))
+                        android.widget.Toast.makeText(context, "Coordinates & Plus Code copied", android.widget.Toast.LENGTH_SHORT).show()
+                    }) {
+                        Text("Copy Code")
+                    }
+                }
             )
         }
     }

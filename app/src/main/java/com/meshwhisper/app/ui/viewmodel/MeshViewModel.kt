@@ -72,6 +72,39 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
     val allLocations: StateFlow<List<com.meshwhisper.app.data.model.LastKnownLocationEntity>> = database.locationDao().getAllLocations()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val breadcrumbManager get() = app.breadcrumbManager
+    val locationHelper get() = app.locationHelper
+
+    fun getLocationForPeerFlow(nodeId: Long): Flow<com.meshwhisper.app.data.model.LastKnownLocationEntity?> {
+        return database.locationDao().getLocationFlowForNode(nodeId)
+    }
+
+    fun getBreadcrumbHistoryForPeer(nodeId: Long, limit: Int = 5): Flow<List<com.meshwhisper.app.data.model.BreadcrumbHistoryEntity>> {
+        return database.locationDao().getBreadcrumbHistory(nodeId, limit)
+    }
+
+    fun toggleLocationSharingWithContact(nodeId: Long, enabled: Boolean) {
+        viewModelScope.launch {
+            breadcrumbManager.setContactLocationSharing(nodeId, enabled)
+        }
+    }
+
+    fun sendManualLocationBeacon(targetPeerNodeId: Long? = null, note: String? = null) {
+        viewModelScope.launch {
+            breadcrumbManager.sendManualLocationBeacon(targetPeerNodeId, note)
+        }
+    }
+
+    fun revokeLocationSharing(nodeId: Long) {
+        viewModelScope.launch {
+            breadcrumbManager.revokeLocationSharing(nodeId)
+        }
+    }
+
+    fun getMyLocation(): com.meshwhisper.app.location.LocationData? {
+        return locationHelper.getLastKnownLocation()
+    }
+
     val sosMessages: StateFlow<List<MessageEntity>> = database.messageDao().getSosMessages()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 

@@ -18,6 +18,7 @@ import com.meshwhisper.app.data.dao.ProcessedPacketDao
 import com.meshwhisper.app.data.dao.ProfileDao
 import com.meshwhisper.app.data.dao.StoreForwardDao
 import com.meshwhisper.app.data.dao.TopologyEdgeDao
+import com.meshwhisper.app.data.model.BreadcrumbHistoryEntity
 import com.meshwhisper.app.data.model.IdentityEntity
 import com.meshwhisper.app.data.model.LastKnownLocationEntity
 import com.meshwhisper.app.data.model.MessageEntity
@@ -49,9 +50,10 @@ import javax.crypto.spec.SecretKeySpec
         TopologyEdgeEntity::class,
         LastKnownLocationEntity::class,
         ProfileEntity::class,
-        IdentityEntity::class
+        IdentityEntity::class,
+        BreadcrumbHistoryEntity::class
     ],
-    version = 12,
+    version = 13,
     exportSchema = true
 )
 abstract class MeshDatabase : RoomDatabase() {
@@ -238,6 +240,41 @@ abstract class MeshDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Room Migration 12 → 13.
+         * 1. Add sequenceNumber, receivedTimestamp, altitude, batteryPercent, triggerType, note to `last_known_locations`.
+         * 2. Add shareLocationWithContact to `peers`.
+         * 3. Create `breadcrumb_history` table with unique index on (nodeId, sequenceNumber).
+         */
+        val MIGRATION_12_13 = object : androidx.room.migration.Migration(12, 13) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE last_known_locations ADD COLUMN sequenceNumber INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("ALTER TABLE last_known_locations ADD COLUMN receivedTimestamp INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE last_known_locations ADD COLUMN altitude REAL NOT NULL DEFAULT 0.0")
+                db.execSQL("ALTER TABLE last_known_locations ADD COLUMN batteryPercent INTEGER NOT NULL DEFAULT -1")
+                db.execSQL("ALTER TABLE last_known_locations ADD COLUMN triggerType INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("ALTER TABLE last_known_locations ADD COLUMN note TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE peers ADD COLUMN shareLocationWithContact INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS breadcrumb_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        nodeId INTEGER NOT NULL,
+                        sequenceNumber INTEGER NOT NULL,
+                        latitude REAL NOT NULL,
+                        longitude REAL NOT NULL,
+                        altitude REAL NOT NULL DEFAULT 0.0,
+                        accuracyMeters REAL NOT NULL DEFAULT 0.0,
+                        batteryPercent INTEGER NOT NULL DEFAULT -1,
+                        triggerType INTEGER NOT NULL DEFAULT 1,
+                        sentTimestamp INTEGER NOT NULL,
+                        receivedTimestamp INTEGER NOT NULL,
+                        note TEXT DEFAULT NULL
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_breadcrumb_history_nodeId_sequenceNumber ON breadcrumb_history(nodeId, sequenceNumber)")
+            }
+        }
+
         @Volatile
         private var INSTANCE: MeshDatabase? = null
 
@@ -271,7 +308,8 @@ abstract class MeshDatabase : RoomDatabase() {
                         MIGRATION_8_9,
                         MIGRATION_9_10,
                         MIGRATION_10_11,
-                        MIGRATION_11_12
+                        MIGRATION_11_12,
+                        MIGRATION_12_13
                     )
                     // Explicitly NO fallbackToDestructiveMigration() per C-20
                     .build()

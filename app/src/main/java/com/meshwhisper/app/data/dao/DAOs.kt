@@ -75,6 +75,15 @@ interface PeerDao {
     @Query("UPDATE peers SET hasKeyChanged = :hasChanged WHERE nodeId = :nodeId")
     suspend fun updateHasKeyChangedByNodeId(nodeId: Long, hasChanged: Boolean)
 
+    @Query("SELECT * FROM peers WHERE trustState = 'VERIFIED' AND shareLocationWithContact = 1")
+    suspend fun getOptedInPeers(): List<PeerEntity>
+
+    @Query("SELECT * FROM peers WHERE trustState = 'VERIFIED' AND shareLocationWithContact = 1")
+    fun getOptedInPeersFlow(): Flow<List<PeerEntity>>
+
+    @Query("UPDATE peers SET shareLocationWithContact = :enabled WHERE nodeId = :nodeId")
+    suspend fun setShareLocationWithContact(nodeId: Long, enabled: Boolean)
+
     @Query("DELETE FROM peers WHERE nodeId = :nodeId")
     suspend fun deletePeer(nodeId: Long)
 
@@ -255,8 +264,57 @@ interface LocationDao {
     @Query("SELECT * FROM last_known_locations WHERE nodeId = :nodeId LIMIT 1")
     suspend fun getLocationForNode(nodeId: Long): com.meshwhisper.app.data.model.LastKnownLocationEntity?
 
+    @Query("SELECT * FROM last_known_locations WHERE nodeId = :nodeId LIMIT 1")
+    fun getLocationFlowForNode(nodeId: Long): Flow<com.meshwhisper.app.data.model.LastKnownLocationEntity?>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertOrUpdate(location: com.meshwhisper.app.data.model.LastKnownLocationEntity)
+
+    @Query("""
+        UPDATE last_known_locations 
+        SET alias = :alias,
+            latitude = :latitude,
+            longitude = :longitude,
+            accuracyMeters = :accuracyMeters,
+            timestamp = :fixTimestamp,
+            sequenceNumber = :sequenceNumber,
+            receivedTimestamp = :receivedTimestamp,
+            altitude = :altitude,
+            batteryPercent = :batteryPercent,
+            triggerType = :triggerType,
+            note = :note
+        WHERE nodeId = :nodeId 
+          AND (:fixTimestamp > timestamp OR (:fixTimestamp = timestamp AND :sequenceNumber > sequenceNumber))
+    """)
+    suspend fun updateIfNewer(
+        nodeId: Long,
+        alias: String,
+        latitude: Double,
+        longitude: Double,
+        accuracyMeters: Float,
+        fixTimestamp: Long,
+        sequenceNumber: Long,
+        receivedTimestamp: Long,
+        altitude: Double,
+        batteryPercent: Int,
+        triggerType: Int,
+        note: String?
+    ): Int
+
+    @Query("DELETE FROM last_known_locations WHERE nodeId = :nodeId")
+    suspend fun deleteLocationForNode(nodeId: Long)
+
+    @Query("SELECT * FROM breadcrumb_history WHERE nodeId = :nodeId ORDER BY sequenceNumber DESC LIMIT :limit")
+    fun getBreadcrumbHistory(nodeId: Long, limit: Int = 5): Flow<List<com.meshwhisper.app.data.model.BreadcrumbHistoryEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertHistory(history: com.meshwhisper.app.data.model.BreadcrumbHistoryEntity)
+
+    @Query("DELETE FROM breadcrumb_history WHERE nodeId = :nodeId")
+    suspend fun deleteHistoryForNode(nodeId: Long)
+
+    @Query("DELETE FROM breadcrumb_history WHERE nodeId = :nodeId AND id NOT IN (SELECT id FROM breadcrumb_history WHERE nodeId = :nodeId ORDER BY sequenceNumber DESC LIMIT :keepLimit)")
+    suspend fun pruneHistory(nodeId: Long, keepLimit: Int = 5)
 
     @Query("DELETE FROM last_known_locations")
     suspend fun deleteAll()

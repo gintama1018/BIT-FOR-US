@@ -176,4 +176,29 @@ class DatabaseMigrationP7Test {
             tempDir.deleteRecursively()
         }
     }
+
+    @Test
+    fun testMigration12To13_executesAllRequiredDdl() {
+        val executedSql = mutableListOf<String>()
+        val db = createRecordingDb(executedSql)
+        MeshDatabase.MIGRATION_12_13.migrate(db)
+
+        val statements = executedSql
+        assertThat(statements).isNotEmpty()
+
+        // 1. Verify last_known_locations alterations
+        assertThat(statements.find { it.contains("ALTER TABLE last_known_locations ADD COLUMN sequenceNumber") }).isNotNull()
+        assertThat(statements.find { it.contains("ALTER TABLE last_known_locations ADD COLUMN receivedTimestamp") }).isNotNull()
+        assertThat(statements.find { it.contains("ALTER TABLE last_known_locations ADD COLUMN altitude") }).isNotNull()
+        assertThat(statements.find { it.contains("ALTER TABLE last_known_locations ADD COLUMN batteryPercent") }).isNotNull()
+        assertThat(statements.find { it.contains("ALTER TABLE last_known_locations ADD COLUMN triggerType") }).isNotNull()
+        assertThat(statements.find { it.contains("ALTER TABLE last_known_locations ADD COLUMN note") }).isNotNull()
+
+        // 2. Verify peers alteration
+        assertThat(statements.find { it.contains("ALTER TABLE peers ADD COLUMN shareLocationWithContact") }).isNotNull()
+
+        // 3. Verify breadcrumb_history table and unique index
+        assertThat(statements.find { it.contains("CREATE TABLE IF NOT EXISTS breadcrumb_history") }).isNotNull()
+        assertThat(statements.find { it.contains("CREATE UNIQUE INDEX IF NOT EXISTS index_breadcrumb_history_nodeId_sequenceNumber") }).isNotNull()
+    }
 }

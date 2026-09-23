@@ -21,6 +21,7 @@ class MeshApplication : Application() {
     lateinit var wifiEngine: com.meshwhisper.app.wifi.MeshWifiEngine private set
     lateinit var router: MeshRouter private set
     lateinit var locationHelper: com.meshwhisper.app.location.LocationHelper private set
+    lateinit var breadcrumbManager: com.meshwhisper.app.location.LocationBreadcrumbManager private set
 
     val applicationScope: kotlinx.coroutines.CoroutineScope =
         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO)
@@ -51,6 +52,7 @@ class MeshApplication : Application() {
         bleEngine = MeshBleEngine(this)
         wifiEngine = com.meshwhisper.app.wifi.MeshWifiEngine(this)
         router = MeshRouter(this, bleEngine, wifiEngine, cryptoEngine, database)
+        breadcrumbManager = com.meshwhisper.app.location.LocationBreadcrumbManager(this, router, locationHelper, database)
     }
 
     fun startMeshService() {

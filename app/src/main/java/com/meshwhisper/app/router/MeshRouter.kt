@@ -105,6 +105,7 @@ class MeshRouter(
         var packetsSent: Int = 0
     )
     private val peerTrafficStats = ConcurrentHashMap<Long, PeerTrafficStats>()
+    private val breadcrumbNotificationRateLimiter = ConcurrentHashMap<Long, Long>()
 
     /**
      * Checks if the target peer is directly connected over local Wi-Fi TCP or BLE GATT.
@@ -758,6 +759,12 @@ class MeshRouter(
     ) {
         val packet = authPacket.packet
         if (packet.recipientId == cryptoEngine.nodeId) {
+            // Check if this payload is an emergency location breadcrumb BEFORE UTF-8 decode
+            if (LocationBreadcrumbPayload.isBreadcrumb(authPacket.decryptedPayload)) {
+                handleLocationBreadcrumb(authPacket, ingressAddress)
+                return
+            }
+
             val senderPeer = database.peerDao().getPeerById(packet.senderId)
             val senderAlias = senderPeer?.alias ?: "Node-${String.format("%016X", packet.senderId).takeLast(4)}"
             val text = String(authPacket.decryptedPayload, Charsets.UTF_8)
@@ -847,6 +854,117 @@ class MeshRouter(
                 }
             }
         }
+    }
+
+    private suspend fun handleLocationBreadcrumb(authPacket: AuthenticatedPacket, ingressAddress: String?) {
+        val packet = authPacket.packet
+        val payload = LocationBreadcrumbPayload.deserialize(authPacket.decryptedPayload) ?: return
+
+        // 1. Anti-Spoofing: Verify sender is VERIFIED
+        val senderIdentity = authPacket.senderIdentity
+        if (senderIdentity.trustState != com.meshwhisper.core.identity.TrustState.VERIFIED) {
+            Log.w(tag, "Dropping location breadcrumb from unverified node ${packet.senderId}")
+            return
+        }
+
+        // 2. Clock Skew Check: Reject if fix timestamp is > 10 min in future
+        val nowSec = System.currentTimeMillis() / 1000L
+        if (payload.fixTimestampSec > nowSec + 600) {
+            Log.w(tag, "Dropping location breadcrumb from ${packet.senderId}: future timestamp drift (${payload.fixTimestampSec} vs $nowSec)")
+            return
+        }
+
+        val senderPeer = database.peerDao().getPeerById(packet.senderId)
+        val senderAlias = senderPeer?.alias ?: "Node-${String.format("%016X", packet.senderId).takeLast(4)}"
+
+        // 3. Handle REVOKE trigger: purge stored locations
+        if (payload.triggerType == BreadcrumbTriggerType.REVOKE) {
+            Log.i(tag, "Received location REVOKE from $senderAlias (${packet.senderId})")
+            database.locationDao().deleteLocationForNode(packet.senderId)
+            database.locationDao().deleteHistoryForNode(packet.senderId)
+            sendAck(packet.senderId, packet.messageId)
+            return
+        }
+
+        // 4. Atomic conditional update: (fixTimestamp > current) OR (fixTimestamp == current AND seq > current)
+        val fixTimestampMs = payload.fixTimestampSec * 1000L
+        val receivedTimestampMs = System.currentTimeMillis()
+
+        val rowsUpdated = database.locationDao().updateIfNewer(
+            nodeId = packet.senderId,
+            alias = senderAlias,
+            latitude = payload.latitude,
+            longitude = payload.longitude,
+            accuracyMeters = payload.accuracyMeters,
+            fixTimestamp = fixTimestampMs,
+            sequenceNumber = payload.sequenceNumber,
+            receivedTimestamp = receivedTimestampMs,
+            altitude = payload.altitude,
+            batteryPercent = payload.batteryPercent,
+            triggerType = payload.triggerType.code.toInt(),
+            note = payload.note
+        )
+
+        if (rowsUpdated == 0) {
+            val existing = database.locationDao().getLocationForNode(packet.senderId)
+            if (existing == null) {
+                // First time receiving location for this node
+                database.locationDao().insertOrUpdate(
+                    com.meshwhisper.app.data.model.LastKnownLocationEntity(
+                        nodeId = packet.senderId,
+                        alias = senderAlias,
+                        latitude = payload.latitude,
+                        longitude = payload.longitude,
+                        accuracyMeters = payload.accuracyMeters,
+                        timestamp = fixTimestampMs,
+                        sequenceNumber = payload.sequenceNumber,
+                        receivedTimestamp = receivedTimestampMs,
+                        altitude = payload.altitude,
+                        batteryPercent = payload.batteryPercent,
+                        triggerType = payload.triggerType.code.toInt(),
+                        note = payload.note
+                    )
+                )
+            } else {
+                Log.d(tag, "Dropped replayed/stale breadcrumb from ${packet.senderId} (incoming fix=$fixTimestampMs, seq=${payload.sequenceNumber} vs existing fix=${existing.timestamp}, seq=${existing.sequenceNumber})")
+                sendAck(packet.senderId, packet.messageId)
+                return
+            }
+        }
+
+        // 5. Insert into history trail (unique index ignores duplicates)
+        database.locationDao().insertHistory(
+            com.meshwhisper.app.data.model.BreadcrumbHistoryEntity(
+                nodeId = packet.senderId,
+                sequenceNumber = payload.sequenceNumber,
+                latitude = payload.latitude,
+                longitude = payload.longitude,
+                altitude = payload.altitude,
+                accuracyMeters = payload.accuracyMeters,
+                batteryPercent = payload.batteryPercent,
+                triggerType = payload.triggerType.code.toInt(),
+                sentTimestamp = fixTimestampMs,
+                receivedTimestamp = receivedTimestampMs,
+                note = payload.note
+            )
+        )
+        database.locationDao().pruneHistory(packet.senderId, 5)
+
+        // 6. Rate-limited audible/heads-up notification (Max 1 per 60s per sender unless emergency)
+        val lastNotif = breadcrumbNotificationRateLimiter[packet.senderId] ?: 0L
+        val isEmergency = payload.triggerType == BreadcrumbTriggerType.BATTERY_CRITICAL_5 || payload.triggerType == BreadcrumbTriggerType.MANUAL_SOS
+        if (receivedTimestampMs - lastNotif >= 60_000L || isEmergency) {
+            breadcrumbNotificationRateLimiter[packet.senderId] = receivedTimestampMs
+            val alertDesc = when (payload.triggerType) {
+                BreadcrumbTriggerType.BATTERY_CRITICAL_5 -> "⚠️ Critical Dying Gasp (Battery: ${payload.batteryPercent}%)"
+                BreadcrumbTriggerType.MANUAL_SOS -> "🆘 Emergency Beacon from $senderAlias"
+                else -> "📍 Location beacon updated"
+            }
+            onIncomingMessageListener?.invoke(packet.senderId, senderAlias, alertDesc, false)
+        }
+
+        sendAck(packet.senderId, packet.messageId)
+        logPacket("RX_BREADCRUMB", packet, packet.payload.size, "From $senderAlias (seq=${payload.sequenceNumber}, trigger=${payload.triggerType})")
     }
 
     private suspend fun handleCustodyAck(authPacket: AuthenticatedPacket, ingressAddress: String?) {
@@ -1412,6 +1530,90 @@ class MeshRouter(
         }
 
         return msgId.toString()
+    }
+
+    suspend fun sendBreadcrumbDirect(
+        recipientNodeId: Long,
+        payload: LocationBreadcrumbPayload,
+        isEmergency: Boolean = false
+    ): Boolean {
+        val peer = database.peerDao().getPeerById(recipientNodeId) ?: return false
+        if (peer.isBlocked) return false
+        if (identityRepository.isNodeConflicted(recipientNodeId)) return false
+
+        val peerPubKey = try {
+            CryptoEngine.hexToBytes(peer.publicKeyHex)
+        } catch (_: Exception) {
+            return false
+        }
+
+        val msgId = UUID.randomUUID()
+        val payloadBytes = payload.serialize()
+        val timestamp = System.currentTimeMillis() / 1000L
+
+        val packet = DirectMessagePacketBuilder.build(
+            senderNodeId64 = cryptoEngine.nodeId,
+            senderIdentityHash = cryptoEngine.identityHash,
+            senderPrivateKey = cryptoEngine.getPrivateKey()!!,
+            recipientNodeId64 = recipientNodeId,
+            peerPublicKey = peerPubKey,
+            plaintext = payloadBytes,
+            timestampSec = timestamp,
+            messageId = msgId,
+            ttl = MeshPacket.DEFAULT_TTL
+        )
+
+        val raw = MeshPacket.serialize(packet)
+        packetStore.commitSeen(msgId, PacketType.DIRECT_MESSAGE.code, timestamp)
+        dedupCache.put("$msgId:${PacketType.DIRECT_MESSAGE.code}", System.currentTimeMillis())
+
+        val sf = StoreForwardEntity(
+            messageId = msgId.toString(),
+            recipientId = recipientNodeId,
+            packetData = raw,
+            createdAt = System.currentTimeMillis(),
+            expiresAt = System.currentTimeMillis() + (24 * 60 * 60 * 1000L)
+        )
+        custodyManager.registerOriginatorMessage(
+            messageId = msgId.toString(),
+            recipientNodeId = recipientNodeId,
+            packetData = raw
+        )
+        database.storeForwardDao().insertPartitioned(sf, cryptoEngine.nodeId)
+        database.storeForwardDao().trimRecipientQueue(recipientNodeId, MAX_STORE_FORWARD_PER_RECIPIENT)
+
+        syncDirectNeighbors()
+        val routeResult = routeEngine.resolveRoute(recipientNodeId)
+        var dispatched = false
+
+        when (routeResult) {
+            is RouteLookupResult.Direct -> {
+                dispatched = sendDirectToNode(recipientNodeId, raw)
+                if (dispatched) {
+                    custodyManager.recordHandoffAttempt(msgId.toString(), recipientNodeId)
+                }
+            }
+            is RouteLookupResult.NextHop -> {
+                val nextHop = routeResult.nextHopNodeId
+                dispatched = sendDirectToNode(nextHop, raw)
+                if (dispatched) {
+                    custodyManager.recordHandoffAttempt(msgId.toString(), nextHop)
+                } else {
+                    routeEngine.markLinkFailed(cryptoEngine.nodeId, nextHop)
+                }
+            }
+            RouteLookupResult.Unreachable -> {}
+        }
+
+        // If emergency (dying gasp/SOS) or destination unreachable:
+        // Broadcast custody packet to ALL reachable 1-hop neighbors so anyone meeting recipient can deliver
+        if (isEmergency || !dispatched) {
+            broadcastPacketDirect(raw)
+            dispatched = true
+        }
+
+        logPacket("TX_BREADCRUMB", packet, raw.size, "Sent breadcrumb to $recipientNodeId (emergency=$isEmergency, trigger=${payload.triggerType})")
+        return dispatched
     }
 
     private suspend fun sendAck(recipientNodeId: Long, originalMsgId: UUID) {

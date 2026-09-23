@@ -81,12 +81,17 @@ Every claim and capability in this repository is categorized into one of four ex
   - Android nodes support dual-radio transports: BLE Central/Peripheral + Wi-Fi TCP/UDP.
   - Desktop nodes (Windows / macOS) currently support **Wi-Fi TCP/UDP only**. Desktop nodes do not currently implement BLE GATT host drivers.
 
+### 4.4. GPS Satellite Acquisition at Critical Battery ($\le 5\%$)
+- **Classification**: `KNOWN LIMITATION` / `PROVEN MITIGATION`
+- **Description**: Cold GPS satellite acquisition draws 50–100mA of RF receiver current and requires 15–45 seconds for satellite ephemeris synchronization. At critical battery ($\le 5\%$), attempting cold satellite acquisition risks triggering premature OS battery protection shutdown before radio transmission can execute.
+- **Mitigation Enforced**: At $\le 5\%$ battery, `LocationBreadcrumbManager` **strictly reuses the cached last GPS satellite fix (0ms delay)** rather than polling hardware GPS, ensuring the dying gasp beacon transmits immediately over available radio links before power cut.
+
 ---
 
 ## 5. Network Scale & Verification Status
 
 ### 5.1. Simulated vs. Physical Evidence
-- **Automated Unit & Integration Test Suite**: **331 / 331 tests passing (100%)**.
+- **Automated Unit & Integration Test Suite**: **347 / 347 tests passing (100%)**.
 - **Real OS Socket Integration (`P9-NET-01`)**: **`PROVEN`**. Verifies live OS TCP socket loopback (`127.0.0.1:42426`) with full `LINK_AUTH`, $K_{\text{link}}$ derivation, bidirectional encrypted direct messaging, automated ACKs, socket closure $T_5$, and reconnect $T_4$ continuity.
 - **Physical Multi-Device Android ↔ Desktop LAN Acceptance**: **`MANUAL / PENDING`**. Fully wired and ready for execution using `.\gradlew.bat :desktop:run`, but awaiting recorded physical execution on a live multi-device Wi-Fi router.
 - **Dense Physical Multi-Device RF Mesh**: **`MANUAL / PENDING`**. Meshes beyond 5 physical hardware devices under heavy RF interference require dedicated operational field testing.
@@ -98,6 +103,7 @@ Every claim and capability in this repository is categorized into one of four ex
 To prevent database bloating and memory exhaustion on embedded hardware, strict quotas are enforced:
 - **Per-Peer Store & Forward Buffer**: Maximum **50 messages** per offline recipient.
 - **Global Store & Forward Buffer**: Maximum **500 total messages** buffered across all peers.
+- **Per-Peer Breadcrumb History**: Maximum **50 locations** per peer in `breadcrumb_history`, automatically pruned on update.
 - **Message Expiration**: Queued store-and-forward messages expire automatically after **24 hours**.
 - **Inbound Media Transfers**: Maximum **16 concurrent inbound transfers**, automatically cleaned up after 60 seconds of inactivity.
 - **Dedup RAM Cache**: Bounded at **4,000 entries** with LRU eviction, backed by persistent SQLite storage.

@@ -4,6 +4,44 @@ All notable changes to the **MeshWhisper / BIT FOR US** platform are documented 
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres to semantic development milestones.
 
+## [vNext Schema 13 - Emergency Location Beacon & Store-Carry-Forward Breadcrumbs] - (2026-09-23)
+### Geolocation Privacy, Tactical Offline Rescue & Power-Aware Resilience
+
+#### Added
+- **Core Binary Breadcrumb Payload (`LocationBreadcrumbPayload.kt`)**:
+  - Pairwise end-to-end encrypted sub-payload under `DIRECT_MESSAGE` (AES-256-GCM + Ed25519 signature); zero cleartext coordinates over the air.
+  - Non-UTF8 magic prefix `[0xFF, 'B', 'C']` eliminating collisions with chat text starting with 'L' (byte `0xFF` is mathematically prohibited in RFC 3629 UTF-8).
+  - Compact 27-byte big-endian struct ($10^7$ coordinate scaling, $0.1\text{m}$ accuracy, altitude, satellite fix timestamp, monotonic sequence counter).
+  - Side-channel length defense: zero-padded to a **fixed 64 bytes** prior to encryption.
+  - Trigger types: `PERIODIC_5MIN`, `MANUAL_SOS`, `BATTERY_15`, `BATTERY_10`, `BATTERY_5_DYING_GASP`, `REVOKE`.
+- **Autonomous Offline Plus Code Encoder (`PlusCodeHelper.kt`)**:
+  - 100% offline mathematical Open Location Code encoder (~13.5m precision, e.g. `8FVC7JVW+9V`) requiring zero external maps, places, or city databases. Formatted for verbal transmission over search-and-rescue two-way radio channels.
+- **Power-Aware Dying Gasp & Location Manager (`LocationBreadcrumbManager.kt`)**:
+  - Active GPS location listener with cached fix fallback.
+  - Level-crossing battery state detector with hysteresis (15%, 10%, 5%) and charging guard.
+  - Instant (0ms) cached GPS fallback at $\le 5\%$ to eliminate phone shutdown races during cold satellite acquisition.
+  - Broadcasts custody handover frames to all 1-hop neighbors when route to destination is unknown.
+- **Atomic Reinstall-Proof Ordering & Storage**:
+  - SQLite conditional atomic update in `DAOs.kt`: `WHERE (:fixTimestamp > timestamp OR (:fixTimestamp = timestamp AND :sequenceNumber > sequenceNumber))`. Replays and out-of-order store-and-forward bursts are discarded while app data resets supersede older timestamps.
+  - Arrival storage is never rate-limited; user heads-up/audible notifications throttled to 1 per 60s per sender.
+  - Store-and-forward history table `BreadcrumbHistoryEntity` with unique index `(nodeId, sequenceNumber)` and automatic 50-entry history pruning.
+- **Database Schema Migration v13 (`MIGRATION_12_13`)**:
+  - Upgraded Room schema to version 13 with SQLCipher encryption-at-rest.
+  - Added `shareLocationWithContact` to `peers` table (default 0 / false).
+  - Added `sequenceNumber`, `receivedTimestamp`, `altitude`, `batteryPercent`, `triggerType`, and `note` to `last_known_locations`.
+- **UI Enhancements**:
+  - `RescueLocationCard.kt`: Pinned direct chat card displaying fix age color accents, bearing compass, offline Plus Code, and quick copy/share actions.
+  - Direct chat safety number dialog: 1-tap emergency location sharing toggle and 1.5s hold-to-confirm manual beacon dispatch.
+  - `MeshRadarScreen.kt`: Offline verified ghost pins with $2\times$ accuracy uncertainty circles and off-screen boundary direction arrows (`↗`).
+- **Comprehensive Unit Tests**:
+  - Added `LocationBreadcrumbPayloadTest.kt` (round-trip, 64-byte padding, non-UTF-8 collision rejection, bounds checking).
+  - Added `PlusCodeHelperTest.kt` (Open Location Code algorithm determinism, pole boundaries, negative coordinates).
+  - Added `LocationBreadcrumbIngressTest.kt` (reinstall recovery, replay drops, clock drift rejection, revoke handling).
+  - Added `DatabaseMigrationP7Test.kt` (`MIGRATION_12_13` DDL verification and schema generation).
+  - Expanded test suite to **347 passing tests** (100% offline, 0 failures, 0 ignored).
+
+---
+
 ## [vNext Implementation Milestone] - Phases P0–P10 (2026-09-19)
 ### Architecture, Security, Protocol Freeze & Desktop Parity
 

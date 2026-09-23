@@ -5,11 +5,11 @@
 > - **[docs/PROTOCOL.md](docs/PROTOCOL.md)**: 56-Byte Wire Protocol, Packet Types & Binary Encodings
 > - **[docs/SECURITY.md](docs/SECURITY.md)**: Cryptographic Architecture, Hardware TEE & Threat Model
 > - **[docs/LIMITATIONS.md](docs/LIMITATIONS.md)**: Physical Boundaries, Radio Constraints & Scope Limits
-> - **[docs/TESTING.md](docs/TESTING.md)**: Test Architecture, 331 Unit Tests & Verification Matrix
+> - **[docs/TESTING.md](docs/TESTING.md)**: Test Architecture, 347 Unit Tests & Verification Matrix
 > - **[docs/ROADMAP.md](docs/ROADMAP.md)**: Implemented Milestones & Future Research Trajectory
 
 **Status:** FROZEN Implementation Specification  
-**Architecture Version:** vNext (Phases P0–P10 Aligned)  
+**Architecture Version:** vNext (Phases P0–P10 & Schema 13 Aligned)  
 **Modules:** `:core`, `:app`, `:desktop`  
 
 ---
@@ -34,11 +34,12 @@ flowchart TB
 
     subgraph Android_Node["Android Application Node (:app)"]
         AndroidRouter["MeshRouter<br>Dual-Radio Multiplexer, CSMA Jitter"]
-        AndroidRepo["IdentityRepository<br>Room v12 Transaction Coordinator"]
-        AndroidDB["MeshDatabase (Room v12)<br>SQLCipher AES-256 Encrypted<br>AndroidKeyStore TEE Hardware-Wrapped Key"]
+        AndroidRepo["IdentityRepository<br>Room v13 Transaction Coordinator"]
+        AndroidDB["MeshDatabase (Room v13)<br>SQLCipher AES-256 Encrypted<br>AndroidKeyStore TEE Hardware-Wrapped Key"]
         AndroidMedia["MediaAtRestManager<br>MWMEDIA1 Per-File HKDF AES-GCM Storage"]
+        LocationMgr["LocationBreadcrumbManager<br>Dying Gasp (15%/10%/5%), Cached GPS<br>PlusCodeHelper (Offline 10-Char OLC)"]
         AndroidTransports["MeshBleEngine (GATT Central/Peripheral)<br>MeshWifiEngine (UDP 42425 / TCP 42426)"]
-        AndroidUI["Jetpack Compose UI<br>Sahara Minimalist Design, CameraX QR Scanner"]
+        AndroidUI["Jetpack Compose UI<br>Sahara Minimalist Design, CameraX QR Scanner<br>RescueLocationCard & Radar Ghost Pins"]
         VoiceMgr["VoiceCallManager & AdpcmCodec<br>Strict Direct 1-Hop Audio (ttl = 1)"]
     end
 
@@ -58,6 +59,8 @@ flowchart TB
     AndroidRepo --> Store
     AndroidTransports --> LinkAuth
     AndroidRouter --> Routing
+    LocationMgr --> DMBuilder
+    LocationMgr --> AndroidRouter
 
     DesktopRouter --> Pipeline
     DesktopRouter --> DMBuilder
@@ -77,7 +80,7 @@ The codebase is partitioned into three distinct Gradle modules adhering to stric
 - **Dependencies**: Kotlin Stdlib, Coroutines, BouncyCastle (`bcprov-jdk18on`).
 - **Forbidden Dependencies**: Android SDK classes (`android.*`, `androidx.*`, UI frameworks, SQLite drivers).
 - **Key Responsibilities**:
-  - `protocol/`: [MeshPacket.kt](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/core/src/main/java/com/meshwhisper/core/protocol/MeshPacket.kt), [PacketPipeline.kt](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/core/src/main/java/com/meshwhisper/core/protocol/PacketPipeline.kt), [DirectMessagePacketBuilder.kt](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/core/src/main/java/com/meshwhisper/core/protocol/DirectMessagePacketBuilder.kt), [TrafficPriority.kt](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/core/src/main/java/com/meshwhisper/core/protocol/TrafficPriority.kt).
+  - `protocol/`: [MeshPacket.kt](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/core/src/main/java/com/meshwhisper/core/protocol/MeshPacket.kt), [PacketPipeline.kt](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/core/src/main/java/com/meshwhisper/core/protocol/PacketPipeline.kt), [DirectMessagePacketBuilder.kt](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/core/src/main/java/com/meshwhisper/core/protocol/DirectMessagePacketBuilder.kt), [LocationBreadcrumbPayload.kt](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/core/src/main/java/com/meshwhisper/core/protocol/LocationBreadcrumbPayload.kt), [TrafficPriority.kt](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/core/src/main/java/com/meshwhisper/core/protocol/TrafficPriority.kt).
   - `transport/`: [LinkAuth.kt](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/core/src/main/java/com/meshwhisper/core/transport/LinkAuth.kt), [WifiFrameCodec.kt](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/core/src/main/java/com/meshwhisper/core/transport/WifiFrameCodec.kt).
   - `identity/`: [TrustStateMachine.kt](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/core/src/main/java/com/meshwhisper/core/identity/TrustStateMachine.kt), [IdentityManager.kt](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/core/src/main/java/com/meshwhisper/core/identity/IdentityManager.kt), [IdentityStore.kt](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/core/src/main/java/com/meshwhisper/core/identity/IdentityStore.kt).
   - `crypto/`: [PureCryptoEngine.kt](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/core/src/main/java/com/meshwhisper/core/crypto/PureCryptoEngine.kt).
@@ -85,16 +88,18 @@ The codebase is partitioned into three distinct Gradle modules adhering to stric
   - `audio/`: [AdpcmCodec.kt](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/core/src/main/java/com/meshwhisper/core/audio/AdpcmCodec.kt), [JitterBuffer.kt](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/core/src/main/java/com/meshwhisper/core/audio/JitterBuffer.kt).
 
 ### 2.2. `:app` — Android Application Module
-- **Dependencies**: `:core`, AndroidX Jetpack Compose, AndroidX Room (v12), SQLCipher, CameraX (1.4.1), Kotlin Coroutines.
+- **Dependencies**: `:core`, AndroidX Jetpack Compose, AndroidX Room (v13), SQLCipher, CameraX (1.4.1), Kotlin Coroutines.
 - **Key Responsibilities**:
   - `ble/`: `MeshBleEngine.kt` (GATT Central/Peripheral, max 5 links), `BleFrameFramer.kt` (MTU chunking), `GattWriteRateLimiter.kt`.
   - `wifi/`: `MeshWifiEngine.kt` (UDP beacon discovery on 42425, TCP server/client on 42426, max 5 sessions).
-  - `router/`: `MeshRouter.kt` (multiplexer, CSMA backoff, custody coordination).
-  - `identity/`: `IdentityRepository.kt` (coordinates Room v12 with `TrustStateMachine`).
+  - `router/`: `MeshRouter.kt` (multiplexer, CSMA backoff, custody coordination, breadcrumb ingress).
+  - `location/`: `LocationBreadcrumbManager.kt` (level-crossing battery hysteresis, active GPS caching, manual SOS & revoke).
+  - `util/`: `PlusCodeHelper.kt` (100% offline 10-char Open Location Code encoder).
+  - `identity/`: `IdentityRepository.kt` (coordinates Room v13 with `TrustStateMachine`).
   - `storage/`: `MediaAtRestManager.kt` (`MWMEDIA1` per-file HKDF AES-GCM media storage).
-  - `data/`: `MeshDatabase.kt` (Room v12 encrypted via SQLCipher and AndroidKeyStore).
+  - `data/`: `MeshDatabase.kt` (Room v13 encrypted via SQLCipher and AndroidKeyStore, `MIGRATION_12_13`).
   - `voice/`: `VoiceCallManager.kt`, `AndroidAudioStreamer.kt` (`AudioRecord` + `AudioTrack`).
-  - `ui/`: Compose screens, Sahara design tokens, CameraX QR verification scanner.
+  - `ui/`: Compose screens, Sahara design tokens, `RescueLocationCard.kt`, CameraX QR verification scanner.
 
 ### 2.3. `:desktop` — Companion Workstation Module
 - **Dependencies**: `:core`, Kotlin Stdlib, Coroutines, BouncyCastle, `org.xerial:sqlite-jdbc` (3.47.1.0).
@@ -110,9 +115,9 @@ The codebase is partitioned into three distinct Gradle modules adhering to stric
 
 ---
 
-## 3. Persistent Database Architecture (Room v12 Parity)
+## 3. Persistent Database Architecture (Room v13 / SQLite Schema)
 
-Both Android (`MeshDatabase` Room v12) and Desktop (`DesktopDatabase` SQLite) maintain synchronized schemas:
+Android (`MeshDatabase` Room v13) and Desktop (`DesktopDatabase` SQLite) schemas:
 
 ### Core Tables & Schemas
 1. **`identities`**: Authoritative store for all discovered identities:
@@ -135,17 +140,41 @@ Both Android (`MeshDatabase` Room v12) and Desktop (`DesktopDatabase` SQLite) ma
    - `isBlocked` (Int: derived 1 if `BLOCKED`, 0 otherwise)
    - `hasKeyChanged` (Int: 1 if key rotation detected, 0 otherwise)
    - `keyVersion` (Long)
+   - `shareLocationWithContact` (Int: 1 if user opted-in to share location, default 0; added in Room v13)
 3. **`messages`**: Chat and distress message history:
    - `messageId` (PRIMARY KEY, TEXT)
    - `senderNodeId`, `recipientNodeId` (Long)
    - `text` (TEXT)
    - `timestamp` (Long)
    - `mediaType`, `mediaUri`, `mediaSizeBytes` (Added in Room v12 / `MIGRATION_11_12`)
-4. **`processed_packets`**: Single authoritative deduplication table ($C\text{-}05$):
+4. **`last_known_locations`**: Latest location record per peer (Room v13):
+   - `nodeId` (PRIMARY KEY, Long)
+   - `latitude`, `longitude` (Double)
+   - `altitude` (Double)
+   - `accuracy` (Float)
+   - `timestamp` (Long: hardware GPS satellite fix time)
+   - `sequenceNumber` (Long: monotonic sender sequence)
+   - `receivedTimestamp` (Long: receiver local arrival time)
+   - `batteryPercent` (Int)
+   - `triggerType` (TEXT)
+   - `note` (TEXT)
+5. **`breadcrumb_history`**: Store-and-forward historical location trail (Room v13):
+   - `id` (PRIMARY KEY AUTOINCREMENT, Long)
+   - `nodeId` (Long)
+   - `sequenceNumber` (Long)
+   - `latitude`, `longitude`, `altitude` (Double)
+   - `accuracy` (Float)
+   - `timestamp` (Long)
+   - `receivedTimestamp` (Long)
+   - `batteryPercent` (Int)
+   - `triggerType` (TEXT)
+   - `note` (TEXT)
+   - Unique Index: `(nodeId, sequenceNumber)`
+6. **`processed_packets`**: Single authoritative deduplication table ($C\text{-}05$):
    - `packetDedupKey` (PRIMARY KEY, TEXT: `messageId:packetTypeCode`)
    - `seenAt` (Long)
-5. **`store_forward`**: Bounded custody queue (max 50/peer, 500 total, 24h expiry).
-6. **`topology_edges`**: Gossiped neighbor graph for Dijkstra shortest-path calculations.
+7. **`store_forward`**: Bounded custody queue (max 50/peer, 500 total, 24h expiry).
+8. **`topology_edges`**: Gossiped neighbor graph for Dijkstra shortest-path calculations.
 
 ---
 
@@ -156,3 +185,4 @@ The build enforces strict architectural boundaries:
 - `DesktopMainWindow` contains zero direct cryptographic logic or `PureCryptoEngine` references.
 - All direct messages across both Android and Desktop are constructed exclusively through [`DirectMessagePacketBuilder`](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/core/src/main/java/com/meshwhisper/core/protocol/DirectMessagePacketBuilder.kt).
 - Trust state mutations are gated exclusively through `IdentityManager` and `TrustStateMachine`.
+

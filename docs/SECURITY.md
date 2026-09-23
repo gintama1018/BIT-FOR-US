@@ -154,9 +154,10 @@ MeshWhisper strictly isolates trust state authority to the `:core` state machine
 ## 6. Storage Security & Fail-Closed Vaults
 
 ### 6.1. Android Storage Security
-- **Database Encryption**: Room v12 backed by SQLCipher AES-256-CBC.
+- **Database Encryption**: Room v13 backed by SQLCipher AES-256-CBC.
 - **Hardware Protection**: Database passphrase and master seed are wrapped using AES-256-GCM with a hardware-backed key inside AndroidKeyStore (TEE / StrongBox).
 - **Panic Wipe (`P8PanicWipeTest`)**: Securely deletes SQLite database, `-wal`, and `-shm` files, erases the KeyStore alias, and clears in-memory state.
+- **Database Migrations**: Verified migrations `MIGRATION_11_12` (Room v12) and `MIGRATION_12_13` (Room v13 breadcrumbs schema).
 
 ### 6.2. Desktop Storage Security (`DesktopPassphraseKeyStorage`)
 - **Key Vault**: `identity.vault` encrypted with AES-256-GCM.
@@ -171,7 +172,33 @@ MeshWhisper strictly isolates trust state authority to the `:core` state machine
 
 ---
 
-## 7. Security Claims to Evidence Mapping Table
+## 7. Emergency Location Beacon & Geolocation Privacy
+
+MeshWhisper's breadcrumb and rescue beacon subsystems are engineered with zero-trust location privacy:
+
+### 7.1. Zero Cleartext Geolocation Over-The-Air ($C\text{-}18$)
+- Coordinates, altitude, speed, bearing, and emergency distress notes are **never** broadcast in plaintext over RF airwaves.
+- Breadcrumbs are transmitted exclusively as pairwise E2EE sub-payloads inside `DIRECT_MESSAGE` (AES-256-GCM under HKDF peer session keys and signed with Ed25519).
+- Relays forward frames without cryptographic capability to read or modify location coordinates.
+
+### 7.2. Anti-Stalking Per-Contact Opt-In & Revocation ($C\text{-}19$)
+- Verified trust state (`trustState == 'VERIFIED'`) is a mandatory prerequisite, but **never grants automatic location access**.
+- Every peer record maintains `shareLocationWithContact` defaulting to `0` (false). Location sharing must be explicitly toggled on per contact.
+- **Immediate Revocation**: Disabling sharing dispatches an encrypted `BreadcrumbTriggerType.REVOKE` frame that immediately purges stored coordinates and breadcrumb history on the receiver's device.
+
+### 7.3. Dying Gasp Battery Hysteresis & Shutdown Protection ($C\text{-}20$)
+- Level-crossing state transitions at 15%, 10%, and 5% battery with hysteresis prevents oscillation storms.
+- When `isCharging == true`, low-battery dying gasp alarms are strictly suppressed.
+- **Cold GPS Shutdown Race Elimination**: Polling fresh GPS satellite fixes at $\le 5\%$ battery draws 50–100mA and risks premature Android OS shutdown before transmission. At $\le 5\%$, the system **strictly reuses the cached last GPS fix (0ms delay)**, queuing the dying gasp frame immediately at `TrafficPriority.EMERGENCY`.
+
+### 7.4. Replay & Reinstall Ordering Guarantees ($C\text{-}21$)
+- Packets are conditionally committed via SQLite:
+  $$\text{WHERE nodeId} = :nodeId \text{ AND } (:fixTimestamp > timestamp \text{ OR } (:fixTimestamp = timestamp \text{ AND } :sequenceNumber > sequenceNumber))$$
+- Replayed or delayed store-and-forward packets are discarded. If a sender resets device data or reinstalls the app (resetting sequence to 1), newer hardware GPS satellite timestamps naturally supersede older stored records.
+
+---
+
+## 8. Security Claims to Evidence Mapping Table
 
 Every security guarantee made by BIT FOR US / MeshWhisper is backed by automated test suites and architectural enforcement:
 
@@ -191,5 +218,9 @@ Every security guarantee made by BIT FOR US / MeshWhisper is backed by automated
 | **Real OS Socket Wire LINK_AUTH & DM** | [`DesktopWifiEngine.kt`](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/desktop/src/main/java/com/meshwhisper/desktop/wifi/DesktopWifiEngine.kt) (TCP :42426) | `P9-NET-01` (`testP9RealNetworkSocketTransportFlow`) | **VERIFIED ✅** |
 | **Station Restart Identity Continuity** | [`DesktopMeshRouter.kt`](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/desktop/src/main/java/com/meshwhisper/desktop/router/DesktopMeshRouter.kt), SQLite reload | `P9-INTEROP-04` | **VERIFIED ✅** |
 | **T-ARCH-01 Desktop Architectural Purity** | Zero Android SDK imports in `:desktop` and `:core` | `P9-A01`, `P9-A02`, `P8ArchitectureRulesTest` | **VERIFIED ✅** |
-| **Database Migration Integrity** | Room v12 migration (`MIGRATION_11_12`) | `P8MigrationTest` | **VERIFIED ✅** |
+| **Database Migration Integrity** | Room v12 migration (`MIGRATION_11_12`) & v13 (`MIGRATION_12_13`) | `P8MigrationTest`, `DatabaseMigrationP7Test` | **VERIFIED ✅** |
 | **Zero-Trace Panic Wipe** | Secure file overwrite + KeyStore alias deletion | `P8PanicWipeTest` | **VERIFIED ✅** |
+| **Zero Cleartext Geolocation OTA ($C\text{-}18$)** | `DIRECT_MESSAGE` E2EE sub-payload, non-UTF8 prefix `[0xFF, 'B', 'C']` | `LocationBreadcrumbPayloadTest` | **VERIFIED ✅** |
+| **Anti-Stalking Opt-in & Revocation ($C\text{-}19$)** | `shareLocationWithContact` gating + `REVOKE` trail purge | `LocationBreadcrumbIngressTest` | **VERIFIED ✅** |
+| **Dying Gasp Hysteresis & Cached Fix ($C\text{-}20$)** | `LocationBreadcrumbManager` 0ms fix fallback at $\le 5\%$, charging guard | `LocationBreadcrumbIngressTest` | **VERIFIED ✅** |
+| **Reinstall vs Replay Ordering ($C\text{-}21$)** | SQLite conditional update `(fixTimestamp, sequenceNumber)` | `LocationBreadcrumbIngressTest` | **VERIFIED ✅** |

@@ -56,12 +56,22 @@ Last Updated: **September 2026**
 - **Phase P9 (Desktop Parity)**: Single `:core` protocol authority, shared `DirectMessagePacketBuilder`, fail-closed PBKDF2 AES-GCM vault, real OS socket integration test `P9-NET-01` (`testP9RealNetworkSocketTransportFlow`).
 - **Phase P10 (Documentation & Hygiene)**: Implementation-independent `docs/PROTOCOL.md`, concrete `docs/SECURITY.md`, honest `docs/LIMITATIONS.md`, complete `docs/TESTING.md`, synchronized `README.md`, and 331 tests verified.
 
+### Emergency Location Beacon & Store-Carry-Forward Breadcrumbs (Schema 13)
+- **Zero Cleartext Over-The-Air**: Encrypted sub-payload inside `DIRECT_MESSAGE` (AES-256-GCM + Ed25519 signature); relays route without seeing coordinates.
+- **Non-UTF8 Prefix Collision Immunity**: Binary prefix `[0xFF, 'B', 'C']` eliminating text collisions.
+- **27-Byte Compact Struct with 64B Padding**: Big-endian struct ($10^7$ scaling, $0.1\text{m}$ accuracy, satellite fix time, sequence counter) padded to fixed 64 bytes to eliminate length fingerprinting.
+- **Anti-Stalking Opt-in & Revocation**: Per-contact opt-in (`shareLocationWithContact`), 1-tap `REVOKE` trail purge.
+- **Dying Gasp Hysteresis & 0ms Cached Fix**: 15%/10%/5% level-crossing detector with charging guard and instant cached GPS fallback at $\le 5\%$ to protect against cold GPS power shutdowns.
+- **Atomic Reinstall-Proof Ordering**: SQLite conditional update `(fixTimestamp, sequenceNumber)` dropping replayed store-and-forward packets.
+- **Autonomous Offline Plus Codes**: 10-char Open Location Code encoder (`8FVC7JVW+9V`) for two-way analog radio voice readouts to search-and-rescue teams.
+- **Rescue Card & Ghost Radar Pins**: Pinned direct chat `RescueLocationCard` and radar ghost pins with $2\times$ accuracy uncertainty circles and off-screen boundary direction arrows (`↗`).
+
 ---
 
 ## 2. Current Status
 
-- **Phase**: vNext Implementation Milestone (Phases P0–P10) **COMPLETED & FROZEN**.
-- **Verification**: **331 automated tests passing 100% offline** (191 `:core`, 119 `:app`, 21 `:desktop`).
+- **Phase**: vNext Implementation Milestone (Phases P0–P10) & Emergency Location Beacon (Schema 13) **COMPLETED & FROZEN**.
+- **Verification**: **347 automated tests passing 100% offline** (198 `:core`, 128 `:app`, 21 `:desktop`).
 - **Physical Acceptance**: Physical Android $\leftrightarrow$ Desktop real Wi-Fi LAN acceptance pending field execution.
 
 ---

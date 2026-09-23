@@ -335,3 +335,100 @@ Every packet arriving at a node passes through a strict sequential gate pipeline
 - **S5 (AEAD)**: Verifies GCM auth tag against AAD.
 - **S6 (Signature)**: Verifies Ed25519 hop signature against 115-byte transcript. Bounded by 32 verifications/sec/link.
 - **S7 (Commit)**: Atomically inserts `processed_packets` row and dispatches packet to UI or relay engine.
+
+---
+
+## 9. Emergency Location Beacon & Store-Carry-Forward Breadcrumbs
+
+MeshWhisper implements an offline, power-aware emergency geolocation beacon protocol designed for tactical coordination, missing-peer search and rescue, and disaster distress tracking.
+
+### 9.1. Wire Transport & Pairwise E2EE Embedding
+- Location breadcrumbs are **never transmitted in the clear** over the air.
+- Breadcrumbs are embedded as an encrypted inner sub-payload inside standard **`DIRECT_MESSAGE` (PacketType `0x01`)** packets.
+- Intermediate relay nodes handle routing, store-and-forward custody, and deduplication based purely on outer 56-byte header metadata (`messageId`, `senderId`, `recipientId`), with zero access to coordinates, altitude, battery percentage, or emergency notes.
+- Direct messages carrying breadcrumbs are encrypted via AES-256-GCM under HKDF peer session keys and authenticated by trailing 64-byte Ed25519 identity signatures.
+
+### 9.2. Non-UTF8 Magic Header
+To prevent normal chat text from colliding with breadcrumb payloads, the decrypted inner payload begins with a 3-byte binary magic prefix:
+
+```
+[0xFF, 0x42, 0x43]  (0xFF, 'B', 'C')
+```
+
+- **Collision Resistance**: Under RFC 3629, byte `0xFF` is mathematically prohibited in valid UTF-8 sequences. Any chat text starting with "L" ("Location? Hello", "Look at this") decodes as valid UTF-8 starting with byte `0x4C`, guaranteeing 0% collision probability with binary breadcrumb frames.
+
+### 9.3. 27-Byte Compact Binary Layout
+Breadcrumb frames use a fixed-width, big-endian (network byte order) binary structure:
+
+```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|  0xFF |  'B'  |  'C'  |                latitude               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|       latitude (cont.)        |           longitude           |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|       longitude (cont.)       |            altitude           |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|       accuracyDecimeters      |          fixTimestamp         |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|      fixTimestamp (cont.)     |         sequenceNumber        |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|     sequenceNumber (cont.)    |  batt | trig  |  noteLen (2B) |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|       noteLen (cont.)         | note (UTF-8) ...              |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|              Zero Padding (to fixed 64 bytes total)           |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+| Field | Offset | Length | Type | Description |
+| :--- | :---: | :---: | :---: | :--- |
+| **`magic`** | 0 | 3 bytes | `ByteArray` | Constant `[0xFF, 0x42, 0x43]`. |
+| **`latitude`** | 3 | 4 bytes | `Int32` (BE) | Scaled by $10^7$ ($\pm 90.0^\circ$, resolution $\approx 1.1\text{ cm}$). |
+| **`longitude`** | 7 | 4 bytes | `Int32` (BE) | Scaled by $10^7$ ($\pm 180.0^\circ$, resolution $\approx 1.1\text{ cm}$). |
+| **`altitude`** | 11 | 2 bytes | `Int16` (BE) | Clamped to $[-1000\text{ m} .. +9000\text{ m}]$. |
+| **`accuracy`** | 13 | 2 bytes | `UInt16` (BE) | Horizontal accuracy in decimeters ($0.1\text{ m}$; 0 = Unknown). |
+| **`fixTimestamp`**| 15 | 4 bytes | `UInt32` (BE) | Epoch seconds of hardware GPS satellite acquisition (never sent time). |
+| **`sequenceNumber`**| 19 | 4 bytes | `UInt32` (BE) | Monotonically increasing counter per device, starting at 1. |
+| **`batteryPercent`**| 23 | 1 byte | `UInt8` | Device battery percentage ($0 .. 100$). |
+| **`triggerType`** | 24 | 1 byte | `UInt8` | Reason code enum (see Section 9.4). |
+| **`noteLength`** | 25 | 2 bytes | `UInt16` (BE) | Length $M$ of optional emergency distress note ($0 \le M \le 37$). |
+| **`note`** | 27 | $M$ bytes | `UTF-8` | Short emergency distress message. |
+| **`padding`** | $27 + M$ | $37 - M$ | `Zeros` | Zero-byte padding enforcing exact 64-byte payload size. |
+
+### 9.4. Fixed 64-Byte Padding (Side-Channel Defense)
+- To prevent traffic analysis and frame-size fingerprinting over hostile RF airwaves, all breadcrumb sub-payloads are padded with zeros to an **exact, fixed length of 64 bytes** prior to AEAD encryption.
+- Observers cannot differentiate between periodic updates, manual SOS beacons, dying gasp alerts, or revoke commands based on ciphertext length.
+
+### 9.5. Breadcrumb Trigger Types
+| Code | Enum Name | Description | Priority |
+| :---: | :--- | :--- | :--- |
+| `0x01` | `PERIODIC_5MIN` | Regular periodic beacon dispatched every 5 minutes when active. | Tier 2 (`STANDARD`) |
+| `0x02` | `MANUAL_SOS` | Explicit user hold-to-confirm beacon dispatch (1.5s hold). | Tier 0 (`EMERGENCY`) |
+| `0x03` | `BATTERY_15` | Level-crossing low-power alert (dispatched only if moved $>50\text{m}$). | Tier 2 (`STANDARD`) |
+| `0x04` | `BATTERY_10` | Level-crossing warning beacon. | Tier 1 (`INTERACTIVE`) |
+| `0x05` | `BATTERY_5_DYING_GASP`| Critical dying gasp; **0ms cached GPS fix**, broadcasts to all 1-hop peers. | Tier 0 (`EMERGENCY`) |
+| `0x06` | `REVOKE` | Geolocation sharing revoked; clears peer history and coordinates. | Tier 1 (`INTERACTIVE`) |
+
+### 9.6. Atomic Conditional Ordering & Ingress Replay Defense
+To defend against out-of-order store-and-forward packet delivery while maintaining robustness across app data wipes/reinstalls:
+- Receivers execute an atomic conditional SQLite update:
+  ```sql
+  UPDATE last_known_locations
+  SET latitude = :latitude, longitude = :longitude, altitude = :altitude,
+      accuracy = :accuracy, timestamp = :fixTimestamp, sequenceNumber = :sequenceNumber,
+      receivedTimestamp = :now, batteryPercent = :battery, triggerType = :trigger, note = :note
+  WHERE nodeId = :nodeId
+    AND (:fixTimestamp > timestamp OR (:fixTimestamp = timestamp AND :sequenceNumber > sequenceNumber))
+  ```
+- **Reinstall Proof**: If sender clears app data or reinstalls, the sequence number resets to 1, but the fresh satellite `fixTimestamp` will be newer than the historical record, ensuring seamless continuity.
+- **Clock Drift Tolerance**: Fix timestamps in the future by $>600\text{ s}$ (10 minutes) are rejected to defend against extreme clock manipulation.
+- **Storage vs Notification Throttling**: Ingress store-and-forward updates are **never rate-limited** at the database layer (preventing dropped custody bursts). Audible/heads-up notifications are throttled to 1 per 60s per sender.
+
+### 9.7. Offline Open Location Code (Plus Code) Representation
+- Every coordinate pair is mapped to a 10-character global Open Location Code (e.g. `8FVC7JVW+9V`) using a 100% offline mathematical encoder.
+- **Resolution**: $\approx 13.5\text{ m} \times 13.5\text{ m}$ area globally.
+- **Independence**: Requires zero city/places databases, polygon shapes, or boundary data.
+- **Voice Interoperability**: Designed specifically for clear voice readouts over two-way analog radio (HAM / VHF / walkie-talkie) to search-and-rescue teams (NDRF, Civil Defence).
+

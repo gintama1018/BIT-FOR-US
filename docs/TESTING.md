@@ -14,20 +14,20 @@ All automated unit and integration tests compile and run **100% offline** withou
 .\gradlew.bat :core:test :app:testDebugUnitTest :desktop:test
 ```
 
-### Verified Test Matrix (331 / 331 Tests Passing, 0 Failures, 0 Ignored)
+### Verified Test Matrix (347 / 347 Tests Passing, 0 Failures, 0 Ignored)
 
 | Module | Subsystem | Test Command | Tests | Passing | Failing | Skipped | Status |
 | :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: |
-| **`:core`** | Protocol, Pipeline, Crypto, Audio | `.\gradlew.bat :core:test` | **191** | **191** | **0** | **0** | **100% PASS ✅** |
-| **`:app`** | Android UI, DB v12, Voice, Migrations | `.\gradlew.bat :app:testDebugUnitTest` | **119** | **119** | **0** | **0** | **100% PASS ✅** |
+| **`:core`** | Protocol, Pipeline, Crypto, Audio, Breadcrumbs | `.\gradlew.bat :core:test` | **198** | **198** | **0** | **0** | **100% PASS ✅** |
+| **`:app`** | Android UI, DB v13, Voice, Migrations, Plus Codes | `.\gradlew.bat :app:testDebugUnitTest` | **128** | **128** | **0** | **0** | **100% PASS ✅** |
 | **`:desktop`** | Workstation Parity, Vault, Real Socket | `.\gradlew.bat :desktop:test` | **21** | **21** | **0** | **0** | **100% PASS ✅** |
-| **Combined** | Full Repository Multi-Module Suite | `.\gradlew.bat test` | **331** | **331** | **0** | **0** | **100% PASS ✅** |
+| **Combined** | Full Repository Multi-Module Suite | `.\gradlew.bat test` | **347** | **347** | **0** | **0** | **100% PASS ✅** |
 
 ---
 
 ## 2. Test Suite Breakdown by Module
 
-### 2.1. Core Module (`:core` — 191 Tests)
+### 2.1. Core Module (`:core` — 198 Tests)
 Located in [`core/src/test/java/com/meshwhisper/core/`](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/core/src/test/java/com/meshwhisper/core/):
 
 - **`protocol/PacketPipelineTest.kt`**:
@@ -37,6 +37,13 @@ Located in [`core/src/test/java/com/meshwhisper/core/`](file:///c:/Users/hp/Down
   - CPU signature budget rate-limiting (max 32 verifications/sec/link, $C\text{-}16$).
   - Anti-spoofing enforcement: `BE_u64(identityHash[0..8]) != header.senderId` drops ($C\text{-}02$).
   - Zero-auth-tag whitelist exemption strictly for `LINK_AUTH` ($C\text{-}08$).
+- **`protocol/LocationBreadcrumbPayloadTest.kt` (7 Tests)**:
+  - Big-endian 27-byte compact binary struct serialization and deserialization.
+  - Side-channel defense: strict assertion that payload is padded to exactly 64 bytes.
+  - Non-UTF8 magic prefix collision defense: strings starting with "L" ("Location? Hello", "Look at this") guaranteed not to parse as breadcrumb.
+  - Coordinate bounds verification: clamping or rejection of out-of-bounds latitude/longitude.
+  - Accuracy handling: $0.1\text{m}$ resolution and zero-decimeter unknown accuracy handling.
+  - Revoke trigger payload encoding and decoding.
 - **`transport/LinkAuthTest.kt`**:
   - Deterministic HELLO (169B) and CONFIRM (65B) serialization and parsing.
   - Transcript $T$ construction and $K_{\text{link}}$ key derivation.
@@ -68,16 +75,28 @@ Located in [`core/src/test/java/com/meshwhisper/core/`](file:///c:/Users/hp/Down
 
 ---
 
-### 2.2. Android Application Module (`:app` — 119 Tests)
+### 2.2. Android Application Module (`:app` — 128 Tests)
 Located in [`app/src/test/java/com/meshwhisper/app/`](file:///c:/Users/hp/Downloads/BIT%20FOR%20US/app/src/test/java/com/meshwhisper/app/):
 
+- **`location/PlusCodeHelperTest.kt` (3 Tests)**:
+  - 100% offline 10-char Open Location Code generation (e.g. `8FVC7JVW+9V`).
+  - Pole boundary conditions (+90° / -90°) and anti-meridian wrapping (+180° / -180°).
+  - Deterministic encoding matching standard Open Location Code test vectors.
+- **`location/LocationBreadcrumbIngressTest.kt` (4 Tests)**:
+  - Reinstall ordering recovery: newer satellite fix timestamp supersedes reset sequence counter.
+  - Out-of-order replay drops: stale fix timestamps or duplicate sequence numbers rejected.
+  - Clock drift defense: fix timestamps $>10$ minutes in the future rejected.
+  - Opt-in & revocation: `shareLocationWithContact` enforcement and history purge upon `REVOKE`.
+- **`data/DatabaseMigrationP7Test.kt`**:
+  - `MIGRATION_12_13` Room schema verification: adding `shareLocationWithContact` to `peers`, extending `last_known_locations`, and creating `breadcrumb_history`.
+  - Room schema version 13 JSON schema validation.
 - **`ui/TrustStateUiP8Test.kt`**:
   - Live UI rendering of trust state badges (`[VERIFIED]`, `[LINKED]`, `[SEEN]`, `[CONFLICTED]`, `[BLOCKED]`).
   - Security warning banners on key changes (`hasKeyChanged = true`).
   - Strict UI isolation from direct trust mutation.
 - **`arch/P8ArchitectureRulesTest.kt`**:
   - Enforces that no Android UI or router components manufacture trust states directly.
-  - Validates that Room v12 entities do not expose independent mutable verification booleans.
+  - Validates that Room v13 entities do not expose independent mutable verification booleans.
 - **`identity/P8SecurityEdgeCasesTest.kt`**:
   - Equivocation attacks ($C\text{-}12$): same `keyVersion`, different `ekPub` drops packet without state mutation.
   - Rollback attacks ($C\text{-}12$): lower `keyVersion` drops packet.

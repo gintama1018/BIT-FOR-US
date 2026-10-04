@@ -514,7 +514,24 @@ class MeshBleEngine(private val context: Context) {
         override fun onStartFailure(errorCode: Int) {
             Log.e(tag, "BLE Advertising failed with error code: $errorCode")
             _isAdvertising.value = false
-            if (errorCode == AdvertiseCallback.ADVERTISE_FAILED_FEATURE_UNSUPPORTED) {
+            if (errorCode == AdvertiseCallback.ADVERTISE_FAILED_DATA_TOO_LARGE) {
+                Log.w(tag, "Advertising data too large; retrying with basic service UUID only...")
+                try {
+                    val basicData = AdvertiseData.Builder()
+                        .setIncludeDeviceName(false)
+                        .setIncludeTxPowerLevel(false)
+                        .addServiceUuid(ParcelUuid(BleConstants.MESH_SERVICE_UUID))
+                        .build()
+                    val fallbackSettings = AdvertiseSettings.Builder()
+                        .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+                        .setConnectable(true)
+                        .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
+                        .build()
+                    advertiser?.startAdvertising(fallbackSettings, basicData, this)
+                } catch (e: Exception) {
+                    Log.e(tag, "Fallback advertising also failed", e)
+                }
+            } else if (errorCode == AdvertiseCallback.ADVERTISE_FAILED_FEATURE_UNSUPPORTED) {
                 _supportsPeripheral.value = false
             }
         }
@@ -627,11 +644,19 @@ class MeshBleEngine(private val context: Context) {
             return
         }
 
-        val scanFilters = listOf(
-            ScanFilter.Builder()
-                .setServiceUuid(ParcelUuid(BleConstants.MESH_SERVICE_UUID))
-                .build()
-        )
+        val scanFilters = if (isLowLatencyMode) {
+            // In foreground, an empty filter list ensures that OEM hardware filters (e.g. Samsung/MediaTek/Xiaomi
+            // 128-bit UUID truncation bugs) do not silently discard mesh advertisements.
+            // Strict software filtering is performed in onScanResult with hasMeshService.
+            emptyList()
+        } else {
+            // Android 8.1+ enforces non-empty filter list for background scanning.
+            listOf(
+                ScanFilter.Builder()
+                    .setServiceUuid(ParcelUuid(BleConstants.MESH_SERVICE_UUID))
+                    .build()
+            )
+        }
 
         val scanMode = if (isLowLatencyMode) {
             ScanSettings.SCAN_MODE_LOW_LATENCY
@@ -671,8 +696,9 @@ class MeshBleEngine(private val context: Context) {
             scannedDeviceRssi[address] = rssi
 
             val serviceUuids = result.scanRecord?.serviceUuids
-            val serviceData = result.scanRecord?.serviceData?.get(ParcelUuid(BleConstants.MESH_SERVICE_UUID))
-            val hasMeshService = (serviceUuids?.any { it.uuid == BleConstants.MESH_SERVICE_UUID } == true) || (serviceData != null)
+            val serviceData = result.scanRecord?.serviceData
+            val hasMeshService = (serviceUuids?.any { it.uuid == BleConstants.MESH_SERVICE_UUID } == true) ||
+                (serviceData?.keys?.any { it.uuid == BleConstants.MESH_SERVICE_UUID } == true)
 
             if (hasMeshService) {
                 val isInteractive = powerManager?.isInteractive ?: true
@@ -705,21 +731,36 @@ class MeshBleEngine(private val context: Context) {
         val address = device.address
         Log.d(tag, "Initiating GATT connection to peer: $address (RSSI: $rssi)")
 
-        val gatt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            device.connectGatt(
-                context,
-                false,
-                createGattCallback(address),
-                BluetoothDevice.TRANSPORT_LE,
-                BluetoothDevice.PHY_LE_1M_MASK or BluetoothDevice.PHY_LE_2M_MASK or BluetoothDevice.PHY_LE_CODED_MASK
-            )
-        } else {
+        val gatt = try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                device.connectGatt(
+                    context,
+                    false,
+                    createGattCallback(address),
+                    BluetoothDevice.TRANSPORT_LE,
+                    BluetoothDevice.PHY_LE_1M_MASK or BluetoothDevice.PHY_LE_2M_MASK or BluetoothDevice.PHY_LE_CODED_MASK
+                )
+            } else {
+                device.connectGatt(
+                    context,
+                    false,
+                    createGattCallback(address),
+                    BluetoothDevice.TRANSPORT_LE
+                )
+            }
+        } catch (e: Exception) {
+            Log.w(tag, "connectGatt with PHY flags failed, falling back to basic LE transport: ${e.message}")
             device.connectGatt(
                 context,
                 false,
                 createGattCallback(address),
                 BluetoothDevice.TRANSPORT_LE
             )
+        }
+
+        if (gatt == null) {
+            Log.e(tag, "connectGatt returned null for peer: $address")
+            return
         }
 
         activeGattClients[address] = ClientConnection(

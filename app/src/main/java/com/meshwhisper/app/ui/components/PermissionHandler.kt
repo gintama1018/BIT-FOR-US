@@ -22,11 +22,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import android.location.LocationManager
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.BluetoothDisabled
+import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Security
+import androidx.core.location.LocationManagerCompat
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -97,7 +100,27 @@ fun PermissionHandler(
 
     var isBypassed by remember { mutableStateOf(false) }
 
-    // Broadcast receiver for Bluetooth ON/OFF toggles
+    val locationManager = remember {
+        try {
+            context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    var isLocationEnabled by remember {
+        mutableStateOf(
+            try {
+                if (locationManager != null) {
+                    LocationManagerCompat.isLocationEnabled(locationManager)
+                } else true
+            } catch (_: Exception) {
+                true
+            }
+        )
+    }
+
+    // Broadcast receiver for Bluetooth and Location ON/OFF toggles
     DisposableEffect(context) {
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(c: Context?, intent: Intent?) {
@@ -119,10 +142,42 @@ fun PermissionHandler(
             Log.w("PermissionHandler", "Failed to register bluetooth receiver: ${e.message}")
         }
 
+        val locReceiver = object : BroadcastReceiver() {
+            override fun onReceive(c: Context?, intent: Intent?) {
+                isLocationEnabled = try {
+                    if (locationManager != null) {
+                        LocationManagerCompat.isLocationEnabled(locationManager)
+                    } else true
+                } catch (_: Exception) {
+                    true
+                }
+            }
+        }
+        val locFilter = IntentFilter().apply {
+            addAction(LocationManager.PROVIDERS_CHANGED_ACTION)
+            @Suppress("DEPRECATION")
+            addAction(LocationManager.MODE_CHANGED_ACTION)
+        }
+        try {
+            ContextCompat.registerReceiver(
+                context,
+                locReceiver,
+                locFilter,
+                ContextCompat.RECEIVER_NOT_EXPORTED
+            )
+        } catch (e: Exception) {
+            Log.w("PermissionHandler", "Failed to register location receiver: ${e.message}")
+        }
+
         onDispose {
             try {
                 context.unregisterReceiver(receiver)
             } catch (e: Exception) {
+                // Ignored
+            }
+            try {
+                context.unregisterReceiver(locReceiver)
+            } catch (_: Exception) {
                 // Ignored
             }
         }
@@ -150,8 +205,8 @@ fun PermissionHandler(
     }
 
     when {
-        // 1. Both Permissions and Bluetooth radio are active, or user bypassed -> Show Main App
-        (hasCorePermissions && isBluetoothEnabled) || isBypassed -> {
+        // 1. Core Permissions, Bluetooth radio, and Location are active, or user bypassed -> Show Main App
+        ((hasCorePermissions && isBluetoothEnabled && isLocationEnabled) || isBypassed) -> {
             content()
         }
 
@@ -264,6 +319,91 @@ fun PermissionHandler(
 
                         TextButton(
                             onClick = { isBypassed = true }
+                        ) {
+                            Text(
+                                text = "Continue to App Anyway",
+                                color = TextMuted,
+                                fontSize = 12.sp,
+                                fontFamily = ManropeFamily
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Permissions granted, Bluetooth is ON, but Location Service is OFF -> Prompt to Enable Location
+        hasCorePermissions && !isLocationEnabled -> {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(WarmLinen)
+                    .padding(24.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = WarmSurface),
+                    shape = RoundedCornerShape(8.dp),
+                    border = androidx.compose.foundation.BorderStroke(0.8.dp, WarmCardBorder),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.LocationOn,
+                            contentDescription = "Location Turned Off",
+                            tint = WarmAmber,
+                            modifier = Modifier.size(52.dp)
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            text = "Location (GPS) is Turned Off",
+                            color = TextPrimary,
+                            fontSize = 20.sp,
+                            fontFamily = EBGaramondFamily,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Android requires device Location / GPS to be turned ON in Quick Settings for Bluetooth BLE scanning to discover nearby phones.",
+                            color = TextSecondary,
+                            fontFamily = ManropeFamily,
+                            fontSize = 13.sp,
+                            lineHeight = 18.sp
+                        )
+                        Spacer(modifier = Modifier.height(24.dp))
+                        Button(
+                            onClick = {
+                                try {
+                                    context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                                } catch (e: Exception) {
+                                    Log.e("PermissionHandler", "Failed to open location settings: ${e.message}")
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = BurntSienna,
+                                contentColor = Color.White
+                            ),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Turn On Location",
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        TextButton(
+                            onClick = { isBypassed = true },
+                            modifier = Modifier.fillMaxWidth()
                         ) {
                             Text(
                                 text = "Continue to App Anyway",

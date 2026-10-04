@@ -273,4 +273,48 @@ class BleTransportAuthTest {
 
         assertThat(proofA.linkKey).isEqualTo(proofB.linkKey)
     }
+
+    /**
+     * Regression Test for F-01: Serialized LINK_AUTH packet wire byte is 0x31 ((1 << 5) | 0x11),
+     * NOT the raw type code 0x11. Routers inspecting raw wire bytes MUST check against wireByte
+     * or use fromWireByte(), otherwise transport authentication handshake is bypassed and fails silently.
+     */
+    @Test
+    fun testLinkAuthWireByteIs0x31AndNotRawCode0x11() {
+        val seed = ByteArray(32) { 0x55.toByte() }
+        val creds = LinkAuthLocalCredentials.create(seed)
+        val session = LinkAuthSession("LINK_TEST", creds, clock)
+        val helloPacket = session.createHelloPacket()
+        val rawWireBytes = MeshPacket.serialize(helloPacket)
+
+        val wireByte = rawWireBytes[0]
+        assertThat(wireByte).isEqualTo(0x31.toByte())
+        assertThat(wireByte).isEqualTo(PacketType.LINK_AUTH.wireByte)
+        assertThat(wireByte).isNotEqualTo(PacketType.LINK_AUTH.code)
+        assertThat(PacketType.fromWireByte(wireByte)).isEqualTo(PacketType.LINK_AUTH)
+    }
+
+    /**
+     * Regression Test for VOICE_FRAME: Wire byte is 0x30 ((1 << 5) | 0x10), NOT raw code 0x10.
+     */
+    @Test
+    fun testVoiceFrameWireByteIs0x30AndNotRawCode0x10() {
+        val packet = MeshPacket(
+            type = PacketType.VOICE_FRAME,
+            messageId = UUID.randomUUID(),
+            senderId = 1234L,
+            recipientId = 5678L,
+            ttl = 1,
+            timestamp = clock.nowSeconds(),
+            payload = ByteArray(40) { 0x01.toByte() },
+            authTag = ByteArray(16)
+        )
+        val rawWireBytes = MeshPacket.serialize(packet)
+        val wireByte = rawWireBytes[0]
+        assertThat(wireByte).isEqualTo(0x30.toByte())
+        assertThat(wireByte).isEqualTo(PacketType.VOICE_FRAME.wireByte)
+        assertThat(wireByte).isNotEqualTo(PacketType.VOICE_FRAME.code)
+        assertThat(PacketType.fromWireByte(wireByte)).isEqualTo(PacketType.VOICE_FRAME)
+    }
 }
+

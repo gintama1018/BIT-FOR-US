@@ -529,7 +529,8 @@ class MeshRouter(
         val boundId = authenticatedLinks[handle]
 
         // Pre-auth LINK_AUTH bypass to transport authentication coordinator (FROZEN §3.2, §4)
-        if (ingressAddress != null && boundId == null && rawBytes.isNotEmpty() && rawBytes[0] == PacketType.LINK_AUTH.code) {
+        val isLinkAuth = rawBytes.isNotEmpty() && (rawBytes[0] == PacketType.LINK_AUTH.wireByte || PacketType.fromWireByte(rawBytes[0]) == PacketType.LINK_AUTH)
+        if (ingressAddress != null && isLinkAuth) {
             handleBleLinkAuthPacket(rawBytes, ingressAddress)
             return
         }
@@ -2273,7 +2274,7 @@ class MeshRouter(
     }
 
     suspend fun sendVoiceFramePacket(recipientId: Long, frameBytes: ByteArray): Boolean {
-        if (frameBytes.isNotEmpty() && frameBytes[0] == PacketType.VOICE_FRAME.code) {
+        if (frameBytes.isNotEmpty() && (frameBytes[0] == PacketType.VOICE_FRAME.wireByte || PacketType.fromWireByte(frameBytes[0]) == PacketType.VOICE_FRAME)) {
             val delivered = sendDirectToNode(recipientId, frameBytes)
             if (!delivered) {
                 broadcastPacketDirect(frameBytes)

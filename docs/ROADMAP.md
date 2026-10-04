@@ -54,7 +54,7 @@ Last Updated: **September 2026**
 - **Phase P7 (Media At-Rest & Wipe)**: `MWMEDIA1` per-file HKDF AES-GCM encryption, panic station wipe, Room v12 migration (`MIGRATION_11_12`).
 - **Phase P8 (Trust State Machine)**: Monotonic trust transitions $T_1$–$T_{11}$ and $T_{12}$ migration, $T_7$ collision detection, $T_8$ out-of-band CameraX QR resolution, $T_6$ rotation demotion ($C\text{-}12$).
 - **Phase P9 (Desktop Parity)**: Single `:core` protocol authority, shared `DirectMessagePacketBuilder`, fail-closed PBKDF2 AES-GCM vault, real OS socket integration test `P9-NET-01` (`testP9RealNetworkSocketTransportFlow`).
-- **Phase P10 (Documentation & Hygiene)**: Implementation-independent `docs/PROTOCOL.md`, concrete `docs/SECURITY.md`, honest `docs/LIMITATIONS.md`, complete `docs/TESTING.md`, synchronized `README.md`, and 331 tests verified.
+- **Phase P10 (Documentation & Hygiene)**: Implementation-independent `docs/PROTOCOL.md`, concrete `docs/SECURITY.md`, honest `docs/LIMITATIONS.md`, complete `docs/TESTING.md`, synchronized `README.md`, and 331 tests verified (expanded to 347 in Schema 13).
 
 ### Emergency Location Beacon & Store-Carry-Forward Breadcrumbs (Schema 13)
 - **Zero Cleartext Over-The-Air**: Encrypted sub-payload inside `DIRECT_MESSAGE` (AES-256-GCM + Ed25519 signature); relays route without seeing coordinates.

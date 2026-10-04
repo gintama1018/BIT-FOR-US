@@ -23,7 +23,7 @@ MeshWhisper treats all physical radio environments (BLE advertisements, GATT cha
  ├────────────────────────────────────────────────────────────────────────────────────────────────┤
  │ S7: Admission & State Commitment (Atomic processed_packets commit, route/custody dispatch)    │
  ├────────────────────────────────────────────────────────────────────────────────────────────────┤
- │ Storage Boundary (Room v12 SQLCipher TEE-backed on Android / PBKDF2 AES-GCM Vault on Desktop)  │
+ │ Storage Boundary (Room v13 SQLCipher TEE-backed on Android / PBKDF2 AES-GCM Vault on Desktop)  │
  └────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 

@@ -25,7 +25,7 @@ The codebase is organized into three decoupled Gradle modules:
 ```
 MeshWhisper/
 ├── core/       # Pure Kotlin JVM library (protocol wire framing, pure crypto, admission pipeline, LRU cache)
-├── app/        # Android application (BLE GATT, Wi-Fi UDP/TCP, Room v12, Jetpack Compose, audio)
+├── app/        # Android application (BLE GATT, Wi-Fi UDP/TCP, Room v13, Jetpack Compose, audio)
 └── desktop/    # JVM station workstation (Wi-Fi sockets, fail-closed SQLite vault, desktop UI)
 ```
 
@@ -155,7 +155,7 @@ If introducing a new protocol packet type:
    - `docs:` Documentation corrections or synchronization.
 3. **Pre-Submission Checklist**:
    - [ ] Project builds successfully (`assembleDebug`).
-   - [ ] All 331 automated tests pass locally (`.\gradlew.bat :core:test :app:testDebugUnitTest :desktop:test`).
+   - [ ] All 347 automated tests pass locally (`.\gradlew.bat :core:test :app:testDebugUnitTest :desktop:test`).
    - [ ] No Android classes imported into `:core` or `:desktop` (T-ARCH-01 zero-Android rule).
    - [ ] Voice logic strictly honors direct 1-hop constraint ($ttl = 1$).
    - [ ] Cryptographic operations use `:core` authorities without duplicated primitives.

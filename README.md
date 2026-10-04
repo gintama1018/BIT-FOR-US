@@ -6,6 +6,7 @@
 [![Min SDK](https://img.shields.io/badge/Min%20SDK-26%20(Android%208.0)-brightgreen.svg)](https://developer.android.com)
 [![Target SDK](https://img.shields.io/badge/Target%20SDK-35%20(Android%2015)-orange.svg)](https://developer.android.com)
 [![Kotlin](https://img.shields.io/badge/Kotlin-2.0.21-purple.svg)](https://kotlinlang.org)
+[![CI Test Suite](https://github.com/gintama1018/BIT-FOR-US/actions/workflows/ci.yml/badge.svg)](https://github.com/gintama1018/BIT-FOR-US/actions/workflows/ci.yml)
 [![Tests](https://img.shields.io/badge/Tests-347%20Passing%20(100%25%20Offline)-success.svg)](docs/TESTING.md)
 [![Database](https://img.shields.io/badge/Database-SQLCipher%20Room%20v13-blueviolet.svg)](docs/ARCHITECTURE.md)
 [![Protocol](https://img.shields.io/badge/Protocol-vNext%20v2%20(FROZEN)-brightgreen.svg)](docs/PROTOCOL.md)

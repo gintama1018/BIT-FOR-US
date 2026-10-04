@@ -49,7 +49,7 @@ Last Updated: **September 2026**
 - **Phase P0/P1 (Protocol Freeze)**: Canonical 56-byte binary wire framing, trailing 64B hop signatures ($C\text{-}01$), 115-byte `SIG_TRANSCRIPT` ($C\text{-}06$), 37-byte AAD binding.
 - **Phase P2 (Pipeline)**: 8-stage gate pipeline (S0–S7), pre-auth dedup read-only cache poisoning immunity ($C\text{-}05$), anti-spoofing check ($C\text{-}02$), CPU signature rate limit ($C\text{-}16$).
 - **Phase P3/P4 (Transport Security)**: `LINK_AUTH` mutual handshake with $K_{\text{link}}$ derivation ($C\text{-}09$, $C\text{-}10$) and 5-connection hard ceiling.
-- **Phase P5 (Relay Custody)**: Deterministic custody handoffs (`CUSTODY_OFFER`, `CUSTODY_ACCEPT`, `CUSTODY_ACK`) and store-and-forward buffer bounds.
+- **Phase P5 (Relay Custody)**: Deterministic custody handoffs (single `CUSTODY_ACK` confirmation, no separate offer/accept packets) and store-and-forward buffer bounds.
 - **Phase P6 (Media & Voice Pinning)**: Call key epoch pinning ($C\text{-}13$), broadcast chunk write-once and SHA-256 commit backstop ($C\text{-}14$).
 - **Phase P7 (Media At-Rest & Wipe)**: `MWMEDIA1` per-file HKDF AES-GCM encryption, panic station wipe, Room v12 migration (`MIGRATION_11_12`).
 - **Phase P8 (Trust State Machine)**: Monotonic trust transitions $T_1$–$T_{11}$ and $T_{12}$ migration, $T_7$ collision detection, $T_8$ out-of-band CameraX QR resolution, $T_6$ rotation demotion ($C\text{-}12$).

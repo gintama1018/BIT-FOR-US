@@ -78,7 +78,7 @@ $$\text{nodeId64} = \text{BE\_u64}(\text{identityHash}[0..8])$$
 
 ## 3. Link-Layer Authentication (LINK_AUTH)
 
-Before any non-discovery packet can traverse a direct physical connection (BLE GATT or Wi-Fi TCP), the peers must execute the mutual **`LINK_AUTH` (PacketType `0x31`)** handshake.
+Before any non-discovery packet can traverse a direct physical connection (BLE GATT or Wi-Fi TCP), the peers must execute the mutual **`LINK_AUTH` (type code `0x11`, wire byte `0x31`)** handshake.
 
 ### 3.1. Handshake Flow
 ```
@@ -203,29 +203,45 @@ Every packet on the mesh conforms byte-for-byte to the canonical 56-byte overhea
 
 ## 5. Packet Type Registry & Resource Limits
 
-| Code | Type Name | QoS Priority Tier | Max TTL | Signature | Past Window | Purpose |
-| :---: | :--- | :--- | :---: | :---: | :---: | :--- |
-| `0x00` | `BROADCAST_MESSAGE` | Tier 2 (`STANDARD`) | 7 | Signed | 86,400 s | Public channel chat messages |
-| `0x01` | `DIRECT_MESSAGE` | Tier 2 (`STANDARD`) | 7 | Signed | 86,400 s | Point-to-point E2EE unicast message |
-| `0x02` | `KEY_EXCHANGE` | — | — | — | — | **RETIRED in vNext** (0x22 rejected by codec) |
-| `0x03` | `ACK` | Tier 1 (`INTERACTIVE`) | 7 | Signed | 86,400 s | End-to-end delivery confirmation |
-| `0x04` | `PEER_ANNOUNCE` | Tier 2 (`STANDARD`) | 7 | Signed | 120 s | Periodic presence beacon with IBC |
-| `0x05` | `MEDIA_INIT` | Tier 3 (`BULK`) | 4 | Signed | 120 s | Metadata descriptor for media transfer |
-| `0x06` | `MEDIA_CHUNK` | Tier 3 (`BULK`) | 4 | Unsigned | 120 s | Chunk payload ($N \le 320$ B) |
-| `0x07` | `AVATAR_REQUEST` | Tier 3 (`BULK`) | 4 | Signed | 120 s | Unicast avatar download request |
-| `0x08` | `TYPING_INDICATOR` | Tier 1 (`INTERACTIVE`) | 7 | Signed | 60 s | Ephemeral typing state notification |
-| `0x09` | `MEDIA_NACK` | Tier 3 (`BULK`) | 4 | Signed | 120 s | Selective chunk retransmission request |
-| `0x0A` | `MEDIA_ACK` | Tier 3 (`BULK`) | 4 | Signed | 120 s | Complete media verification receipt |
-| `0x0B` | `MEDIA_ABORT` | Tier 3 (`BULK`) | 4 | Signed | 120 s | Cancellation of active transfer |
-| `0x0C` | `SOS_MESSAGE` | Tier 0 (`EMERGENCY`) | 7 | Signed | 86,400 s | High-priority distress beacon |
-| `0x0D` | `PROFILE_UPDATE` | Tier 2 (`STANDARD`) | 7 | Signed | 86,400 s | Signed profile update with version |
-| `0x0E` | `PROFILE_REQUEST` | Tier 2 (`STANDARD`) | 7 | Signed | 86,400 s | Unicast request for peer profile |
-| `0x0F` | `VOICE_CALL_SIGNAL`| Tier 1 (`INTERACTIVE`) | **1** | Signed | 60 s | Call setup signaling (`OFFER`, `ANSWER`) |
-| `0x10` | `VOICE_FRAME` | Tier 1 (`INTERACTIVE`) | **1** | Unsigned | 60 s | Real-time 20ms audio frame |
-| `0x11` | `CUSTODY_OFFER` | Tier 1 (`INTERACTIVE`) | 7 | Signed | 86,400 s | Relay custody negotiation offer |
-| `0x12` | `CUSTODY_ACCEPT` | Tier 1 (`INTERACTIVE`) | 7 | Signed | 86,400 s | Relay custody acceptance |
-| `0x13` | `CUSTODY_ACK` | Tier 1 (`INTERACTIVE`) | 7 | Signed | 86,400 s | Downstream custody handoff confirmation |
-| `0x31` | `LINK_AUTH` | Tier 0 (`EMERGENCY`) | **1** | Self-Contained | 60 s | Transport link mutual handshake |
+> **Type code vs. wire byte (read this before touching a parser).**
+> The `Code` column is the 5-bit **type code** (`PacketType.code`, range `0x00..0x1F`).
+> The first byte on the wire is the **wire byte** = `(protocolVersion << 5) | typeCode`. With
+> `protocolVersion = 1` the wire byte is `0x20 | typeCode`, e.g. `LINK_AUTH` is type code `0x11`
+> and travels as wire byte **`0x31`**; `VOICE_FRAME` is `0x10` → `0x30`; `CUSTODY_ACK` is `0x12` → `0x32`.
+> Code that inspects raw bytes MUST use `PacketType.wireByte` / `PacketType.fromWireByte()`,
+> never compare `rawBytes[0]` to `PacketType.code` (that bug silently broke BLE `LINK_AUTH`; see
+> `BleTransportAuthTest.testLinkAuthWireByteIs0x31AndNotRawCode0x11`).
+>
+> This table is generated from `PacketType` (`core/.../protocol/MeshPacket.kt`) and
+> `TrafficPriority.fromPacketType` (`core/.../protocol/TrafficPriority.kt`). If it disagrees with the
+> code, the code wins and this table is the bug.
+
+| Code | Wire byte | Type Name | QoS Priority Tier | Max TTL | Signature | Past Window | Purpose |
+| :---: | :---: | :--- | :--- | :---: | :---: | :---: | :--- |
+| `0x00` | `0x20` | `BROADCAST_MESSAGE` | Tier 2 (`STANDARD`) | 7 | Signed | 600 s | Public channel chat messages |
+| `0x01` | `0x21` | `DIRECT_MESSAGE` | Tier 2 (`STANDARD`) | 7 | Signed | 86,400 s | Point-to-point E2EE unicast message |
+| `0x02` | — | `KEY_EXCHANGE` | — | — | — | — | **RETIRED in vNext** (wire byte `0x22` rejected by codec) |
+| `0x03` | `0x23` | `ACK` | Tier 1 (`INTERACTIVE`) | 7 | Signed | 86,400 s | End-to-end delivery confirmation |
+| `0x04` | `0x24` | `PEER_ANNOUNCE` | Tier 2 (`STANDARD`) | 7 | Signed | 600 s | Periodic presence beacon with IBC |
+| `0x05` | `0x25` | `MEDIA_INIT` | Tier 3 (`BULK`) | 4 | Signed | 600 s | Metadata descriptor for media transfer |
+| `0x06` | `0x26` | `MEDIA_CHUNK` | Tier 3 (`BULK`) | 4 | Unsigned | 600 s | Chunk payload ($N \le 320$ B) |
+| `0x07` | `0x27` | `AVATAR_REQUEST` | Tier 3 (`BULK`) | 1 | Unsigned | 120 s | Unicast avatar download request |
+| `0x08` | `0x28` | `TYPING_INDICATOR` | Tier 1 (`INTERACTIVE`) | 1 | Unsigned | 30 s | Ephemeral typing state notification |
+| `0x09` | `0x29` | `MEDIA_NACK` | Tier 3 (`BULK`) | 4 | Signed | 600 s | Selective chunk retransmission request |
+| `0x0A` | `0x2A` | `MEDIA_ACK` | Tier 3 (`BULK`) | 4 | Signed | 600 s | Complete media verification receipt |
+| `0x0B` | `0x2B` | `MEDIA_ABORT` | Tier 3 (`BULK`) | 4 | Signed | 600 s | Cancellation of active transfer |
+| `0x0C` | `0x2C` | `SOS_MESSAGE` | Tier 0 (`EMERGENCY`) | 7 | Signed | 600 s | High-priority distress beacon |
+| `0x0D` | `0x2D` | `PROFILE_UPDATE` | Tier 2 (`STANDARD`) | 7 | Signed | 600 s | Signed profile update with version |
+| `0x0E` | `0x2E` | `PROFILE_REQUEST` | Tier 2 (`STANDARD`) | 1 | Unsigned | 120 s | Unicast request for peer profile |
+| `0x0F` | `0x2F` | `VOICE_CALL_SIGNAL`| Tier 1 (`INTERACTIVE`) | 1 | Unsigned | 30 s | Call setup signaling (`OFFER`, `ANSWER`) |
+| `0x10` | `0x30` | `VOICE_FRAME` | Tier 1 (`INTERACTIVE`) | 1 | Unsigned | 30 s | Real-time 20ms audio frame |
+| `0x11` | `0x31` | `LINK_AUTH` | Tier 1 (`INTERACTIVE`) | 1 | Self-contained (zero auth tag) | 60 s | Transport link mutual handshake |
+| `0x12` | `0x32` | `CUSTODY_ACK` | Tier 1 (`INTERACTIVE`) | 1 | Signed | 600 s | Relay custody handoff confirmation |
+
+There are no `CUSTODY_OFFER` / `CUSTODY_ACCEPT` packet types in the implementation: custody is
+negotiated implicitly (a relay that accepts a `DIRECT_MESSAGE` for store-and-forward answers with a
+single `CUSTODY_ACK`). Extra payload kinds (location breadcrumbs, rescue commands, etc.) are carried as
+sub-payloads inside existing types, never as new `PacketType` values.
 
 ---
 

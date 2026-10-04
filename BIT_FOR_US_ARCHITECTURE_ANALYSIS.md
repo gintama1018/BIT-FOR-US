@@ -5,6 +5,9 @@
 > All high-priority architectural findings (**P7, P6, P1, P2, P5, P3, and P4**) and vNext Protocol & Security Phases (**P0 through P10**) have been fully implemented, frozen, and verified.
 > The multi-module build compiles 100% offline with **347 passing automated tests and 0 failures** (198 `:core`, 128 `:app`, 21 `:desktop`). Refer to `docs/ARCHITECTURE.md`, `docs/PROTOCOL.md`, and `docs/SECURITY.md` for the authoritative production specifications.
 
+> [!WARNING]
+> **Historical document — routing section is superseded.** The body below was written before directed routing landed and recommends *against* a shortest-path replacement for flood relay. The shipped code uses `MeshRouteEngine` (Dijkstra next-hop over live links + gossiped topology edges) in `MeshRouter`; see `docs/ARCHITECTURE.md`. Wire type codes in `docs/PROTOCOL.md` §5 are the authoritative registry (type code vs. wire byte is explained there).
+
 **Scope of this pass:** `core/` (pure-Kotlin, shared with desktop) and `app/` (Android). I read the full BLE engine (816 lines), the full router (1409 lines), the media transfer manager (1389 lines, focused read), the full Wi-Fi engine (494 lines), the full BLE frame framer, the database + DAOs + migrations, the foreground service, the application/DI wiring, and the crypto engine (both Android and core layers) — tracing real execution paths, not filenames or the existing `ARCHITECTURE.md`. Every claim below is tied to a specific file.
 
 ---

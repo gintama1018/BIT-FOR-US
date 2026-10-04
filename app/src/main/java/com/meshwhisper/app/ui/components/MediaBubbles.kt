@@ -443,10 +443,22 @@ fun ImageMessageBubble(
     modifier: Modifier = Modifier
 ) {
     var isFullscreenOpen by remember { mutableStateOf(false) }
+    val context = LocalContext.current
     val filePath = message.mediaUri
     val bitmap = remember(filePath) {
         if (!filePath.isNullOrBlank() && File(filePath).exists()) {
-            BitmapFactory.decodeFile(filePath)
+            val file = File(filePath)
+            try {
+                val atRestManager = com.meshwhisper.app.storage.MediaAtRestManager(context)
+                if (atRestManager.isMediaFileEncrypted(file)) {
+                    val decrypted = atRestManager.readAndDecryptMediaFile(file.name, file)
+                    BitmapFactory.decodeByteArray(decrypted, 0, decrypted.size)
+                } else {
+                    BitmapFactory.decodeFile(filePath)
+                }
+            } catch (_: Exception) {
+                BitmapFactory.decodeFile(filePath)
+            }
         } else {
             null
         }
@@ -488,7 +500,7 @@ fun ImageMessageBubble(
                 modifier = Modifier.fillMaxSize()
             )
 
-            if (bitmap == null) {
+            if (!isOutgoing && (bitmap == null || message.status == MessageStatus.PENDING)) {
                 // Incoming photo receiving chunks over mesh - sleek corner badge so 8x8 tiles animate cleanly
                 Box(
                     modifier = Modifier
@@ -517,7 +529,7 @@ fun ImageMessageBubble(
                         )
                     }
                 }
-            } else if (isOutgoing && message.status == MessageStatus.PENDING && message.mediaProgress < 1.0f) {
+            } else if (isOutgoing && (message.status == MessageStatus.PENDING || message.mediaProgress < 1.0f)) {
                 // Outbound photo with active transmission: subtle bottom corner progress badge
                 Box(
                     modifier = Modifier

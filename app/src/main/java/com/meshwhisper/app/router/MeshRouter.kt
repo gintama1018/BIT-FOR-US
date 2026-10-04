@@ -1301,6 +1301,53 @@ class MeshRouter(
         return msgId.toString()
     }
 
+    /**
+     * Writes an SOS-carried location using the same atomic (fixTimestamp, sequence) ordering rule as
+     * breadcrumbs, tagged MANUAL_SOS so the UI renders it as an emergency pin. SOS v1 carries no sequence
+     * number, so sequenceNumber = 0 and ordering relies on the fix timestamp: a delayed older SOS can no
+     * longer overwrite a newer fix.
+     */
+    private suspend fun upsertSosLocationIfNewer(
+        nodeId: Long,
+        alias: String,
+        latitude: Double,
+        longitude: Double,
+        accuracyMeters: Float,
+        fixTimestampMs: Long
+    ) {
+        val receivedMs = System.currentTimeMillis()
+        val triggerCode = BreadcrumbTriggerType.MANUAL_SOS.code.toInt()
+        val updated = database.locationDao().updateIfNewer(
+            nodeId = nodeId,
+            alias = alias,
+            latitude = latitude,
+            longitude = longitude,
+            accuracyMeters = accuracyMeters,
+            fixTimestamp = fixTimestampMs,
+            sequenceNumber = 0L,
+            receivedTimestamp = receivedMs,
+            altitude = 0.0,
+            batteryPercent = -1,
+            triggerType = triggerCode,
+            note = null
+        )
+        if (updated == 0 && database.locationDao().getLocationForNode(nodeId) == null) {
+            database.locationDao().insertOrUpdate(
+                com.meshwhisper.app.data.model.LastKnownLocationEntity(
+                    nodeId = nodeId,
+                    alias = alias,
+                    latitude = latitude,
+                    longitude = longitude,
+                    accuracyMeters = accuracyMeters,
+                    timestamp = fixTimestampMs,
+                    sequenceNumber = 0L,
+                    receivedTimestamp = receivedMs,
+                    triggerType = triggerCode
+                )
+            )
+        }
+    }
+
     private suspend fun handleSosMessage(authPacket: AuthenticatedPacket, ingressAddress: String?) {
         val packet = authPacket.packet
         logPacket("RX", packet, packet.payload.size, "EMERGENCY SOS broadcast from ${packet.senderId}")
@@ -1328,15 +1375,13 @@ class MeshRouter(
 
                     val sender = database.peerDao().getPeerById(packet.senderId)
                     val senderAlias = sender?.alias ?: "Node-${String.format("%016X", packet.senderId).takeLast(4)}"
-                    database.locationDao().insertOrUpdate(
-                        com.meshwhisper.app.data.model.LastKnownLocationEntity(
-                            nodeId = packet.senderId,
-                            alias = senderAlias,
-                            latitude = lat,
-                            longitude = lon,
-                            accuracyMeters = accuracy,
-                            timestamp = fixTimestamp
-                        )
+                    upsertSosLocationIfNewer(
+                        nodeId = packet.senderId,
+                        alias = senderAlias,
+                        latitude = lat,
+                        longitude = lon,
+                        accuracyMeters = accuracy,
+                        fixTimestampMs = fixTimestamp
                     )
                 }
             }

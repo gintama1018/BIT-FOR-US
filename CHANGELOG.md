@@ -51,7 +51,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   - Single signature placement ($C\text{-}01$): Trailing 64-byte Ed25519 hop signature outside AEAD on all signed types.
   - 115-byte canonical `SIG_TRANSCRIPT` with purpose tag `CONTENT = 0x02` ($C\text{-}06$).
   - Canonical 37-byte AAD binding header to ciphertext.
-  - Retired legacy `KEY_EXCHANGE` (`0x02`); added `LINK_AUTH` (`0x31`), `CUSTODY_OFFER` (`0x11`), `CUSTODY_ACCEPT` (`0x12`), and `CUSTODY_ACK` (`0x13`).
+  - Retired legacy `KEY_EXCHANGE` (`0x02`); added `LINK_AUTH` (type code `0x11`, wire byte `0x31`) and `CUSTODY_ACK` (type code `0x12`, wire byte `0x32`). (Earlier drafts of this entry listed `CUSTODY_OFFER`/`CUSTODY_ACCEPT`; those types were never implemented.)
 - **Packet Admission Pipeline S0–S7 (Phase P2)**:
   - Non-bypassable 8-stage gate pipeline in `:core` (`PacketPipeline.kt`).
   - Read-only S3 deduplication cache check, eliminating pre-auth cache poisoning ($C\text{-}05$).

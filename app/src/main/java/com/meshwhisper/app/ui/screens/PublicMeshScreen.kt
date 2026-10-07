@@ -24,6 +24,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import kotlinx.coroutines.launch
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -164,9 +171,24 @@ fun PublicMeshScreen(
         }
     }
 
-    // Auto-scroll on new message
+    var hasInitialScrolled by remember { mutableStateOf(false) }
+    val isImeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+
+    // Auto-scroll on initial load and new message (WhatsApp style)
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
+            if (!hasInitialScrolled) {
+                listState.scrollToItem(messages.size - 1)
+                hasInitialScrolled = true
+            } else {
+                listState.animateScrollToItem(messages.size - 1)
+            }
+        }
+    }
+
+    // Auto-scroll when keyboard opens so latest broadcast message appears directly above typing bar
+    LaunchedEffect(isImeVisible) {
+        if (isImeVisible && messages.isNotEmpty()) {
             listState.animateScrollToItem(messages.size - 1)
         }
     }
@@ -315,77 +337,112 @@ fun PublicMeshScreen(
             }
         }
 
-        Box(
+        Column(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
+                .imePadding()
         ) {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 8.dp, bottom = 140.dp)
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
             ) {
-                // Active SOS Alert Card
-                if (activeSos != null) {
-                    item(key = "active_sos") {
-                        SaharaSosCard(
-                            alert = activeSos!!,
-                            onDismiss = { viewModel.dismissSosAlert() }
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 8.dp, bottom = 8.dp)
+                ) {
+                    // Active SOS Alert Card
+                    if (activeSos != null) {
+                        item(key = "active_sos") {
+                            SaharaSosCard(
+                                alert = activeSos!!,
+                                onDismiss = { viewModel.dismissSosAlert() }
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                        }
+                    }
+
+                    if (messages.isEmpty()) {
+                        item {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 48.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.CellTower,
+                                        contentDescription = null,
+                                        tint = SaharaPrimary.copy(alpha = 0.4f),
+                                        modifier = Modifier.size(44.dp)
+                                    )
+                                    Spacer(modifier = Modifier.height(14.dp))
+                                    Text(
+                                        text = "Public Mesh Channel",
+                                        color = SaharaOnSurface,
+                                        fontSize = 20.sp,
+                                        fontFamily = EBGaramondFamily,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = "All broadcasts flood through nearby offline mesh nodes.\nAuthenticated and community encrypted.",
+                                        color = SaharaOnSurfaceVariant,
+                                        fontSize = 13.sp,
+                                        fontFamily = ManropeFamily,
+                                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                        lineHeight = 18.sp
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        items(messages, key = { it.messageId }) { msg ->
+                            SaharaEditorialMessageCard(
+                                msg = msg,
+                                viewModel = viewModel
+                            )
+                            Spacer(modifier = Modifier.height(14.dp))
+                        }
                     }
                 }
 
-                if (messages.isEmpty()) {
-                    item {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 48.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.CellTower,
-                                    contentDescription = null,
-                                    tint = SaharaPrimary.copy(alpha = 0.4f),
-                                    modifier = Modifier.size(44.dp)
-                                )
-                                Spacer(modifier = Modifier.height(14.dp))
-                                Text(
-                                    text = "Public Mesh Channel",
-                                    color = SaharaOnSurface,
-                                    fontSize = 20.sp,
-                                    fontFamily = EBGaramondFamily,
-                                    fontWeight = FontWeight.Medium
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    text = "All broadcasts flood through nearby offline mesh nodes.\nAuthenticated and community encrypted.",
-                                    color = SaharaOnSurfaceVariant,
-                                    fontSize = 13.sp,
-                                    fontFamily = ManropeFamily,
-                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                                    lineHeight = 18.sp
-                                )
+                // WhatsApp-style Scroll-to-bottom Floating Action Button
+                val canScrollForward by remember { derivedStateOf { listState.canScrollForward } }
+                if (canScrollForward) {
+                    FloatingActionButton(
+                        onClick = {
+                            coroutineScope.launch {
+                                if (messages.isNotEmpty()) {
+                                    listState.animateScrollToItem(messages.size - 1)
+                                }
                             }
-                        }
-                    }
-                } else {
-                    items(messages, key = { it.messageId }) { msg ->
-                        SaharaEditorialMessageCard(
-                            msg = msg,
-                            viewModel = viewModel
+                        },
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(end = 16.dp, bottom = 12.dp)
+                            .size(40.dp),
+                        containerColor = SaharaSurfaceContainerHighest,
+                        contentColor = SaharaPrimary,
+                        shape = CircleShape,
+                        elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.KeyboardArrowDown,
+                            contentDescription = "Scroll to bottom",
+                            modifier = Modifier.size(24.dp)
                         )
-                        Spacer(modifier = Modifier.height(14.dp))
                     }
                 }
             }
 
-            // Floating Bottom Composer matching 2._public_mesh
+            // Docked Bottom Composer matching 2._public_mesh
             SaharaPublicComposer(
                 textInput = textInput,
                 onTextChanged = { textInput = it },
@@ -454,9 +511,8 @@ fun PublicMeshScreen(
                     }
                 },
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .imePadding()
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                    .fillMaxWidth()
+                    .padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 8.dp)
             )
         }
     }

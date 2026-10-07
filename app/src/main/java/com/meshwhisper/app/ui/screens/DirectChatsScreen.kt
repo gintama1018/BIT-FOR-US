@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.AltRoute
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -463,10 +464,10 @@ private fun SaharaInboxPeerRow(
             // Message Snippet
             val snippet = when {
                 latestMessage == null -> "Encrypted session ready"
-                latestMessage.mediaType == MediaType.IMAGE -> "📷 Photo"
-                latestMessage.mediaType == MediaType.VOICE -> "🎙️ Voice Note"
-                latestMessage.mediaType == MediaType.FILE -> "📁 File Attachment"
-                else -> latestMessage.text
+                latestMessage.mediaType == MediaType.IMAGE -> if (latestMessage.isOutgoing) "You: 📷 Photo" else "📷 Photo"
+                latestMessage.mediaType == MediaType.VOICE -> if (latestMessage.isOutgoing) "You: 🎙️ Voice Note" else "🎙️ Voice Note"
+                latestMessage.mediaType == MediaType.FILE -> if (latestMessage.isOutgoing) "You: 📁 File Attachment" else "📁 File Attachment"
+                else -> if (latestMessage.isOutgoing) "You: ${latestMessage.text}" else latestMessage.text
             }
 
             Text(
@@ -484,7 +485,7 @@ private fun SaharaInboxPeerRow(
                 modifier = Modifier.padding(top = 2.dp)
             ) {
                 Icon(
-                    imageVector = Icons.Default.AltRoute,
+                    imageVector = Icons.AutoMirrored.Filled.AltRoute,
                     contentDescription = null,
                     tint = SaharaOnSurfaceVariant.copy(alpha = 0.6f),
                     modifier = Modifier.size(12.dp)

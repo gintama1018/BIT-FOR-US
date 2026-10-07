@@ -26,6 +26,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -388,9 +394,24 @@ fun DirectChatDetailScreen(
         }
     }
 
-    // Auto-scroll on new message
+    var hasInitialScrolled by remember { mutableStateOf(false) }
+    val isImeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+
+    // Auto-scroll on initial load and new message (WhatsApp style)
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
+            if (!hasInitialScrolled) {
+                listState.scrollToItem(messages.size - 1)
+                hasInitialScrolled = true
+            } else {
+                listState.animateScrollToItem(messages.size - 1)
+            }
+        }
+    }
+
+    // Auto-scroll when keyboard opens so latest message appears directly above typing bar
+    LaunchedEffect(isImeVisible) {
+        if (isImeVisible && messages.isNotEmpty()) {
             listState.animateScrollToItem(messages.size - 1)
         }
     }
@@ -723,22 +744,58 @@ fun DirectChatDetailScreen(
             }
         }
 
-        Box(
+        Column(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
+                .navigationBarsPadding()
+                .imePadding()
         ) {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 120.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
             ) {
-                items(messages, key = { it.messageId }) { msg ->
-                    SaharaDirectMessageBubble(
-                        msg = msg,
-                        viewModel = viewModel
-                    )
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    items(messages, key = { it.messageId }) { msg ->
+                        SaharaDirectMessageBubble(
+                            msg = msg,
+                            viewModel = viewModel
+                        )
+                    }
+                }
+
+                // WhatsApp-style Scroll-to-bottom Floating Action Button
+                val canScrollForward by remember { derivedStateOf { listState.canScrollForward } }
+                if (canScrollForward) {
+                    FloatingActionButton(
+                        onClick = {
+                            coroutineScope.launch {
+                                if (messages.isNotEmpty()) {
+                                    listState.animateScrollToItem(messages.size - 1)
+                                }
+                            }
+                        },
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(end = 16.dp, bottom = 12.dp)
+                            .size(40.dp),
+                        containerColor = SaharaSurfaceContainerHighest,
+                        contentColor = SaharaPrimary,
+                        shape = CircleShape,
+                        elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.KeyboardArrowDown,
+                            contentDescription = "Scroll to bottom",
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
                 }
             }
 
@@ -751,7 +808,7 @@ fun DirectChatDetailScreen(
                 else -> null
             }
 
-            // Floating Bottom Composer
+            // Docked Bottom Composer directly above keyboard
             SaharaDirectComposer(
                 textInput = textInput,
                 onTextChanged = { textInput = it },
@@ -821,9 +878,8 @@ fun DirectChatDetailScreen(
                 enabled = !isComposerDisabled,
                 disabledReason = disabledReason,
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .imePadding()
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
             )
         }
     }
@@ -964,11 +1020,11 @@ private fun SaharaDirectComposer(
 ) {
     Surface(
         color = SaharaSurfaceContainerLowest,
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(24.dp),
         border = androidx.compose.foundation.BorderStroke(1.dp, SaharaOutlineVariant.copy(alpha = 0.6f)),
         modifier = modifier
             .fillMaxWidth()
-            .shadow(6.dp, RoundedCornerShape(18.dp), spotColor = SaharaPrimary.copy(alpha = 0.15f))
+            .shadow(4.dp, RoundedCornerShape(24.dp), spotColor = SaharaPrimary.copy(alpha = 0.12f))
     ) {
         if (isRecordingVoice) {
             val infiniteTransition = rememberInfiniteTransition(label = "recordingPulse")
@@ -1067,19 +1123,6 @@ private fun SaharaDirectComposer(
                         contentDescription = "Attach Photo",
                         tint = if (enabled) SaharaOnSurfaceVariant else SaharaOnSurfaceVariant.copy(alpha = 0.3f),
                         modifier = Modifier.size(20.dp)
-                    )
-                }
-
-                IconButton(
-                    onClick = onStartVoiceRecording,
-                    enabled = enabled,
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Mic,
-                        contentDescription = "Record Voice Note",
-                        tint = if (enabled) SaharaPrimary else SaharaOnSurfaceVariant.copy(alpha = 0.3f),
-                        modifier = Modifier.size(22.dp)
                     )
                 }
 

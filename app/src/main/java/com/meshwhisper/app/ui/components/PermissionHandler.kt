@@ -194,8 +194,11 @@ fun PermissionHandler(
         }
     }
 
-    LaunchedEffect(hasCorePermissions, isBluetoothEnabled) {
-        if (hasCorePermissions && isBluetoothEnabled) {
+    val isLocationNeeded = android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.S
+    val isLocationOk = !isLocationNeeded || isLocationEnabled
+
+    LaunchedEffect(hasCorePermissions, isBluetoothEnabled, isBypassed) {
+        if ((hasCorePermissions && isBluetoothEnabled) || isBypassed) {
             try {
                 onPermissionsGranted()
             } catch (e: Exception) {
@@ -205,8 +208,8 @@ fun PermissionHandler(
     }
 
     when {
-        // 1. Core Permissions, Bluetooth radio, and Location are active, or user bypassed -> Show Main App
-        ((hasCorePermissions && isBluetoothEnabled && isLocationEnabled) || isBypassed) -> {
+        // 1. Core Permissions, Bluetooth radio active (and Location only if < Android 12), or user bypassed -> Show Main App
+        ((hasCorePermissions && isBluetoothEnabled && isLocationOk) || isBypassed) -> {
             content()
         }
 
@@ -332,8 +335,8 @@ fun PermissionHandler(
             }
         }
 
-        // 3. Permissions granted, Bluetooth is ON, but Location Service is OFF -> Prompt to Enable Location
-        hasCorePermissions && !isLocationEnabled -> {
+        // 3. Android 11 or lower: Permissions granted, Bluetooth is ON, but Location Service is OFF -> Prompt to Enable Location
+        hasCorePermissions && isLocationNeeded && !isLocationEnabled -> {
             Box(
                 modifier = Modifier
                     .fillMaxSize()

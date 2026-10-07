@@ -94,11 +94,16 @@ class VoiceCallManager(
         }
 
         val sessionId = UUID.randomUUID()
+        val nowMs = System.currentTimeMillis()
+        val offerSec = nowMs / 1000L
+        val derivedCallKey = callKeyDeriver(peerNodeId, offerSec, sessionId)
         val info = ActiveCallInfo(
             sessionId = sessionId,
             peerNodeId = peerNodeId,
             isCaller = true,
-            callState = CallState.OUTGOING_RINGING
+            callState = CallState.OUTGOING_RINGING,
+            offerTimestampSec = offerSec,
+            callKey = derivedCallKey
         )
         _activeCallInfo.value = info
         _callState.value = CallState.OUTGOING_RINGING
@@ -111,7 +116,7 @@ class VoiceCallManager(
             val signal = VoiceSignalPayload(
                 action = CallAction.OFFER,
                 sessionId = sessionId,
-                timestamp = System.currentTimeMillis()
+                timestamp = nowMs
             )
             val signalBytes = signal.serialize()
             repeat(3) {
@@ -151,8 +156,8 @@ class VoiceCallManager(
         timeoutJob?.cancel()
 
         // Derive K_call pinned to the OFFER epoch (C-13: key is stable across hour boundaries)
-        val offerEpoch = current.offerTimestampSec
-        val derivedCallKey = callKeyDeriver(current.peerNodeId, offerEpoch, current.sessionId)
+        val offerEpoch = if (current.offerTimestampSec > 0L) current.offerTimestampSec else (System.currentTimeMillis() / 1000L)
+        val derivedCallKey = current.callKey ?: callKeyDeriver(current.peerNodeId, offerEpoch, current.sessionId)
 
         _callState.value = CallState.CONNECTED
         _isSpeakerOn.value = true
@@ -267,13 +272,15 @@ class VoiceCallManager(
                 } else {
                     payload.timestamp // already seconds
                 }
+                val derivedCallKey = callKeyDeriver(senderId, offerSec, payload.sessionId)
 
                 val info = ActiveCallInfo(
                     sessionId = payload.sessionId,
                     peerNodeId = senderId,
                     isCaller = false,
                     callState = CallState.INCOMING_RINGING,
-                    offerTimestampSec = offerSec
+                    offerTimestampSec = offerSec,
+                    callKey = derivedCallKey
                 )
                 _activeCallInfo.value = info
                 _callState.value = CallState.INCOMING_RINGING
@@ -294,12 +301,16 @@ class VoiceCallManager(
                     current.peerNodeId == senderId
                 ) {
                     timeoutJob?.cancel()
+                    val offerEpoch = if (current.offerTimestampSec > 0L) current.offerTimestampSec else (payload.timestamp / 1000L)
+                    val derivedCallKey = current.callKey ?: callKeyDeriver(current.peerNodeId, offerEpoch, current.sessionId)
+
                     _callState.value = CallState.CONNECTED
                     _isSpeakerOn.value = true
                     audioStreamer.setSpeakerOn(true)
                     _activeCallInfo.value = current.copy(
                         callState = CallState.CONNECTED,
-                        connectedAtMs = System.currentTimeMillis()
+                        connectedAtMs = System.currentTimeMillis(),
+                        callKey = derivedCallKey
                     )
                     startAudioPipeline(current.sessionId, senderId)
                 }
@@ -358,9 +369,12 @@ class VoiceCallManager(
             _callState.value = CallState.CONNECTED
             _isSpeakerOn.value = true
             audioStreamer.setSpeakerOn(true)
+            val offerEpoch = if (current.offerTimestampSec > 0L) current.offerTimestampSec else (System.currentTimeMillis() / 1000L)
+            val derivedCallKey = current.callKey ?: callKeyDeriver(senderId, offerEpoch, current.sessionId)
             _activeCallInfo.value = current.copy(
                 callState = CallState.CONNECTED,
-                connectedAtMs = System.currentTimeMillis()
+                connectedAtMs = System.currentTimeMillis(),
+                callKey = derivedCallKey
             )
             startAudioPipeline(current.sessionId, senderId)
         }
@@ -393,12 +407,24 @@ class VoiceCallManager(
     fun handleIncomingVoicePacket(authPacket: com.meshwhisper.core.protocol.AuthenticatedPacket) {
         val packet = authPacket.packet
         val payload = packet.payload
-        if (payload.size < 8) return
-        val seqPlain = java.nio.ByteBuffer.wrap(payload, 0, 8).order(java.nio.ByteOrder.BIG_ENDIAN).long
-        val rawCiphertext = payload.copyOfRange(8, payload.size)
-        val authTag = packet.authTag
-        val aad = packet.getAuthenticatedHeaderBytes()
-        handleIncomingVoiceFrame(packet.senderId, seqPlain, rawCiphertext, authTag, aad)
+        val current = _activeCallInfo.value
+        val callKey = current?.callKey
+
+        if (payload.size >= 8 && callKey != null) {
+            val seqPlain = java.nio.ByteBuffer.wrap(payload, 0, 8).order(java.nio.ByteOrder.BIG_ENDIAN).long
+            val rawCiphertext = payload.copyOfRange(8, payload.size)
+            val authTag = packet.authTag
+            val aad = packet.getAuthenticatedHeaderBytes()
+            handleIncomingVoiceFrame(packet.senderId, seqPlain, rawCiphertext, authTag, aad)
+            return
+        }
+
+        // Fallback: If callKey was not yet established or payload is unencrypted VoiceFramePayload
+        val frame = VoiceFramePayload.deserialize(payload)
+            ?: (if (authPacket.decryptedPayload.isNotEmpty()) VoiceFramePayload.deserialize(authPacket.decryptedPayload) else null)
+        if (frame != null) {
+            handleIncomingVoiceFrame(packet.senderId, frame)
+        }
     }
 
     /**
@@ -424,10 +450,13 @@ class VoiceCallManager(
                 _callState.value = CallState.CONNECTED
                 _isSpeakerOn.value = true
                 audioStreamer.setSpeakerOn(true)
+                val offerEpoch = if (current.offerTimestampSec > 0L) current.offerTimestampSec else (System.currentTimeMillis() / 1000L)
+                val derivedCallKey = current.callKey ?: callKeyDeriver(senderId, offerEpoch, frame.sessionId)
                 _activeCallInfo.value = current.copy(
                     sessionId = frame.sessionId,
                     callState = CallState.CONNECTED,
-                    connectedAtMs = System.currentTimeMillis()
+                    connectedAtMs = System.currentTimeMillis(),
+                    callKey = derivedCallKey
                 )
                 startAudioPipeline(frame.sessionId, senderId)
             }

@@ -55,7 +55,8 @@ class MeshBleEngine(private val context: Context) {
 
     private val bluetoothManager: BluetoothManager? =
         context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
-    private val bluetoothAdapter: BluetoothAdapter? = bluetoothManager?.adapter
+    private val bluetoothAdapter: BluetoothAdapter?
+        get() = bluetoothManager?.adapter ?: BluetoothAdapter.getDefaultAdapter()
 
     private var advertiser: BluetoothLeAdvertiser? = null
     private var scanner: BluetoothLeScanner? = null
@@ -82,7 +83,8 @@ class MeshBleEngine(private val context: Context) {
         var notifyChar: BluetoothGattCharacteristic? = null,
         var mtu: Int = BleConstants.DEFAULT_MTU,
         var isReady: Boolean = false,
-        var rssi: Int = 0
+        var rssi: Int = 0,
+        val connectedAtMs: Long = System.currentTimeMillis()
     )
 
     private val activeGattClients = ConcurrentHashMap<String, ClientConnection>()
@@ -220,8 +222,9 @@ class MeshBleEngine(private val context: Context) {
                     BluetoothAdapter.STATE_ON -> {
                         Log.d(tag, "Bluetooth radio turned ON -> restarting mesh engine")
                         _isBluetoothEnabled.value = true
-                        if (myNodeId != 0L && !isEngineRunning) {
-                            start(myNodeId)
+                        val targetId = if (myNodeId != 0L) myNodeId else ((context.applicationContext as? com.meshwhisper.app.MeshApplication)?.cryptoEngine?.nodeId ?: 0L)
+                        if (targetId != 0L) {
+                            start(targetId)
                         }
                     }
                     BluetoothAdapter.STATE_OFF, BluetoothAdapter.STATE_TURNING_OFF -> {
@@ -291,7 +294,16 @@ class MeshBleEngine(private val context: Context) {
         }
 
         if (isEngineRunning) {
-            Log.d(tag, "Mesh engine is already active, skipping redundant start()")
+            Log.d(tag, "Mesh engine is already active, ensuring scanner and advertiser are running")
+            if (!_isScanning.value) {
+                Log.i(tag, "Scanner is inactive while engine is running, restarting scanner...")
+                startScanning()
+            }
+            if (!_isAdvertising.value && _supportsPeripheral.value) {
+                Log.i(tag, "Advertiser is inactive while engine is running, restarting advertiser...")
+                startAdvertising()
+            }
+            startWatchdog()
             return
         }
 
@@ -317,6 +329,7 @@ class MeshBleEngine(private val context: Context) {
         }
 
         startRssiPoller()
+        startWatchdog()
     }
 
     @SuppressLint("MissingPermission")
@@ -327,12 +340,86 @@ class MeshBleEngine(private val context: Context) {
 
         Log.i(tag, "Stopping Mesh BLE Engine...")
         isEngineRunning = false
+        stopWatchdog()
         stopRssiPoller()
         stopAdvertising()
         stopScanning()
         closeAllGattClients()
         stopGattServer()
         _connectedPeersCount.value = 0
+    }
+
+    private var watchdogJob: Job? = null
+
+    @SuppressLint("MissingPermission")
+    private fun startWatchdog() {
+        watchdogJob?.cancel()
+        watchdogJob = scope.launch {
+            while (isActive) {
+                delay(8000L)
+                if (!isEngineRunning) break
+
+                val adapter = bluetoothAdapter
+                val isBtOn = try {
+                    adapter?.isEnabled == true
+                } catch (_: Exception) { false }
+                _isBluetoothEnabled.value = isBtOn
+
+                if (isBtOn && hasPermissions()) {
+                    if (!_isScanning.value) {
+                        Log.w(tag, "Watchdog detected scanner inactive. Restarting scan...")
+                        try {
+                            scanner?.stopScan(scanCallback)
+                        } catch (_: Exception) {}
+                        startScanning()
+                    }
+
+                    if (!_isAdvertising.value && _supportsPeripheral.value) {
+                        Log.w(tag, "Watchdog detected advertiser inactive. Restarting advertising...")
+                        try {
+                            advertiser?.stopAdvertising(advertiseCallback)
+                        } catch (_: Exception) {}
+                        startAdvertising()
+                    }
+
+                    // Clean up any stale unready GATT client connections that never completed handshake
+                    val now = System.currentTimeMillis()
+                    for ((addr, conn) in activeGattClients) {
+                        if (!conn.isReady && (now - conn.connectedAtMs > 12_000L)) {
+                            Log.w(tag, "Watchdog cleaning up stalled GATT connection to $addr")
+                            try {
+                                conn.gatt.close()
+                            } catch (_: Exception) {}
+                            activeGattClients.remove(addr)
+                            updatePeerCount()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun stopWatchdog() {
+        watchdogJob?.cancel()
+        watchdogJob = null
+    }
+
+    @SuppressLint("MissingPermission")
+    fun restartDiscovery() {
+        Log.i(tag, "Manual / automatic restart of BLE discovery requested")
+        stopScanning()
+        stopAdvertising()
+        for ((addr, conn) in activeGattClients) {
+            if (!conn.isReady) {
+                try {
+                    conn.gatt.close()
+                } catch (_: Exception) {}
+                activeGattClients.remove(addr)
+            }
+        }
+        startGattServer()
+        startAdvertising()
+        startScanning()
     }
 
     fun destroy() {
@@ -482,15 +569,21 @@ class MeshBleEngine(private val context: Context) {
         }
 
         try {
+            advertiser?.stopAdvertising(advertiseCallback)
+        } catch (_: Exception) {}
+
+        try {
             if (scanResponse != null) {
                 advertiser?.startAdvertising(settings, data, scanResponse, advertiseCallback)
             } else {
                 advertiser?.startAdvertising(settings, data, advertiseCallback)
             }
+            _isAdvertising.value = true
             Log.d(tag, "Initiated BLE Advertising for Mesh Service UUID (Node ID: $myNodeId)")
         } catch (e: Exception) {
             Log.e(tag, "Failed to start BLE advertising", e)
             _supportsPeripheral.value = false
+            _isAdvertising.value = false
         }
     }
 
@@ -504,7 +597,7 @@ class MeshBleEngine(private val context: Context) {
         }
     }
 
-    private val advertiseCallback = object : AdvertiseCallback() {
+    private val advertiseCallback: AdvertiseCallback = object : AdvertiseCallback() {
         override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
             Log.i(tag, "BLE Advertising active and broadcasting Mesh Service")
             _isAdvertising.value = true
@@ -513,6 +606,11 @@ class MeshBleEngine(private val context: Context) {
 
         override fun onStartFailure(errorCode: Int) {
             Log.e(tag, "BLE Advertising failed with error code: $errorCode")
+            if (errorCode == AdvertiseCallback.ADVERTISE_FAILED_ALREADY_STARTED) {
+                _isAdvertising.value = true
+                _supportsPeripheral.value = true
+                return
+            }
             _isAdvertising.value = false
             if (errorCode == AdvertiseCallback.ADVERTISE_FAILED_DATA_TOO_LARGE) {
                 Log.w(tag, "Advertising data too large; retrying with basic service UUID only...")
@@ -533,6 +631,20 @@ class MeshBleEngine(private val context: Context) {
                 }
             } else if (errorCode == AdvertiseCallback.ADVERTISE_FAILED_FEATURE_UNSUPPORTED) {
                 _supportsPeripheral.value = false
+            } else {
+                // Transient error: Retry advertising after 1.5s backoff
+                if (isEngineRunning && hasPermissions()) {
+                    scope.launch {
+                        delay(1500L)
+                        if (isEngineRunning && !_isAdvertising.value && _supportsPeripheral.value) {
+                            Log.i(tag, "Auto-recovering BLE advertiser after error $errorCode...")
+                            try {
+                                advertiser?.stopAdvertising(advertiseCallback)
+                            } catch (_: Exception) {}
+                            startAdvertising()
+                        }
+                    }
+                }
             }
         }
     }
@@ -670,11 +782,16 @@ class MeshBleEngine(private val context: Context) {
             .build()
 
         try {
+            scanner?.stopScan(scanCallback)
+        } catch (_: Exception) {}
+
+        try {
             scanner?.startScan(scanFilters, settings, scanCallback)
             _isScanning.value = true
             Log.d(tag, "BLE Scan started for Mesh Service (lowLatency=$isLowLatencyMode, filters=${scanFilters.size})")
         } catch (e: Exception) {
             Log.e(tag, "Error starting BLE scan", e)
+            _isScanning.value = false
         }
     }
 
@@ -688,7 +805,7 @@ class MeshBleEngine(private val context: Context) {
         }
     }
 
-    private val scanCallback = object : ScanCallback() {
+    private val scanCallback: ScanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult?) {
             val device = result?.device ?: return
             val address = device.address
@@ -722,7 +839,23 @@ class MeshBleEngine(private val context: Context) {
 
         override fun onScanFailed(errorCode: Int) {
             Log.e(tag, "Scan failed with error: $errorCode")
+            if (errorCode == ScanCallback.SCAN_FAILED_ALREADY_STARTED) {
+                _isScanning.value = true
+                return
+            }
             _isScanning.value = false
+            if (isEngineRunning && hasPermissions()) {
+                scope.launch {
+                    delay(1500L)
+                    if (isEngineRunning && !_isScanning.value) {
+                        Log.i(tag, "Auto-recovering BLE scan after error $errorCode...")
+                        try {
+                            scanner?.stopScan(scanCallback)
+                        } catch (_: Exception) {}
+                        startScanning()
+                    }
+                }
+            }
         }
     }
 
@@ -763,10 +896,24 @@ class MeshBleEngine(private val context: Context) {
             return
         }
 
-        activeGattClients[address] = ClientConnection(
+        val conn = ClientConnection(
             gatt = gatt,
             rssi = rssi
         )
+        activeGattClients[address] = conn
+
+        // Connection timeout: If connection cannot complete handshake in 12 seconds, clean up so next scan retries
+        scope.launch {
+            delay(12000L)
+            if (activeGattClients[address] === conn && !conn.isReady) {
+                Log.w(tag, "GATT connection timeout to $address; aborting and releasing client")
+                try {
+                    conn.gatt.close()
+                } catch (_: Exception) {}
+                activeGattClients.remove(address)
+                updatePeerCount()
+            }
+        }
     }
 
     private fun createGattCallback(deviceAddress: String) = object : BluetoothGattCallback() {
@@ -775,6 +922,21 @@ class MeshBleEngine(private val context: Context) {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt?, status: Int, newState: Int) {
             if (gatt == null) return
+
+            // Handle connection failure / error status (such as status 133, status 8, timeout)
+            if (status != BluetoothGatt.GATT_SUCCESS || newState == BluetoothProfile.STATE_DISCONNECTED) {
+                Log.d(tag, "GATT client connection dropped or failed for $deviceAddress (status=$status, newState=$newState)")
+                try {
+                    gatt.close()
+                } catch (_: Exception) {}
+                activeGattClients.remove(deviceAddress)
+                rateLimiter.remove(deviceAddress)
+                framer.clearDevice(deviceAddress)
+                onLinkDisconnected(deviceAddress)
+                updatePeerCount()
+                onPeerDisconnectedListener?.invoke(deviceAddress)
+                return
+            }
 
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 Log.d(tag, "Connected as Central to $deviceAddress, requesting HIGH priority and MTU 512...")
@@ -800,15 +962,6 @@ class MeshBleEngine(private val context: Context) {
                         gatt.discoverServices()
                     }
                 }
-            } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                Log.d(tag, "Disconnected from $deviceAddress")
-                gatt.close()
-                activeGattClients.remove(deviceAddress)
-                rateLimiter.remove(deviceAddress)
-                framer.clearDevice(deviceAddress)
-                onLinkDisconnected(deviceAddress)
-                updatePeerCount()
-                onPeerDisconnectedListener?.invoke(deviceAddress)
             }
         }
 

@@ -181,15 +181,35 @@ class MeshRouter(
             audioStreamer = audioStreamerFactory(),
             scope = scope,
             callKeyDeriver = { peerId, timestampSec, sessionId ->
-                val peerPubKey = peerPublicKeyCache[peerId]
+                val peerPubKey = peerPublicKeyCache[peerId] ?: kotlinx.coroutines.runBlocking {
+                    try {
+                        database.peerDao().getPeerById(peerId)?.let {
+                            val pk = CryptoEngine.hexToBytes(it.publicKeyHex)
+                            peerPublicKeyCache[peerId] = pk
+                            pk
+                        }
+                    } catch (_: Exception) { null }
+                } ?: kotlinx.coroutines.runBlocking {
+                    try {
+                        database.identityDao().getAllByNodeId64(peerId).firstOrNull()?.let {
+                            val pk = com.meshwhisper.core.crypto.PureCryptoEngine.hexToBytes(it.ekPubHex)
+                            peerPublicKeyCache[peerId] = pk
+                            pk
+                        }
+                    } catch (_: Exception) { null }
+                }
                 if (peerPubKey != null) {
-                    val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey, timestampSec)
+                    val epoch = if (timestampSec > 0L) timestampSec else (System.currentTimeMillis() / 1000L)
+                    val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey, epoch)
                     val callSessionIdBytes = java.nio.ByteBuffer.allocate(16).order(java.nio.ByteOrder.BIG_ENDIAN)
                         .putLong(sessionId.mostSignificantBits)
                         .putLong(sessionId.leastSignificantBits)
                         .array()
                     cryptoEngine.deriveCallKey(sessionKey, callSessionIdBytes)
-                } else null
+                } else {
+                    Log.w(tag, "callKeyDeriver: peer public key not found for node 0x${String.format("%016X", peerId)}")
+                    null
+                }
             }
         )
     }
@@ -551,7 +571,13 @@ class MeshRouter(
                 scope.launch {
                     val chunk = result.chunk
                     if (!chunk.isRelayOnly && (chunk.packet.recipientId == cryptoEngine.nodeId || chunk.isBroadcast)) {
-                        mediaTransferManager.handleMediaChunk(chunk.packet, chunk.isBroadcast)
+                        mediaTransferManager.handleMediaChunkAdmitted(
+                            packet = chunk.packet,
+                            mediaId = chunk.mediaId,
+                            chunkIndex = chunk.chunkIndex,
+                            chunkData = chunk.chunkData,
+                            isBroadcast = chunk.isBroadcast
+                        )
                     }
                     if (chunk.packet.ttl > 1 && chunk.packet.senderId != cryptoEngine.nodeId && chunk.packet.recipientId != cryptoEngine.nodeId) {
                         relayMediaChunkIfEligible(chunk, ingressAddress)
@@ -1044,7 +1070,7 @@ class MeshRouter(
         if (isForMe) {
             val peer = database.peerDao().getPeerById(packet.senderId)
             val senderAlias = peer?.alias ?: "Node-${String.format("%016X", packet.senderId).takeLast(4)}"
-            mediaTransferManager.handleMediaInit(packet, senderAlias, isBroadcast)
+            mediaTransferManager.handleMediaInit(packet, senderAlias, isBroadcast, authPacket.decryptedPayload)
             logPacket("RX", packet, packet.payload.size, "Received MEDIA_INIT from $senderAlias")
         }
     }
@@ -1053,7 +1079,7 @@ class MeshRouter(
         val packet = authPacket.packet
         val isForMe = (packet.recipientId == cryptoEngine.nodeId || packet.recipientId == MeshPacket.BROADCAST_RECIPIENT_ID)
         if (isForMe) {
-            mediaTransferManager.handleMediaNack(packet)
+            mediaTransferManager.handleMediaNack(packet, authPacket.decryptedPayload)
             logPacket("NACK_RX", packet, packet.payload.size, "Received MEDIA_NACK from ${packet.senderId}")
         }
     }
@@ -1062,7 +1088,7 @@ class MeshRouter(
         val packet = authPacket.packet
         val isForMe = (packet.recipientId == cryptoEngine.nodeId)
         if (isForMe) {
-            mediaTransferManager.handleMediaAck(packet)
+            mediaTransferManager.handleMediaAck(packet, authPacket.decryptedPayload)
             logPacket("MEDIA_ACK_RX", packet, packet.payload.size, "Received MEDIA_ACK from ${packet.senderId}")
         }
     }
@@ -1071,7 +1097,7 @@ class MeshRouter(
         val packet = authPacket.packet
         val isForMe = (packet.recipientId == cryptoEngine.nodeId || packet.recipientId == MeshPacket.BROADCAST_RECIPIENT_ID)
         if (isForMe) {
-            mediaTransferManager.handleMediaAbort(packet)
+            mediaTransferManager.handleMediaAbort(packet, authPacket.decryptedPayload)
             logPacket("ABORT_RX", packet, packet.payload.size, "Received MEDIA_ABORT from ${packet.senderId}")
         }
     }

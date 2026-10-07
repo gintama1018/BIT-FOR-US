@@ -4,6 +4,36 @@ All notable changes to the **MeshWhisper / BIT FOR US** platform are documented 
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres to semantic development milestones.
 
+## [vNext Phase P11 - High-Fidelity Voice Mesh, Sensor-Fused Homing & Discovery Watchdog] - (2026-10-06)
+### Real-Time Offline Voice Audio Engineering, Disaster Compass Orientation & Radio Discovery Auto-Recovery
+
+#### Added
+- **Synchronized Voice Call HKDF Key Agreement (`VoiceCallManager.kt`)**:
+  - Unified `deriveCallKey` so caller and callee deterministically derive identical symmetric encryption keys regardless of initiation role.
+  - Hardened state transitions to ensure duplex voice streams are protected under zero-trust authenticated links.
+- **Hardware-Accelerated Full-Duplex Audio Engine (`AndroidAudioStreamer.kt`)**:
+  - Migrated legacy `STREAM_VOICE_CALL` to modern `AudioAttributes.Builder()` with `USAGE_VOICE_COMMUNICATION` and `CONTENT_TYPE_SPEECH`.
+  - Android 12+ (API 31+) `setCommunicationDevice` speakerphone and earpiece routing.
+  - Active hardware Acoustic Echo Canceler (AEC), Noise Suppressor (NS), and Automatic Gain Control (AGC) integration to eliminate feedback loops in hands-free mode.
+- **Resilient BLE Discovery Watchdog & Auto-Recovery (`MeshBleEngine.kt`)**:
+  - 8-second continuous discovery watchdog reviving scan and advertisement states killed by aggressive OEM power managers.
+  - Robust `onScanFailed` auto-recovery handling Android throttling (error codes 1, 2, 6) with 1.5s backoff and `ALREADY_STARTED` idempotency.
+  - Automatic reclamation of stale/hanging GATT client handshakes (>12s) to prevent peer connection deadlocks on app restarts.
+  - Dynamic `BluetoothAdapter` access to gracefully support manual Bluetooth toggling in airplane mode.
+- **Zero-Block Flight Mode Permissions (`PermissionHandler.kt`, `MainActivity.kt`)**:
+  - Removed false full-screen location gate for Android 12+ (API 31+) where `neverForLocation` flags permit 100% offline BLE scanning without active GPS services.
+  - Guaranteed auto-start of BLE and Wi-Fi engines on app launch, resume, and permission grant callbacks.
+- **Stabilized Disaster Proximity Homing & Compass Needle (`CompassSensorManager.kt`, `MeshRadarScreen.kt`)**:
+  - Geometric rotation vector fusion and low-pass filter smoothing for true geomagnetic needle orientation without jumpy jitter.
+  - Independent needle bearing rendering with smooth compass dial rotation and distance estimation.
+  - Added one-tap "Search / Re-scan Now" quick action buttons on Radar and Direct Messages screens.
+- **Reliable Offline Media Transfer (`MediaTransferManager.kt`)**:
+  - Chunked binary transfer with byte-exact fragment ordering, session drop handlers, and immediate thumbnail cache storage.
+- **Desktop Station Distribution Launcher (`START_DESKTOP.bat`)**:
+  - One-click Windows runner script executing desktop distribution binary directly from workspace root.
+
+---
+
 ## [vNext Schema 13 - Emergency Location Beacon & Store-Carry-Forward Breadcrumbs] - (2026-09-23)
 ### Geolocation Privacy, Tactical Offline Rescue & Power-Aware Resilience
 

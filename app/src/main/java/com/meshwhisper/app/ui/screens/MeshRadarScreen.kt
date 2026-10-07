@@ -3,9 +3,11 @@ package com.meshwhisper.app.ui.screens
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import kotlinx.coroutines.isActive
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -36,11 +38,13 @@ import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
@@ -329,39 +333,126 @@ fun MeshRadarScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "Discovered Nodes (${peers.size})",
+                    color = TextPrimary,
+                    fontSize = 15.sp,
+                    fontFamily = EBGaramondFamily,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                IconButton(
+                    onClick = {
+                        viewModel.restartDiscovery()
+                        viewModel.announcePresence()
+                    },
+                    modifier = Modifier.size(24.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = "Re-scan Mesh",
+                        tint = BurntSienna,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
             Text(
-                text = "Discovered Nodes (${peers.size})",
-                color = TextPrimary,
-                fontSize = 15.sp,
-                fontFamily = EBGaramondFamily,
-                fontWeight = FontWeight.Bold
-            )
-            Text(
-                text = "Tap a node to chat",
+                text = if (peers.isNotEmpty()) "Tap a node to chat" else "Searching...",
                 color = TextSecondary,
                 fontSize = 11.sp,
                 fontFamily = ManropeFamily
             )
         }
 
-        // Peers List
-        LazyColumn(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth(),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            items(peers, key = { it.nodeId }) { peer ->
-                RadarPeerCard(
-                    peer = peer,
-                    lastSeenFormatted = viewModel.formatLastSeen(peer.lastSeen),
-                    onOpenChat = { onOpenChat(peer.nodeId) },
-                    onStartHoming = {
-                        viewModel.selectHomingPeer(peer.nodeId)
-                        selectedViewTab = 3
+        if (peers.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = SaharaSurfaceContainerLow),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(0.8.dp, SaharaOutlineVariant),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Radar,
+                            contentDescription = null,
+                            tint = BurntSienna,
+                            modifier = Modifier.size(40.dp)
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = "Searching for Nearby Mesh Nodes...",
+                            color = TextPrimary,
+                            fontSize = 16.sp,
+                            fontFamily = EBGaramondFamily,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Bluetooth BLE & local network discovery active. Make sure Bluetooth is ON on both phones (even in Flight Mode). Nodes will connect automatically.",
+                            color = TextSecondary,
+                            fontSize = 12.sp,
+                            fontFamily = ManropeFamily,
+                            textAlign = TextAlign.Center,
+                            lineHeight = 16.sp
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Button(
+                            onClick = {
+                                viewModel.restartDiscovery()
+                                viewModel.announcePresence()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = BurntSienna),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Search / Re-scan Now",
+                                color = Color.White,
+                                fontSize = 12.sp,
+                                fontFamily = ManropeFamily,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
-                )
+                }
+            }
+        } else {
+            // Peers List
+            LazyColumn(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(peers, key = { it.nodeId }) { peer ->
+                    RadarPeerCard(
+                        peer = peer,
+                        lastSeenFormatted = viewModel.formatLastSeen(peer.lastSeen),
+                        onOpenChat = { onOpenChat(peer.nodeId) },
+                        onStartHoming = {
+                            viewModel.selectHomingPeer(peer.nodeId)
+                            selectedViewTab = 3
+                        }
+                    )
+                }
             }
         }
     }
@@ -1166,16 +1257,51 @@ fun MeshHomingScreen(
     val distText = GeoUtils.formatDistance(computedDistanceMeters)
     val bearingText = GeoUtils.formatBearing(computedBearingDegrees)
 
-    // Needle points to relative bearing (targetBearing - azimuth)
-    val needleAngle = remember(computedBearingDegrees, azimuth) {
-        (computedBearingDegrees - azimuth + 360f) % 360f
-    }
-    val headingDeviation = remember(needleAngle) {
-        if (needleAngle > 180f) needleAngle - 360f else needleAngle
+    val hasAccurateGps = remember(selfLoc, targetLoc) {
+        selfLoc != null && targetLoc != null &&
+        (selfLoc.latitude != 0.0 || selfLoc.longitude != 0.0) &&
+        (targetLoc.latitude != 0.0 || targetLoc.longitude != 0.0)
     }
 
+    var isNorthUpMode by remember { mutableStateOf(false) } // false = Relative Homing (Top is Ahead), true = North-Up
     var isNavigating by remember { mutableStateOf(false) }
     var isSeismicActive by remember { mutableStateOf(false) }
+
+    // Periodic GPS fix & presence announcement
+    LaunchedEffect(Unit) {
+        viewModel.refreshLocationAndBroadcast()
+        while (true) {
+            delay(8_000L)
+            viewModel.refreshLocationAndBroadcast()
+        }
+    }
+
+    // Needle points to relative bearing (targetBearing - azimuth) in Homing mode, or true bearing in North-Up mode
+    val targetNeedleAngle = remember(isNorthUpMode, computedBearingDegrees, azimuth) {
+        if (isNorthUpMode) {
+            computedBearingDegrees
+        } else {
+            (computedBearingDegrees - azimuth + 360f) % 360f
+        }
+    }
+
+    var continuousAngle by remember { mutableFloatStateOf(targetNeedleAngle) }
+    LaunchedEffect(targetNeedleAngle) {
+        val delta = ((targetNeedleAngle - (continuousAngle % 360f) + 540f) % 360f) - 180f
+        continuousAngle += delta
+    }
+    val animatedNeedleAngle by animateFloatAsState(
+        targetValue = continuousAngle,
+        animationSpec = tween<Float>(durationMillis = 80, easing = LinearEasing),
+        label = "NeedleAngle"
+    )
+
+    val headingDeviation = remember(computedBearingDegrees, azimuth) {
+        val rel = (computedBearingDegrees - azimuth + 360f) % 360f
+        if (rel > 180f) rel - 360f else rel
+    }
+
+    val isFacingTarget = kotlin.math.abs(headingDeviation) <= 22f
 
     // Update live metrics for haptic engine
     LaunchedEffect(isNavigating, computedDistanceMeters, headingDeviation) {
@@ -1251,9 +1377,48 @@ fun MeshHomingScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            // Compass Mode Switcher (Relative Homing vs North-Up Rose)
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(SaharaSurfaceContainerLow)
+                    .border(BorderStroke(1.dp, WarmCardBorder), RoundedCornerShape(20.dp))
+                    .padding(3.dp),
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Surface(
+                    onClick = { isNorthUpMode = false },
+                    shape = RoundedCornerShape(16.dp),
+                    color = if (!isNorthUpMode) SaharaPrimary else Color.Transparent
+                ) {
+                    Text(
+                        text = "🎯 Homing (Ahead)",
+                        fontSize = 11.sp,
+                        fontFamily = ManropeFamily,
+                        fontWeight = if (!isNorthUpMode) FontWeight.Bold else FontWeight.Medium,
+                        color = if (!isNorthUpMode) Color.White else SaharaOnSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                    )
+                }
+                Surface(
+                    onClick = { isNorthUpMode = true },
+                    shape = RoundedCornerShape(16.dp),
+                    color = if (isNorthUpMode) SaharaPrimary else Color.Transparent
+                ) {
+                    Text(
+                        text = "🧭 North-Up",
+                        fontSize = 11.sp,
+                        fontFamily = ManropeFamily,
+                        fontWeight = if (isNorthUpMode) FontWeight.Bold else FontWeight.Medium,
+                        color = if (isNorthUpMode) Color.White else SaharaOnSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                    )
+                }
+            }
 
-            // 360-Degree Compass Dial Canvas
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // 360-Degree Compass Dial Canvas (Stable Fixed Bezel, Free Dynamic Needle)
             Box(
                 modifier = Modifier.size(240.dp),
                 contentAlignment = Alignment.Center
@@ -1267,15 +1432,15 @@ fun MeshHomingScreen(
                     val cy = size.height / 2f
                     val radius = minOf(cx, cy) - 6.dp.toPx()
 
-                    // Outer dial body
+                    // Outer dial body (STABLE, FIXED - DOES NOT SPIN!)
                     drawCircle(
                         color = WarmSurface,
                         radius = radius
                     )
                     drawCircle(
-                        color = WarmCardBorder,
+                        color = if (isFacingTarget && !isNorthUpMode) SaharaOnline.copy(alpha = 0.6f) else WarmCardBorder,
                         radius = radius,
-                        style = Stroke(width = 1.5.dp.toPx())
+                        style = Stroke(width = if (isFacingTarget && !isNorthUpMode) 2.5.dp.toPx() else 1.5.dp.toPx())
                     )
 
                     // Inner dashed concentric ring
@@ -1288,55 +1453,80 @@ fun MeshHomingScreen(
                         )
                     )
 
-                    // Rotating cardinal marks and degree ticks (rotates with -azimuth)
-                    rotate(-azimuth, pivot = Offset(cx, cy)) {
-                        for (deg in 0 until 360 step 10) {
-                            val rad = Math.toRadians(deg.toDouble())
-                            val isMajor = deg % 30 == 0
-                            val tickLen = if (isMajor) 12.dp.toPx() else 6.dp.toPx()
-                            val strokeW = if (isMajor) 2.dp.toPx() else 1.dp.toPx()
-                            val tickColor = if (deg == 0) BurntSienna else SaharaOnSurfaceVariant.copy(alpha = if (isMajor) 0.6f else 0.25f)
+                    // Fixed degree ticks (360 degrees, stable frame matching screenshot)
+                    for (deg in 0 until 360 step 10) {
+                        val rad = Math.toRadians(deg.toDouble())
+                        val isMajor = deg % 30 == 0
+                        val tickLen = if (isMajor) 10.dp.toPx() else 5.dp.toPx()
+                        val strokeW = if (isMajor) 1.8.dp.toPx() else 1.dp.toPx()
+                        val tickColor = if (deg == 0) BurntSienna else SaharaOnSurfaceVariant.copy(alpha = if (isMajor) 0.6f else 0.25f)
 
-                            val startX = cx + (radius - tickLen) * sin(rad).toFloat()
-                            val startY = cy - (radius - tickLen) * cos(rad).toFloat()
-                            val endX = cx + radius * sin(rad).toFloat()
-                            val endY = cy - radius * cos(rad).toFloat()
+                        val startX = cx + (radius - tickLen) * sin(rad).toFloat()
+                        val startY = cy - (radius - tickLen) * cos(rad).toFloat()
+                        val endX = cx + radius * sin(rad).toFloat()
+                        val endY = cy - radius * cos(rad).toFloat()
 
-                            drawLine(
-                                color = tickColor,
-                                start = Offset(startX, startY),
-                                end = Offset(endX, endY),
-                                strokeWidth = strokeW
-                            )
+                        drawLine(
+                            color = tickColor,
+                            start = Offset(startX, startY),
+                            end = Offset(endX, endY),
+                            strokeWidth = strokeW
+                        )
 
-                            // Cardinal points N, E, S, W
-                            if (deg % 90 == 0) {
-                                val label = when (deg) {
+                        // Cardinal markings
+                        if (deg % 90 == 0) {
+                            val label = if (isNorthUpMode) {
+                                when (deg) {
                                     0 -> "N"
                                     90 -> "E"
                                     180 -> "S"
                                     270 -> "W"
                                     else -> ""
                                 }
-                                val labelPaint = android.graphics.Paint().apply {
-                                    color = if (deg == 0) android.graphics.Color.rgb(150, 68, 7) else android.graphics.Color.rgb(140, 130, 120)
-                                    textSize = 34f
-                                    isAntiAlias = true
-                                    typeface = android.graphics.Typeface.DEFAULT_BOLD
-                                    textAlign = android.graphics.Paint.Align.CENTER
+                            } else {
+                                when (deg) {
+                                    0 -> "▲"
+                                    90 -> "E"
+                                    180 -> "S"
+                                    270 -> "W"
+                                    else -> ""
                                 }
-                                val labelDist = radius - 24.dp.toPx()
-                                val lx = cx + labelDist * sin(rad).toFloat()
-                                val ly = cy - labelDist * cos(rad).toFloat() + 12f
-                                drawContext.canvas.nativeCanvas.drawText(label, lx, ly, labelPaint)
                             }
+                            val labelPaint = android.graphics.Paint().apply {
+                                color = if (deg == 0) android.graphics.Color.rgb(150, 68, 7) else android.graphics.Color.rgb(140, 130, 120)
+                                textSize = if (deg == 0 && !isNorthUpMode) 26f else 32f
+                                isAntiAlias = true
+                                typeface = android.graphics.Typeface.DEFAULT_BOLD
+                                textAlign = android.graphics.Paint.Align.CENTER
+                            }
+                            val labelDist = radius - 22.dp.toPx()
+                            val lx = cx + labelDist * sin(rad).toFloat()
+                            val ly = cy - labelDist * cos(rad).toFloat() + 11f
+                            drawContext.canvas.nativeCanvas.drawText(label, lx, ly, labelPaint)
                         }
                     }
 
-                    // Rotating Needle pointing towards relative target bearing
-                    rotate(needleAngle, pivot = Offset(cx, cy)) {
+                    // In Relative Homing mode: Floating magnetic North indicator on the rim
+                    if (!isNorthUpMode) {
+                        val northAngleRad = Math.toRadians((-azimuth + 360.0) % 360.0)
+                        val northPipDist = radius - 8.dp.toPx()
+                        val nx = cx + northPipDist * sin(northAngleRad).toFloat()
+                        val ny = cy - northPipDist * cos(northAngleRad).toFloat()
+                        drawCircle(color = BurntSienna, radius = 5.dp.toPx(), center = Offset(nx, ny))
+                        drawCircle(color = Color.White, radius = 2.dp.toPx(), center = Offset(nx, ny))
+                    } else {
+                        // In North-Up mode: Heading pointer showing phone orientation
+                        val phoneHeadingRad = Math.toRadians(azimuth.toDouble())
+                        val hx = cx + (radius - 8.dp.toPx()) * sin(phoneHeadingRad).toFloat()
+                        val hy = cy - (radius - 8.dp.toPx()) * cos(phoneHeadingRad).toFloat()
+                        drawCircle(color = SaharaPrimary, radius = 5.dp.toPx(), center = Offset(hx, hy))
+                    }
+
+                    // Rotating Needle pointing dynamically towards target
+                    rotate(animatedNeedleAngle, pivot = Offset(cx, cy)) {
                         val needleLen = radius * 0.70f
                         val needleW = 16.dp.toPx()
+                        val needleColor = if (isFacingTarget && !isNorthUpMode) SaharaOnline else BurntSienna
 
                         val arrowPath = Path().apply {
                             moveTo(cx, cy - needleLen)
@@ -1347,11 +1537,11 @@ fun MeshHomingScreen(
                         }
 
                         // Arrowhead
-                        drawPath(path = arrowPath, color = BurntSienna)
+                        drawPath(path = arrowPath, color = needleColor)
 
                         // Arrow stem
                         drawLine(
-                            color = BurntSienna.copy(alpha = 0.85f),
+                            color = needleColor.copy(alpha = 0.85f),
                             start = Offset(cx, cy - needleLen + 24.dp.toPx()),
                             end = Offset(cx, cy),
                             strokeWidth = 3.dp.toPx()
@@ -1373,13 +1563,14 @@ fun MeshHomingScreen(
                     }
 
                     // Center pivot hub
+                    val hubColor = if (isFacingTarget && !isNorthUpMode) SaharaOnline else BurntSienna
                     drawCircle(color = SaharaSurfaceContainerLow, radius = 10.dp.toPx())
-                    drawCircle(color = BurntSienna, radius = 7.dp.toPx())
+                    drawCircle(color = hubColor, radius = 7.dp.toPx())
                     drawCircle(color = Color.White, radius = 2.5.dp.toPx())
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(14.dp))
 
             // Large Bearing and Distance readout (e.g., "184 m • 247° SW")
             Text(
@@ -1392,8 +1583,8 @@ fun MeshHomingScreen(
 
             // Guidance hint
             val alignmentHint = when {
-                kotlin.math.abs(headingDeviation) <= 30f -> "Facing Target • Walk Straight"
-                headingDeviation > 30f -> "Turn Right ${headingDeviation.roundToInt()}°"
+                kotlin.math.abs(headingDeviation) <= 22f -> "Facing Target • Walk Straight"
+                headingDeviation > 22f -> "Turn Right ${headingDeviation.roundToInt()}°"
                 else -> "Turn Left ${(-headingDeviation).roundToInt()}°"
             }
             Text(
@@ -1401,11 +1592,64 @@ fun MeshHomingScreen(
                 fontSize = 12.sp,
                 fontFamily = ManropeFamily,
                 fontWeight = FontWeight.SemiBold,
-                color = if (kotlin.math.abs(headingDeviation) <= 30f) SaharaOnline else SaharaWarning,
+                color = if (kotlin.math.abs(headingDeviation) <= 22f) SaharaOnline else SaharaWarning,
                 modifier = Modifier.padding(top = 2.dp)
             )
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // GPS lock badge & manual refresh button
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(if (hasAccurateGps) SaharaOnline else SaharaWarning)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = if (hasAccurateGps) "GPS Fix: ±${(selfLoc?.accuracyMeters ?: 5f).roundToInt()}m" else "GPS Pending • RSSI Fallback",
+                        fontSize = 11.sp,
+                        fontFamily = ManropeFamily,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (hasAccurateGps) SaharaOnline else SaharaWarning
+                    )
+                }
+                Surface(
+                    onClick = { viewModel.refreshLocationAndBroadcast() },
+                    shape = RoundedCornerShape(12.dp),
+                    color = SaharaSurfaceContainerHigh
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.MyLocation,
+                            contentDescription = null,
+                            tint = SaharaPrimary,
+                            modifier = Modifier.size(13.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "Refresh GPS",
+                            fontSize = 11.sp,
+                            fontFamily = ManropeFamily,
+                            fontWeight = FontWeight.Bold,
+                            color = SaharaPrimary
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
 
             // Target Information Card
             Card(

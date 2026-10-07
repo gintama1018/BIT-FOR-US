@@ -2,11 +2,17 @@ package com.meshwhisper.app.voice
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.AutomaticGainControl
+import android.media.audiofx.NoiseSuppressor
+import android.os.Build
 import android.util.Log
 import com.meshwhisper.core.audio.AdpcmCodec
 import com.meshwhisper.core.audio.AudioFrame
@@ -78,10 +84,10 @@ class AndroidAudioStreamer(
         // Configure system audio policy for VoIP communication & loud speakerphone
         try {
             audioManager?.mode = AudioManager.MODE_IN_COMMUNICATION
-            audioManager?.isSpeakerphoneOn = true
+            setSpeakerOn(true)
             val maxVol = audioManager?.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL) ?: 0
             if (maxVol > 0) {
-                audioManager?.setStreamVolume(AudioManager.STREAM_VOICE_CALL, (maxVol * 0.9).toInt(), 0)
+                audioManager?.setStreamVolume(AudioManager.STREAM_VOICE_CALL, (maxVol * 0.95).toInt(), 0)
             }
         } catch (e: Exception) {
             Log.w(tag, "Failed to initialize AudioManager routing: ${e.message}")
@@ -100,6 +106,19 @@ class AndroidAudioStreamer(
                 recordBufSize
             )
             if (record.state == AudioRecord.STATE_INITIALIZED) {
+                try {
+                    if (AcousticEchoCanceler.isAvailable()) {
+                        AcousticEchoCanceler.create(record.audioSessionId)?.apply { enabled = true }
+                    }
+                    if (NoiseSuppressor.isAvailable()) {
+                        NoiseSuppressor.create(record.audioSessionId)?.apply { enabled = true }
+                    }
+                    if (AutomaticGainControl.isAvailable()) {
+                        AutomaticGainControl.create(record.audioSessionId)?.apply { enabled = true }
+                    }
+                } catch (fxEx: Exception) {
+                    Log.w(tag, "Failed to initialize hardware audio effects: ${fxEx.message}")
+                }
                 record.startRecording()
                 audioRecord = record
             } else {
@@ -129,16 +148,37 @@ class AndroidAudioStreamer(
         val trackBufSize = maxOf(minTrackBufSize, samplesPerFrame * 2 * 4)
 
         try {
-            @Suppress("DEPRECATION")
-            val track = AudioTrack(
-                AudioManager.STREAM_VOICE_CALL,
-                sampleRate,
-                channelOut,
-                encoding,
-                trackBufSize,
-                AudioTrack.MODE_STREAM
-            )
+            val track = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                AudioTrack.Builder()
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build()
+                    )
+                    .setAudioFormat(
+                        AudioFormat.Builder()
+                            .setEncoding(encoding)
+                            .setSampleRate(sampleRate)
+                            .setChannelMask(channelOut)
+                            .build()
+                    )
+                    .setBufferSizeInBytes(trackBufSize)
+                    .setTransferMode(AudioTrack.MODE_STREAM)
+                    .build()
+            } else {
+                @Suppress("DEPRECATION")
+                AudioTrack(
+                    AudioManager.STREAM_VOICE_CALL,
+                    sampleRate,
+                    channelOut,
+                    encoding,
+                    trackBufSize,
+                    AudioTrack.MODE_STREAM
+                )
+            }
             if (track.state == AudioTrack.STATE_INITIALIZED) {
+                track.setVolume(1.0f)
                 track.play()
                 audioTrack = track
             } else {
@@ -229,7 +269,11 @@ class AndroidAudioStreamer(
             }
 
             try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    audioManager?.clearCommunicationDevice()
+                }
                 audioManager?.mode = AudioManager.MODE_NORMAL
+                @Suppress("DEPRECATION")
                 audioManager?.isSpeakerphoneOn = false
             } catch (_: Exception) {}
 
@@ -250,8 +294,23 @@ class AndroidAudioStreamer(
 
     override fun setSpeakerOn(speakerOn: Boolean) {
         try {
-            audioManager?.mode = if (speakerOn) AudioManager.MODE_IN_COMMUNICATION else AudioManager.MODE_IN_CALL
-            audioManager?.isSpeakerphoneOn = speakerOn
+            audioManager?.mode = AudioManager.MODE_IN_COMMUNICATION
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val devices = audioManager?.availableCommunicationDevices ?: emptyList()
+                val targetDevice = if (speakerOn) {
+                    devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+                } else {
+                    devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE }
+                }
+                if (targetDevice != null) {
+                    audioManager?.setCommunicationDevice(targetDevice)
+                } else {
+                    audioManager?.clearCommunicationDevice()
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager?.isSpeakerphoneOn = speakerOn
+            }
         } catch (e: Exception) {
             Log.w(tag, "Failed to toggle speakerphone: ${e.message}")
         }

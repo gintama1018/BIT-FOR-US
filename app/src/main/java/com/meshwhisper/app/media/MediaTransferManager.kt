@@ -92,6 +92,51 @@ class MediaTransferManager(
     private val scope = CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO + exceptionHandler)
     private val outboundMutex = Mutex() // Global single outbound transfer cap
 
+    private fun buildSignedOrUnsignedPacket(
+        type: PacketType,
+        packetId: UUID,
+        recipientId: Long,
+        timestampSec: Long,
+        ttl: Int,
+        ciphertext: ByteArray,
+        authTag: ByteArray
+    ): MeshPacket {
+        val fullPayload = if (type.isSigned) {
+            val md = java.security.MessageDigest.getInstance("SHA-256")
+            md.update(ciphertext)
+            md.update(authTag)
+            val cipherHash = md.digest()
+
+            val transcript = MeshPacket.buildSigTranscript(
+                purposeTag = com.meshwhisper.core.protocol.ResourceLimits.PURPOSE_CONTENT,
+                protocolVersion = com.meshwhisper.core.protocol.ResourceLimits.PROTOCOL_VERSION.toByte(),
+                packetTypeByte = type.wireByte,
+                messageId = packetId,
+                senderIdentityHash = cryptoEngine.identityHash,
+                senderNodeId64 = cryptoEngine.nodeId,
+                recipientNodeId64 = recipientId,
+                timestamp = timestampSec,
+                payloadLenExcludingSig = ciphertext.size,
+                ciphertextAndTagHash = cipherHash
+            )
+            val hopSig = cryptoEngine.sign(transcript)
+            ciphertext + hopSig
+        } else {
+            ciphertext
+        }
+
+        return MeshPacket(
+            type = type,
+            messageId = packetId,
+            senderId = cryptoEngine.nodeId,
+            recipientId = recipientId,
+            ttl = ttl,
+            timestamp = timestampSec,
+            payload = fullPayload,
+            authTag = authTag
+        )
+    }
+
     fun readFileBytes(file: File): ByteArray {
         return if (mediaAtRestManager.isMediaFileEncrypted(file)) {
             mediaAtRestManager.readAndDecryptMediaFile(file.name, file)
@@ -521,14 +566,13 @@ class MediaTransferManager(
             cryptoEngine.encrypt(plainInit, initPacketId, sessionKey, aadInit)
         }
 
-        val initPacket = MeshPacket(
+        val initPacket = buildSignedOrUnsignedPacket(
             type = PacketType.MEDIA_INIT,
-            messageId = initPacketId,
-            senderId = cryptoEngine.nodeId,
+            packetId = initPacketId,
             recipientId = recipientNodeId,
+            timestampSec = timestampSec,
             ttl = if (isBroadcast) MeshPacket.MEDIA_TTL else MeshPacket.MEDIA_DIRECT_TTL,
-            timestamp = timestampSec,
-            payload = encryptedInit.ciphertext,
+            ciphertext = encryptedInit.ciphertext,
             authTag = encryptedInit.authTag
         )
 
@@ -683,25 +727,35 @@ class MediaTransferManager(
     suspend fun handleMediaInit(
         packet: MeshPacket,
         senderAlias: String,
-        isBroadcast: Boolean
+        isBroadcast: Boolean,
+        preDecryptedPayload: ByteArray? = null
     ) {
-        val aad = packet.getAuthenticatedHeaderBytes()
-        val plainBytes = try {
-            if (isBroadcast) {
-                cryptoEngine.decrypt(packet.payload, packet.authTag, packet.messageId, cryptoEngine.publicChannelKey, aad)
+        val plainBytes = if (preDecryptedPayload != null && preDecryptedPayload.isNotEmpty()) {
+            preDecryptedPayload
+        } else {
+            val ciphertext = if (packet.payload.size > 64) {
+                packet.payload.copyOfRange(0, packet.payload.size - 64)
             } else {
-                val peer = database.peerDao().getPeerById(packet.senderId)
-                val peerPubKey = if (peer != null) CryptoEngine.hexToBytes(peer.publicKeyHex) else null
-                if (peerPubKey == null) {
-                    Log.w(tag, "Cannot decrypt MEDIA_INIT from unknown peer ${packet.senderId}")
-                    return
-                }
-                val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey, packet.timestamp)
-                cryptoEngine.decrypt(packet.payload, packet.authTag, packet.messageId, sessionKey, aad)
+                packet.payload
             }
-        } catch (e: Exception) {
-            Log.e(tag, "Failed to decrypt MEDIA_INIT from sender ${packet.senderId}", e)
-            return
+            val aad = packet.getAuthenticatedHeaderBytes()
+            try {
+                if (isBroadcast) {
+                    cryptoEngine.decrypt(ciphertext, packet.authTag, packet.messageId, cryptoEngine.publicChannelKey, aad)
+                } else {
+                    val peer = database.peerDao().getPeerById(packet.senderId)
+                    val peerPubKey = if (peer != null) CryptoEngine.hexToBytes(peer.publicKeyHex) else null
+                    if (peerPubKey == null) {
+                        Log.w(tag, "Cannot decrypt MEDIA_INIT from unknown peer ${packet.senderId}")
+                        return
+                    }
+                    val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey, packet.timestamp)
+                    cryptoEngine.decrypt(ciphertext, packet.authTag, packet.messageId, sessionKey, aad)
+                }
+            } catch (e: Exception) {
+                Log.e(tag, "Failed to decrypt MEDIA_INIT from sender ${packet.senderId}", e)
+                return
+            }
         }
 
         if (plainBytes.size < 62) return
@@ -976,6 +1030,16 @@ class MediaTransferManager(
         val chunkData = ByteArray(buffer.remaining())
         buffer.get(chunkData)
 
+        handleMediaChunkAdmitted(packet, mediaId, chunkIndex, chunkData, isBroadcast)
+    }
+
+    suspend fun handleMediaChunkAdmitted(
+        packet: MeshPacket,
+        mediaId: UUID,
+        chunkIndex: Int,
+        chunkData: ByteArray,
+        isBroadcast: Boolean
+    ) {
         val sessionKey = "${packet.senderId}_$mediaId"
         val session = inboundSessions[sessionKey] ?: return
         session.lastActivityMs = System.currentTimeMillis()
@@ -1211,36 +1275,44 @@ class MediaTransferManager(
         )
 
         val encrypted = cryptoEngine.encrypt(plainNack, packetId, sessionKey, aad)
-        val packet = MeshPacket(
+        val packet = buildSignedOrUnsignedPacket(
             type = PacketType.MEDIA_NACK,
-            messageId = packetId,
-            senderId = cryptoEngine.nodeId,
+            packetId = packetId,
             recipientId = recipientNodeId,
+            timestampSec = timestampSec,
             ttl = MeshPacket.MEDIA_TTL, // Multi-hop mesh relay capable (4 hops)
-            timestamp = timestampSec,
-            payload = encrypted.ciphertext,
+            ciphertext = encrypted.ciphertext,
             authTag = encrypted.authTag
         )
         packetBroadcaster(MeshPacket.serialize(packet))
     }
 
-    suspend fun handleMediaNack(packet: MeshPacket) {
-        val aad = packet.getAuthenticatedHeaderBytes()
-        val plainBytes = try {
-            val senderPeer = database.peerDao().getPeerById(packet.senderId)
-            if (senderPeer != null) {
-                val peerPubKey = CryptoEngine.hexToBytes(senderPeer.publicKeyHex)
-                val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey, packet.timestamp)
-                cryptoEngine.decrypt(packet.payload, packet.authTag, packet.messageId, sessionKey, aad)
+    suspend fun handleMediaNack(packet: MeshPacket, preDecryptedPayload: ByteArray? = null) {
+        val plainBytes = if (preDecryptedPayload != null && preDecryptedPayload.isNotEmpty()) {
+            preDecryptedPayload
+        } else {
+            val ciphertext = if (packet.payload.size > 64) {
+                packet.payload.copyOfRange(0, packet.payload.size - 64)
             } else {
-                cryptoEngine.decrypt(packet.payload, packet.authTag, packet.messageId, cryptoEngine.publicChannelKey, aad)
+                packet.payload
             }
-        } catch (e: Exception) {
+            val aad = packet.getAuthenticatedHeaderBytes()
             try {
-                cryptoEngine.decrypt(packet.payload, packet.authTag, packet.messageId, cryptoEngine.publicChannelKey, aad)
-            } catch (_: Exception) {
-                Log.w(tag, "Failed to decrypt MEDIA_NACK from ${packet.senderId}")
-                return
+                val senderPeer = database.peerDao().getPeerById(packet.senderId)
+                if (senderPeer != null) {
+                    val peerPubKey = CryptoEngine.hexToBytes(senderPeer.publicKeyHex)
+                    val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey, packet.timestamp)
+                    cryptoEngine.decrypt(ciphertext, packet.authTag, packet.messageId, sessionKey, aad)
+                } else {
+                    cryptoEngine.decrypt(ciphertext, packet.authTag, packet.messageId, cryptoEngine.publicChannelKey, aad)
+                }
+            } catch (e: Exception) {
+                try {
+                    cryptoEngine.decrypt(ciphertext, packet.authTag, packet.messageId, cryptoEngine.publicChannelKey, aad)
+                } catch (_: Exception) {
+                    Log.w(tag, "Failed to decrypt MEDIA_NACK from ${packet.senderId}")
+                    return
+                }
             }
         }
 
@@ -1326,30 +1398,37 @@ class MediaTransferManager(
         )
 
         val encrypted = cryptoEngine.encrypt(plainAck, packetId, sessionKey, aad)
-        val packet = MeshPacket(
+        val packet = buildSignedOrUnsignedPacket(
             type = PacketType.MEDIA_ACK,
-            messageId = packetId,
-            senderId = cryptoEngine.nodeId,
+            packetId = packetId,
             recipientId = recipientNodeId,
+            timestampSec = timestampSec,
             ttl = MeshPacket.MEDIA_TTL, // Multi-hop mesh relay capable (4 hops)
-            timestamp = timestampSec,
-            payload = encrypted.ciphertext,
+            ciphertext = encrypted.ciphertext,
             authTag = encrypted.authTag
         )
         packetBroadcaster(MeshPacket.serialize(packet))
     }
 
-    suspend fun handleMediaAck(packet: MeshPacket) {
-        val senderPeer = database.peerDao().getPeerById(packet.senderId) ?: return
-        val peerPubKey = CryptoEngine.hexToBytes(senderPeer.publicKeyHex)
-        val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey, packet.timestamp)
-        val aad = packet.getAuthenticatedHeaderBytes()
-
-        val plainBytes = try {
-            cryptoEngine.decrypt(packet.payload, packet.authTag, packet.messageId, sessionKey, aad)
-        } catch (e: Exception) {
-            Log.w(tag, "Failed to decrypt MEDIA_ACK from ${packet.senderId}")
-            return
+    suspend fun handleMediaAck(packet: MeshPacket, preDecryptedPayload: ByteArray? = null) {
+        val plainBytes = if (preDecryptedPayload != null && preDecryptedPayload.isNotEmpty()) {
+            preDecryptedPayload
+        } else {
+            val senderPeer = database.peerDao().getPeerById(packet.senderId) ?: return
+            val peerPubKey = CryptoEngine.hexToBytes(senderPeer.publicKeyHex)
+            val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey, packet.timestamp)
+            val aad = packet.getAuthenticatedHeaderBytes()
+            val ciphertext = if (packet.payload.size > 64) {
+                packet.payload.copyOfRange(0, packet.payload.size - 64)
+            } else {
+                packet.payload
+            }
+            try {
+                cryptoEngine.decrypt(ciphertext, packet.authTag, packet.messageId, sessionKey, aad)
+            } catch (e: Exception) {
+                Log.w(tag, "Failed to decrypt MEDIA_ACK from ${packet.senderId}")
+                return
+            }
         }
 
         if (plainBytes.size < 16) return
@@ -1395,30 +1474,37 @@ class MediaTransferManager(
         )
 
         val encrypted = cryptoEngine.encrypt(plainAbort, packetId, sessionKey, aad)
-        val packet = MeshPacket(
+        val packet = buildSignedOrUnsignedPacket(
             type = PacketType.MEDIA_ABORT,
-            messageId = packetId,
-            senderId = cryptoEngine.nodeId,
+            packetId = packetId,
             recipientId = recipientNodeId,
+            timestampSec = timestampSec,
             ttl = MeshPacket.MEDIA_TTL,
-            timestamp = timestampSec,
-            payload = encrypted.ciphertext,
+            ciphertext = encrypted.ciphertext,
             authTag = encrypted.authTag
         )
         packetBroadcaster(MeshPacket.serialize(packet))
     }
 
-    suspend fun handleMediaAbort(packet: MeshPacket) {
-        val senderPeer = database.peerDao().getPeerById(packet.senderId) ?: return
-        val peerPubKey = CryptoEngine.hexToBytes(senderPeer.publicKeyHex)
-        val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey, packet.timestamp)
-        val aad = packet.getAuthenticatedHeaderBytes()
-
-        val plainBytes = try {
-            cryptoEngine.decrypt(packet.payload, packet.authTag, packet.messageId, sessionKey, aad)
-        } catch (e: Exception) {
-            Log.w(tag, "Failed to decrypt MEDIA_ABORT from ${packet.senderId}")
-            return
+    suspend fun handleMediaAbort(packet: MeshPacket, preDecryptedPayload: ByteArray? = null) {
+        val plainBytes = if (preDecryptedPayload != null && preDecryptedPayload.isNotEmpty()) {
+            preDecryptedPayload
+        } else {
+            val senderPeer = database.peerDao().getPeerById(packet.senderId) ?: return
+            val peerPubKey = CryptoEngine.hexToBytes(senderPeer.publicKeyHex)
+            val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey, packet.timestamp)
+            val aad = packet.getAuthenticatedHeaderBytes()
+            val ciphertext = if (packet.payload.size > 64) {
+                packet.payload.copyOfRange(0, packet.payload.size - 64)
+            } else {
+                packet.payload
+            }
+            try {
+                cryptoEngine.decrypt(ciphertext, packet.authTag, packet.messageId, sessionKey, aad)
+            } catch (e: Exception) {
+                Log.w(tag, "Failed to decrypt MEDIA_ABORT from ${packet.senderId}")
+                return
+            }
         }
 
         if (plainBytes.size < 16) return

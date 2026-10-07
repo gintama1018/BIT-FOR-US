@@ -58,9 +58,7 @@ class CompassSensorManager(context: Context) : SensorEventListener {
 
         if (event.sensor.type == Sensor.TYPE_ROTATION_VECTOR) {
             SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
-            SensorManager.getOrientation(rotationMatrix, orientationAngles)
-            val azimuthRad = orientationAngles[0]
-            val deg = ((Math.toDegrees(azimuthRad.toDouble()) + 360.0) % 360.0).toFloat()
+            val deg = calculateTiltCompensatedAzimuth(rotationMatrix)
             emitSmoothedAzimuth(deg)
         } else if (event.sensor.type == Sensor.TYPE_ACCELEROMETER) {
             System.arraycopy(event.values, 0, lastAccelerometer, 0, event.values.size)
@@ -76,19 +74,40 @@ class CompassSensorManager(context: Context) : SensorEventListener {
     private fun tryComputeFallback() {
         if (isAccelerometerSet && isMagnetometerSet) {
             if (SensorManager.getRotationMatrix(rotationMatrix, null, lastAccelerometer, lastMagnetometer)) {
-                SensorManager.getOrientation(rotationMatrix, orientationAngles)
-                val azimuthRad = orientationAngles[0]
-                val deg = ((Math.toDegrees(azimuthRad.toDouble()) + 360.0) % 360.0).toFloat()
+                val deg = calculateTiltCompensatedAzimuth(rotationMatrix)
                 emitSmoothedAzimuth(deg)
             }
         }
     }
 
+    private fun calculateTiltCompensatedAzimuth(matrix: FloatArray): Float {
+        // matrix[8] is the cos(pitch)*cos(roll) component (screen facing sky).
+        // If held upright in hand (pitch > ~30 deg), remap coordinates to eliminate gimbal lock.
+        return if (abs(matrix[8]) > 0.85f) {
+            SensorManager.getOrientation(matrix, orientationAngles)
+            val azimuthRad = orientationAngles[0]
+            ((Math.toDegrees(azimuthRad.toDouble()) + 360.0) % 360.0).toFloat()
+        } else {
+            val remapped = FloatArray(9)
+            SensorManager.remapCoordinateSystem(matrix, SensorManager.AXIS_X, SensorManager.AXIS_Z, remapped)
+            SensorManager.getOrientation(remapped, orientationAngles)
+            val azimuthRad = orientationAngles[0]
+            ((Math.toDegrees(azimuthRad.toDouble()) + 360.0) % 360.0).toFloat()
+        }
+    }
+
     private fun emitSmoothedAzimuth(newDegrees: Float) {
-        // Low-pass circular filter to avoid needle jitter
         val diff = ((newDegrees - lastEmittedAzimuth + 540f) % 360f) - 180f
-        if (abs(diff) > 0.8f) {
-            val smoothed = (lastEmittedAzimuth + diff * 0.35f + 360f) % 360f
+        val absDiff = abs(diff)
+        if (absDiff > 0.4f) {
+            // Adaptive smoothing: fast response for deliberate turns, gentle filtering for hand tremors
+            val alpha = when {
+                absDiff > 25f -> 0.85f  // Fast tracking when pivoting phone
+                absDiff > 10f -> 0.65f  // Normal tracking
+                absDiff > 3f  -> 0.45f  // Fine tracking
+                else          -> 0.25f  // Micro-tremor stabilization
+            }
+            val smoothed = (lastEmittedAzimuth + diff * alpha + 360f) % 360f
             lastEmittedAzimuth = smoothed
             _azimuthDegrees.value = smoothed
         }

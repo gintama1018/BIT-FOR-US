@@ -101,6 +101,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
         if (checkHasPermissions()) {
             app.bleEngine.setLowLatencyMode(true) // Upshift to high-speed scan in foreground
             app.bleEngine.start(app.cryptoEngine.nodeId)
+            app.wifiEngine.start(app.cryptoEngine.nodeId, app.cryptoEngine.alias)
             if (viewModel.isBackgroundRelayEnabled.value) {
                 viewModel.startService()
             }
@@ -129,6 +130,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
             val app = application as com.meshwhisper.app.MeshApplication
             app.bleEngine.setLowLatencyMode(true)
             app.bleEngine.start(app.cryptoEngine.nodeId)
+            app.wifiEngine.start(app.cryptoEngine.nodeId, app.cryptoEngine.alias)
             if (viewModel.isBackgroundRelayEnabled.value) {
                 viewModel.startService()
             }
@@ -143,6 +145,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
             val app = application as com.meshwhisper.app.MeshApplication
             app.bleEngine.setLowLatencyMode(true)
             app.bleEngine.start(app.cryptoEngine.nodeId)
+            app.wifiEngine.start(app.cryptoEngine.nodeId, app.cryptoEngine.alias)
             if (viewModel.isBackgroundRelayEnabled.value) {
                 viewModel.startService()
             }
@@ -212,6 +215,7 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
             val app = application as com.meshwhisper.app.MeshApplication
             app.bleEngine.setLowLatencyMode(true)
             app.bleEngine.start(app.cryptoEngine.nodeId)
+            app.wifiEngine.start(app.cryptoEngine.nodeId, app.cryptoEngine.alias)
             if (viewModel.isBackgroundRelayEnabled.value) {
                 viewModel.startService()
             }
@@ -262,6 +266,10 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                             hasCorePermissions = hasPermissions,
                             onRequestPermissions = { requestAppPermissions() },
                             onPermissionsGranted = {
+                                val app = application as com.meshwhisper.app.MeshApplication
+                                app.bleEngine.setLowLatencyMode(true)
+                                app.bleEngine.start(app.cryptoEngine.nodeId)
+                                app.wifiEngine.start(app.cryptoEngine.nodeId, app.cryptoEngine.alias)
                                 viewModel.startService()
                             }
                         ) {

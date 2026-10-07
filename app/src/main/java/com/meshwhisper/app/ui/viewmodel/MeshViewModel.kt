@@ -231,6 +231,17 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun refreshLocationAndBroadcast() {
+        viewModelScope.launch {
+            val loc = app.locationHelper.getCurrentLocation(timeoutMs = 4000L) ?: app.locationHelper.getLastKnownLocation()
+            if (loc != null) {
+                router.announcePresence(loc.latitude, loc.longitude, loc.accuracy)
+            } else {
+                router.announcePresence()
+            }
+        }
+    }
+
     fun sendSosBroadcast(text: String, latitude: Double? = null, longitude: Double? = null, accuracyMeters: Float = 0f) {
         if (text.isBlank()) return
         viewModelScope.launch {
@@ -805,6 +816,14 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
 
     fun stopService() {
         app.stopMeshService()
+    }
+
+    fun restartDiscovery() {
+        viewModelScope.launch {
+            app.bleEngine.setLowLatencyMode(true)
+            app.bleEngine.restartDiscovery()
+            app.wifiEngine.start(cryptoEngine.nodeId, cryptoEngine.alias)
+        }
     }
 }
 

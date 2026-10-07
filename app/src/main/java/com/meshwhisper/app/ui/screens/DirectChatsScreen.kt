@@ -321,13 +321,39 @@ fun DirectChatsScreen(
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = if (searchQuery.isNotBlank()) "Try searching for a different alias or 4-digit hex ID." else "When other MeshWhisper nodes come into Wi-Fi / BLE range, they will appear here automatically.",
+                        text = if (searchQuery.isNotBlank()) "Try searching for a different alias or 4-digit hex ID." else "When other MeshWhisper nodes come into BLE / Wi-Fi range, they will appear here automatically.",
                         color = SaharaOnSurfaceVariant,
                         fontSize = 13.sp,
                         fontFamily = ManropeFamily,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                         lineHeight = 18.sp
                     )
+                    if (searchQuery.isBlank()) {
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Button(
+                            onClick = {
+                                viewModel.restartDiscovery()
+                                viewModel.announcePresence()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = BurntSienna),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Search / Re-scan Now",
+                                color = Color.White,
+                                fontSize = 12.sp,
+                                fontFamily = ManropeFamily,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
                 }
             }
         } else {

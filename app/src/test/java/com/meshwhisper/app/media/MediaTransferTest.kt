@@ -132,4 +132,49 @@ class MediaTransferTest {
         assertThat(MeshPacket.MEDIA_TTL).isLessThan(MeshPacket.DEFAULT_TTL)
         assertThat(MeshPacket.MEDIA_TTL).isEqualTo(4)
     }
+
+    @Test
+    fun testMediaPacketTypesSigningContracts() {
+        assertThat(PacketType.MEDIA_INIT.isSigned).isTrue()
+        assertThat(PacketType.MEDIA_NACK.isSigned).isTrue()
+        assertThat(PacketType.MEDIA_ACK.isSigned).isTrue()
+        assertThat(PacketType.MEDIA_ABORT.isSigned).isTrue()
+        assertThat(PacketType.MEDIA_CHUNK.isSigned).isFalse()
+    }
+
+    @Test
+    fun testMediaInitSignatureTranscriptVerification() {
+        val keys = com.meshwhisper.core.crypto.PureCryptoEngine.generateX25519KeyPair()
+        val identityHash = com.meshwhisper.core.crypto.PureCryptoEngine.deriveIdentityHash(keys.second)
+        val nodeId = com.meshwhisper.core.crypto.PureCryptoEngine.deriveNodeId64(identityHash)
+        val messageId = UUID.randomUUID()
+        val ciphertext = ByteArray(120) { 0x5A }
+        val authTag = ByteArray(16) { 0x1F }
+        val timestamp = 1728000000L
+
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        md.update(ciphertext)
+        md.update(authTag)
+        val cipherHash = md.digest()
+
+        val transcript = MeshPacket.buildSigTranscript(
+            purposeTag = com.meshwhisper.core.protocol.ResourceLimits.PURPOSE_CONTENT,
+            protocolVersion = com.meshwhisper.core.protocol.ResourceLimits.PROTOCOL_VERSION.toByte(),
+            packetTypeByte = PacketType.MEDIA_INIT.wireByte,
+            messageId = messageId,
+            senderIdentityHash = identityHash,
+            senderNodeId64 = nodeId,
+            recipientNodeId64 = 0x12345678L,
+            timestamp = timestamp,
+            payloadLenExcludingSig = ciphertext.size,
+            ciphertextAndTagHash = cipherHash
+        )
+
+        val signature = com.meshwhisper.core.crypto.PureCryptoEngine.sign(keys.first, transcript)
+        assertThat(signature.size).isEqualTo(64)
+
+        val signingPub = com.meshwhisper.core.crypto.PureCryptoEngine.deriveSigningPublicKey(keys.first)
+        val verifies = com.meshwhisper.core.crypto.PureCryptoEngine.verifySignature(signingPub, transcript, signature)
+        assertThat(verifies).isTrue()
+    }
 }

@@ -322,6 +322,63 @@ class DesktopDatabase(
         }
     }
 
+    @Synchronized
+    fun getPrioritizedIdentities(limit: Int = 1024): List<DesktopIdentity> {
+        getConnection().use { conn ->
+            val sql = """
+                SELECT * FROM identities 
+                ORDER BY 
+                    CASE 
+                        WHEN trustState = 'VERIFIED' THEN 1 
+                        WHEN trustState = 'CONFLICTED' THEN 2 
+                        WHEN trustState = 'BLOCKED' THEN 3 
+                        ELSE 4 
+                    END ASC,
+                    lastSeenAt DESC
+                LIMIT ?
+            """.trimIndent()
+            conn.prepareStatement(sql).use { stmt ->
+                stmt.setInt(1, limit)
+                val rs = stmt.executeQuery()
+                val list = mutableListOf<DesktopIdentity>()
+                while (rs.next()) {
+                    list.add(mapIdentity(rs))
+                }
+                return list
+            }
+        }
+    }
+
+    @Synchronized
+    fun pruneExcessUnverifiedIdentities(maxIdentities: Int = 1024): Int {
+        getConnection().use { conn ->
+            val sql = """
+                DELETE FROM identities 
+                WHERE trustState NOT IN ('VERIFIED', 'CONFLICTED', 'BLOCKED')
+                  AND identityHashHex NOT IN (
+                      SELECT identityHashHex FROM identities 
+                      WHERE trustState NOT IN ('VERIFIED', 'CONFLICTED', 'BLOCKED') 
+                      ORDER BY lastSeenAt DESC 
+                      LIMIT ?
+                  )
+            """.trimIndent()
+            conn.prepareStatement(sql).use { stmt ->
+                stmt.setInt(1, maxIdentities)
+                return stmt.executeUpdate()
+            }
+        }
+    }
+
+    @Synchronized
+    fun getIdentityCount(): Int {
+        getConnection().use { conn ->
+            conn.prepareStatement("SELECT COUNT(*) FROM identities").use { stmt ->
+                val rs = stmt.executeQuery()
+                return if (rs.next()) rs.getInt(1) else 0
+            }
+        }
+    }
+
     private fun mapIdentity(rs: ResultSet): DesktopIdentity {
         return DesktopIdentity(
             identityHashHex = rs.getString("identityHashHex"),
@@ -678,6 +735,38 @@ class DesktopDatabase(
                 stmt.setString(1, dedupKey)
                 val rs = stmt.executeQuery()
                 return rs.next()
+            }
+        }
+    }
+
+    @Synchronized
+    fun getRecentSeenPacketKeys(limit: Int = 50000): List<String> {
+        getConnection().use { conn ->
+            conn.prepareStatement("SELECT dedupKey FROM processed_packets ORDER BY processedAt DESC LIMIT ?").use { stmt ->
+                stmt.setInt(1, limit)
+                val rs = stmt.executeQuery()
+                val list = mutableListOf<String>()
+                while (rs.next()) {
+                    list.add(rs.getString("dedupKey"))
+                }
+                return list
+            }
+        }
+    }
+
+    @Synchronized
+    fun pruneExcessProcessedPackets(maxRows: Int = 50000): Int {
+        getConnection().use { conn ->
+            val sql = """
+                DELETE FROM processed_packets 
+                WHERE dedupKey NOT IN (
+                    SELECT dedupKey FROM processed_packets 
+                    ORDER BY processedAt DESC LIMIT ?
+                )
+            """.trimIndent()
+            conn.prepareStatement(sql).use { stmt ->
+                stmt.setInt(1, maxRows)
+                return stmt.executeUpdate()
             }
         }
     }

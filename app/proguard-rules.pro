@@ -13,3 +13,8 @@
 -keep class com.meshwhisper.app.protocol.** { *; }
 -keep class com.meshwhisper.app.crypto.** { *; }
 
+# Core protocol & cryptography models
+-keep class com.meshwhisper.core.** { *; }
+-dontwarn com.meshwhisper.core.**
+
+

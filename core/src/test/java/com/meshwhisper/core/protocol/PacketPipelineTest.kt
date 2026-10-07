@@ -1141,4 +1141,95 @@ class PacketPipelineTest {
         val stored = identityStore.get(clientNode.identityHash)!!
         assertThat(stored.warningCount).isEqualTo(0)
     }
+
+    @Test
+    fun testVoiceFramePendingLinkDroppedAtS0Admission() {
+        registerPeerInStore(clientNode)
+        val pendingContext = LinkContext(
+            linkHandle = "test-link-unauth",
+            transport = TransportType.BLE,
+            boundIdentity = null,
+            state = LinkState.PENDING
+        )
+        val payload = ByteBuffer.allocate(8 + 20).apply {
+            putLong(1L) // seqPlain
+            put(ByteArray(20) { 0x44.toByte() })
+        }.array()
+        val raw = buildPacket(PacketType.VOICE_FRAME, clientNode, serverNode.nodeId64, payload)
+
+        val result = pipeline.ingest(raw, pendingContext)
+        assertThat(result).isInstanceOf(IngestResult.Dropped::class.java)
+        val dropped = result as IngestResult.Dropped
+        assertThat(dropped.stage).isEqualTo(PipelineStage.S0_ADMISSION)
+    }
+
+    @Test
+    fun testVoiceFrameUnboundAuthLinkDroppedAtS7Semantics() {
+        registerPeerInStore(clientNode)
+        val unboundContext = LinkContext(
+            linkHandle = "test-link-unbound",
+            transport = TransportType.BLE,
+            boundIdentity = null,
+            state = LinkState.AUTHENTICATED
+        )
+        val payload = ByteBuffer.allocate(8 + 20).apply {
+            putLong(1L) // seqPlain
+            put(ByteArray(20) { 0x44.toByte() })
+        }.array()
+        val raw = buildPacket(PacketType.VOICE_FRAME, clientNode, serverNode.nodeId64, payload)
+
+        val result = pipeline.ingest(raw, unboundContext)
+        assertThat(result).isInstanceOf(IngestResult.Dropped::class.java)
+        val dropped = result as IngestResult.Dropped
+        assertThat(dropped.stage).isEqualTo(PipelineStage.S7_SEMANTICS)
+    }
+
+    @Test
+    fun testVoiceFrameBoundIdentityMismatchDroppedAtS7Semantics() {
+        registerPeerInStore(clientNode)
+        val attackerIdentityHash = ByteArray(32) { 0xAA.toByte() }
+        val forgedContext = LinkContext(
+            linkHandle = "test-link-bound-diff",
+            transport = TransportType.BLE,
+            boundIdentity = attackerIdentityHash,
+            state = LinkState.AUTHENTICATED
+        )
+        val payload = ByteBuffer.allocate(8 + 20).apply {
+            putLong(1L) // seqPlain
+            put(ByteArray(20) { 0x44.toByte() })
+        }.array()
+        val raw = buildPacket(PacketType.VOICE_FRAME, clientNode, serverNode.nodeId64, payload)
+
+        val result = pipeline.ingest(raw, forgedContext)
+        assertThat(result).isInstanceOf(IngestResult.Dropped::class.java)
+        val dropped = result as IngestResult.Dropped
+        assertThat(dropped.stage).isEqualTo(PipelineStage.S7_SEMANTICS)
+    }
+
+    @Test
+    fun testVoiceFrameAcceptedOnBoundLinkSkipsCommitSeen() {
+        registerPeerInStore(clientNode)
+        val authContext = createAuthLinkContext(clientNode.identityHash)
+        val msgId = UUID.randomUUID()
+        val payload = ByteBuffer.allocate(8 + 20).apply {
+            putLong(1L)
+            put(ByteArray(20) { 0x44.toByte() })
+        }.array()
+        val packet = MeshPacket(
+            type = PacketType.VOICE_FRAME,
+            messageId = msgId,
+            senderId = clientNode.nodeId64,
+            recipientId = serverNode.nodeId64,
+            ttl = 1,
+            timestamp = clock.nowSeconds(),
+            payload = payload,
+            authTag = ByteArray(16) { 0x11.toByte() }
+        )
+        val raw = MeshPacket.serialize(packet)
+
+        val result = pipeline.ingest(raw, authContext)
+        assertThat(result).isInstanceOf(IngestResult.Accepted::class.java)
+        // Assert voice frames NEVER touch persistent packetStore (zero DB commit, Invariant I-10)
+        assertThat(packetStore.isSeen(msgId, PacketType.VOICE_FRAME.code)).isFalse()
+    }
 }

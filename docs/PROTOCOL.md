@@ -276,6 +276,14 @@ TOTAL                                   115 bytes
 
 Signature generation: $\text{hopSig} = \text{Ed25519Sign}(IK_{\text{sk}}, \text{SIG\_TRANSCRIPT})$.
 
+### 6.3. Key Provisioning Hierarchy & Security Boundaries
+- **Pairwise Direct Sessions ($K_{\text{session}}$)**: Derived using static X25519 Diffie-Hellman ($IK_{\text{priv}} \times IK_{\text{pub}}$) combined with a 1-hour epoch window:
+  $$K_{\text{session}} = \text{HKDF-SHA256}(\text{ikm} = \text{DH}(IK_{\text{priv}}, IK_{\text{pub}}), \text{salt} = \text{epochBytes}, \text{info} = \text{"MeshWhisper-Session-v1"}, 32)$$
+  *Forward Secrecy Boundary*: To guarantee reliable delay-tolerant store-and-forward transmission across long-duration offline mesh partitions, interactive double-ratchet state syncing is omitted. If a node's static private key is compromised, historical captured ciphertexts for that identity can be decrypted.
+- **Emergency Distress Channel ($K_{\text{emergency}}$)**: Derived from the public domain constant `"meshwhisper:public:emergency:v1"`. Used to encrypt `SOS_MESSAGE` coordinates and distress notes. Encrypted over the air against cleartext packet sniffers, but openly decryptable by design so any search-and-rescue node can locate victims without prior pairing.
+- **Public Broadcast Channel ($K_{\text{public}}$)**: Derived from `"meshwhisper:public:channel:v1"`. Used for unencrypted-to-mesh announcements and public community channels.
+- **Real-Time Voice Calls ($K_{\text{call}}$)**: Derived from $K_{\text{session}}$ pinned to the `OFFER` timestamp epoch ($C\text{-}13$), ensuring uninterrupted audio encryption across 1-hour boundaries for direct 1-hop calls.
+
 ---
 
 ## 7. Trust State Machine & Transition Rules

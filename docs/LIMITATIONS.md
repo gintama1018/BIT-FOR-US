@@ -43,6 +43,19 @@ Every claim and capability in this repository is categorized into one of four ex
 - **Description**: The 40-byte packet header (`senderId`, `recipientId`, `messageId`, `timestamp`, `ttl`) is transmitted in plaintext over radio hops so intermediate relay nodes can make routing and deduplication decisions without holding payload encryption keys.
 - **Residual Risk**: An adversary monitoring RF airwaves can observe network topology, active node IDs, communication frequencies, and hop counts. Onion routing and cover-traffic padding are not implemented.
 
+### 2.4. Public Channels & Emergency Distress Beacon Decryptability ($C\text{-}18$)
+- **Classification**: `KNOWN LIMITATION / BY DESIGN`
+- **Description**: Emergency SOS distress packets (`SOS_MESSAGE`), public announcements (`PEER_ANNOUNCE`), and public broadcast channels use keys derived from public domain strings (`derivePublicEmergencyChannelKey` and `derivePublicChannelKey`).
+- **Residual Risk**: Anyone inspecting the open-source repository or operating a standard node can decrypt public SOS GPS coordinates, distress text, and public profiles over the air.
+- **Engineering Rationale**: In a civilian disaster scenario, emergency distress beacons MUST be decipherable by any first responder, medical worker, or civilian rescue node without prior contact pairing or out-of-band key exchanges. Eavesdroppers without the app receive non-plaintext AEAD ciphertext, but the key is public by design.
+- **Private Alternative**: Private location sharing and contact breadcrumbs use pairwise AEAD direct messaging (`DIRECT_MESSAGE`), encrypted exclusively under pairwise session keys.
+
+### 2.5. Absence of Ephemeral Forward Secrecy (PFS) in Store-and-Forward
+- **Classification**: `KNOWN LIMITATION`
+- **Description**: Pairwise session keys are derived via static X25519 Diffie-Hellman ($IK_{\text{priv}} \times IK_{\text{pub}}$) combined with 1-hour epoch windows via HKDF-SHA256 (`CryptoEngine.derivePeerSessionKey`).
+- **Residual Risk**: If an attacker intercepts and archives encrypted radio packets, and subsequently compromises a node's static private encryption key ($IK_{\text{priv}}$ / $EK_{\text{priv}}$), historical traffic can be decrypted.
+- **Delay-Tolerant Trade-off**: Interactive ratcheting protocols (e.g., Signal Double Ratchet) require synchronous round-trip message acknowledgment. In an offline delay-tolerant mesh where nodes may be physically partitioned for hours or days, interactive ratchets deadlock or desynchronize. Ephemeral DH ratcheting is on the roadmap for synchronous 1-hop sessions.
+
 ---
 
 ## 3. Real-Time Voice Calling Limitations
@@ -86,6 +99,11 @@ Every claim and capability in this repository is categorized into one of four ex
 - **Description**: Cold GPS satellite acquisition draws 50–100mA of RF receiver current and requires 15–45 seconds for satellite ephemeris synchronization. At critical battery ($\le 5\%$), attempting cold satellite acquisition risks triggering premature OS battery protection shutdown before radio transmission can execute.
 - **Mitigation Enforced**: At $\le 5\%$ battery, `LocationBreadcrumbManager` **strictly reuses the cached last GPS satellite fix (0ms delay)** rather than polling hardware GPS, ensuring the dying gasp beacon transmits immediately over available radio links before power cut.
 
+### 4.5. Biometric Authentication as Application UI Gate vs. Keystore Binding
+- **Classification**: `KNOWN LIMITATION / ARCHITECTURAL RATIONALE`
+- **Description**: Biometric authentication (`BiometricAuthManager`) functions as an interactive application UI gate via `BiometricPrompt`. Master encryption keys and SQLCipher database passphrases do **not** enforce `setUserAuthenticationRequired(true)` in Android Keystore.
+- **Engineering Rationale**: MeshWhisper functions as an autonomous background mesh relay node (`MeshForegroundService`). If encryption keys were locked behind an interactive biometric prompt, the device could not relay packets, decrypt incoming store-and-forward messages, or perform link authentication while locked in a user's pocket with the screen off.
+
 ---
 
 ## 5. Network Scale & Verification Status
@@ -106,4 +124,5 @@ To prevent database bloating and memory exhaustion on embedded hardware, strict 
 - **Per-Peer Breadcrumb History**: Maximum **50 locations** per peer in `breadcrumb_history`, automatically pruned on update.
 - **Message Expiration**: Queued store-and-forward messages expire automatically after **24 hours**.
 - **Inbound Media Transfers**: Maximum **16 concurrent inbound transfers**, automatically cleaned up after 60 seconds of inactivity.
-- **Dedup RAM Cache**: Bounded at **4,000 entries** with LRU eviction, backed by persistent SQLite storage.
+- **Dedup RAM Cache & Database Cap**: Bounded at **50,000 entries** (`MAX_PROCESSED_PACKETS_ROWS`) with LRU eviction in RAM and persistent Room/SQLite pruning. S3 pre-authentication deduplication runs exclusively against the bounded in-memory LRU set to prevent disk I/O Denial-of-Service attacks.
+- **Identity Store Cap & Prioritization**: Bounded at **1,024 entries** (`MAX_IDENTITIES_PEERS`) across both RAM and SQLite/Room. On startup and during runtime announce ingestion, identities are prioritized by trust state (`VERIFIED` > `CONFLICTED` > `BLOCKED` > recency `lastSeenAt DESC`), pruning excess unverified `SEEN` identities to prevent Sybil exhaustion attacks.

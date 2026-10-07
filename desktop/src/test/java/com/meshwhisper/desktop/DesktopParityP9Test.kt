@@ -1147,4 +1147,98 @@ class DesktopParityP9Test {
             desktopRouter.stop()
         }
     }
+
+    @Test
+    fun testDesktopPacketStoreInMemoryPreAuthDedupAndCommit() {
+        val store = DesktopPacketStore(database)
+        val msgId = UUID.randomUUID()
+        val typeCode = 0x04.toByte() // DIRECT_MESSAGE
+
+        // Initially not seen
+        assertThat(store.isSeen(msgId, typeCode)).isFalse()
+
+        // Commit seen
+        val committed = store.commitSeen(msgId, typeCode, 1000L)
+        assertThat(committed).isTrue()
+
+        // isSeen now returns true from in-memory cache
+        assertThat(store.isSeen(msgId, typeCode)).isTrue()
+
+        // Duplicate commit fails
+        val reCommitted = store.commitSeen(msgId, typeCode, 1000L)
+        assertThat(reCommitted).isFalse()
+
+        // Restart simulation: new DesktopPacketStore preloads from database
+        val reloadedStore = DesktopPacketStore(database)
+        assertThat(reloadedStore.isSeen(msgId, typeCode)).isTrue()
+    }
+
+    @Test
+    fun testDesktopDatabasePrioritizedIdentitiesAndPruning() {
+        // Insert a VERIFIED identity
+        database.upsertIdentity(
+            com.meshwhisper.desktop.db.DesktopIdentity(
+                identityHashHex = "1111111111111111111111111111111111111111111111111111111111111111",
+                ikPubHex = "11".repeat(32),
+                ekPubHex = "11".repeat(32),
+                keyVersion = 1L,
+                lastAnnounceCounter = 1L,
+                trustState = "VERIFIED",
+                nodeId64 = 0x1111L,
+                alias = "VerifiedPeer",
+                createdAt = 1000L,
+                lastSeenAt = 1000L
+            )
+        )
+
+        // Insert a CONFLICTED identity
+        database.upsertIdentity(
+            com.meshwhisper.desktop.db.DesktopIdentity(
+                identityHashHex = "2222222222222222222222222222222222222222222222222222222222222222",
+                ikPubHex = "22".repeat(32),
+                ekPubHex = "22".repeat(32),
+                keyVersion = 1L,
+                lastAnnounceCounter = 1L,
+                trustState = "CONFLICTED",
+                nodeId64 = 0x2222L,
+                alias = "ConflictedPeer",
+                createdAt = 2000L,
+                lastSeenAt = 2000L
+            )
+        )
+
+        // Insert multiple unverified SEEN identities
+        for (i in 1..5) {
+            val hex = String.format("%02x", i).repeat(32)
+            database.upsertIdentity(
+                com.meshwhisper.desktop.db.DesktopIdentity(
+                    identityHashHex = hex,
+                    ikPubHex = hex,
+                    ekPubHex = hex,
+                    keyVersion = 1L,
+                    lastAnnounceCounter = 1L,
+                    trustState = "SEEN",
+                    nodeId64 = 0x3000L + i,
+                    alias = "SeenPeer$i",
+                    createdAt = 3000L + i,
+                    lastSeenAt = 3000L + i
+                )
+            )
+        }
+
+        // Prioritized list puts VERIFIED (1) and CONFLICTED (2) ahead of SEEN (4)
+        val prioritized = database.getPrioritizedIdentities(10)
+        assertThat(prioritized[0].trustState).isEqualTo("VERIFIED")
+        assertThat(prioritized[1].trustState).isEqualTo("CONFLICTED")
+
+        // Pruning excess unverified to max 2 keeps top 2 SEEN by recency and leaves VERIFIED/CONFLICTED untouched
+        val prunedCount = database.pruneExcessUnverifiedIdentities(2)
+        assertThat(prunedCount).isEqualTo(3) // 5 SEEN - 2 = 3 pruned
+
+        val remaining = database.getAllIdentities()
+        val remainingStates = remaining.map { it.trustState }
+        assertThat(remainingStates).contains("VERIFIED")
+        assertThat(remainingStates).contains("CONFLICTED")
+        assertThat(remaining.count { it.trustState == "SEEN" }).isEqualTo(2)
+    }
 }

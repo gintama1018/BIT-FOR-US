@@ -22,7 +22,7 @@ class VoiceCallManager(
     private val sendFramePacket: suspend (peerId: Long, frameBytes: ByteArray) -> Boolean,
     private val audioStreamer: AudioStreamer,
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.Main),
-    private val callKeyDeriver: (peerId: Long, timestampSec: Long, sessionId: UUID) -> ByteArray? = { _, _, _ -> ByteArray(32) { 0x42 } }
+    private val callKeyDeriver: (peerId: Long, timestampSec: Long, sessionId: UUID) -> ByteArray? = { _, _, _ -> null }
 ) {
     private val _callState = MutableStateFlow(CallState.IDLE)
     val callState: StateFlow<CallState> = _callState.asStateFlow()

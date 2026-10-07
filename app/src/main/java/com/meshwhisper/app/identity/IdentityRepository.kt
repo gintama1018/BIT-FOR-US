@@ -59,8 +59,8 @@ class IdentityRepository(
             )
         )
 
-        // 2. Reconstruct in-memory identityStore from persistent Room identities
-        val identities = database.identityDao().getAll()
+        // 2. Reconstruct in-memory identityStore from persistent Room identities, prioritized by trust state and recency
+        val identities = database.identityDao().getPrioritizedIdentities(com.meshwhisper.core.protocol.ResourceLimits.MAX_IDENTITIES_PEERS)
         for (entity in identities) {
             try {
                 val idHash = PureCryptoEngine.hexToBytes(entity.identityHashHex)
@@ -208,6 +208,9 @@ class IdentityRepository(
                 lastSeenAt = System.currentTimeMillis()
             )
             database.identityDao().insertOrUpdate(identityEntity)
+            if (isNew && database.identityDao().getIdentityCount() > com.meshwhisper.core.protocol.ResourceLimits.MAX_IDENTITIES_PEERS) {
+                database.identityDao().pruneExcessUnverified(com.meshwhisper.core.protocol.ResourceLimits.MAX_IDENTITIES_PEERS)
+            }
 
             val existingPeer = database.peerDao().getPeerById(senderNodeId64)
             val peerEntity = PeerEntity(

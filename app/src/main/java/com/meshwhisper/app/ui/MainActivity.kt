@@ -193,21 +193,33 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
         }
     }
 
+    private fun updateLockscreenFlags(showWhenLocked: Boolean) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(showWhenLocked)
+            setTurnScreenOn(showWhenLocked)
+        } else {
+            @Suppress("DEPRECATION")
+            if (showWhenLocked) {
+                window.addFlags(
+                    android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                    android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                    android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                )
+            } else {
+                window.clearFlags(
+                    android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                    android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                    android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                )
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Wake screen and display incoming call even if device is locked
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-            setShowWhenLocked(true)
-            setTurnScreenOn(true)
-        } else {
-            @Suppress("DEPRECATION")
-            window.addFlags(
-                android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-                android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
-                android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
-            )
-        }
+        // Screen wake / show-when-locked is dynamically scoped to active incoming calls
+        updateLockscreenFlags(false)
 
         handleDeepLink(intent)
         isPermissionsGrantedState.value = checkHasPermissions()
@@ -242,7 +254,20 @@ class MainActivity : ComponentActivity(), ActivityCompat.OnRequestPermissionsRes
                     }
                 }
 
+                LaunchedEffect(callState) {
+                    val isIncomingCall = (callState == com.meshwhisper.app.voice.CallState.INCOMING_RINGING)
+                    updateLockscreenFlags(isIncomingCall)
+                }
+
                 LaunchedEffect(isAppLockEnabled) {
+                    if (isAppLockEnabled) {
+                        window.setFlags(
+                            android.view.WindowManager.LayoutParams.FLAG_SECURE,
+                            android.view.WindowManager.LayoutParams.FLAG_SECURE
+                        )
+                    } else {
+                        window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+                    }
                     if (isAppLockEnabled && !isUnlocked) {
                         biometricLauncher.launch(Intent(this@MainActivity, BiometricUnlockActivity::class.java))
                     }

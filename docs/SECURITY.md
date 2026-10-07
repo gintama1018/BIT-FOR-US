@@ -176,10 +176,16 @@ MeshWhisper strictly isolates trust state authority to the `:core` state machine
 
 MeshWhisper's breadcrumb and rescue beacon subsystems are engineered with zero-trust location privacy:
 
-### 7.1. Zero Cleartext Geolocation Over-The-Air ($C\text{-}18$)
-- Coordinates, altitude, speed, bearing, and emergency distress notes are **never** broadcast in plaintext over RF airwaves.
-- Breadcrumbs are transmitted exclusively as pairwise E2EE sub-payloads inside `DIRECT_MESSAGE` (AES-256-GCM under HKDF peer session keys and signed with Ed25519).
-- Relays forward frames without cryptographic capability to read or modify location coordinates.
+### 7.1. Geolocation OTA Cryptography & Public Beacon Distinction ($C\text{-}18$)
+- **Private Contact Breadcrumbs**: Coordinates, altitude, speed, battery, and tracking history are **strictly pairwise end-to-end encrypted** as binary sub-payloads inside `DIRECT_MESSAGE` (AES-256-GCM under HKDF peer session keys and Ed25519 signed). Intermediary relay nodes and RF eavesdroppers have zero cryptographic capability to decrypt private locations.
+- **Emergency SOS & Public Announcements**: Emergency distress coordinates in `SOS_MESSAGE` and direct 1-hop announcement locations in `PEER_ANNOUNCE` are encrypted over the air using `derivePublicEmergencyChannelKey` / `derivePublicChannelKey`. Because these keys are derived from fixed domain constants, they are universally decryptable by any node in the open network. This is intentional by design for disaster rescue interoperability (first responders must be able to decode distress signals without prior contact pairing), but does not provide confidential secrecy against eavesdroppers who possess the open protocol key.
+
+### 7.1.1. Cryptographic Forward Secrecy Boundary (PFS)
+- Pairwise session keys are derived via static X25519 Diffie-Hellman ($IK_{\text{sk}} \times IK_{\text{pk}}$) and a 1-hour epoch window using HKDF-SHA256 (`CryptoEngine.derivePeerSessionKey`).
+- Asynchronous store-and-forward mesh operations trade off Ephemeral Perfect Forward Secrecy (PFS) to avoid double-ratchet synchronization stalls in partitioned, high-latency, multi-hop networks. Compromise of a node's long-term identity secret exposes captured historical traffic for that identity.
+
+### 7.1.2. Biometric Authentication as Application Gate
+- `BiometricPrompt` gates interactive UI access on Android devices. Master encryption keys and SQLCipher passphrases do not require interactive user authentication on each cryptographic operation (`setUserAuthenticationRequired(false)`), allowing `MeshForegroundService` to continuously route multi-hop packets, accept store-and-forward custody, and establish physical links in the background while the phone is locked.
 
 ### 7.2. Anti-Stalking Per-Contact Opt-In & Revocation ($C\text{-}19$)
 - Verified trust state (`trustState == 'VERIFIED'`) is a mandatory prerequisite, but **never grants automatic location access**.

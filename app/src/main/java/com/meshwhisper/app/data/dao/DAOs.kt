@@ -234,6 +234,15 @@ interface ProcessedPacketDao {
     @Query("DELETE FROM processed_packets WHERE timestamp < :cutoffTime")
     suspend fun purgeOld(cutoffTime: Long): Int
 
+    @Query("SELECT messageId FROM processed_packets ORDER BY timestamp DESC LIMIT :limit")
+    suspend fun getRecentMessageIds(limit: Int): List<String>
+
+    @Query("DELETE FROM processed_packets WHERE messageId NOT IN (SELECT messageId FROM processed_packets ORDER BY timestamp DESC LIMIT :maxRows)")
+    suspend fun pruneExcessRows(maxRows: Int): Int
+
+    @Query("SELECT COUNT(*) FROM processed_packets")
+    suspend fun count(): Int
+
     @Query("DELETE FROM processed_packets")
     suspend fun deleteAll()
 }
@@ -357,6 +366,35 @@ interface IdentityDao {
 
     @Query("SELECT * FROM identities")
     suspend fun getAll(): List<com.meshwhisper.app.data.model.IdentityEntity>
+
+    @Query("""
+        SELECT * FROM identities 
+        ORDER BY 
+            CASE 
+                WHEN trustState = 'VERIFIED' THEN 1 
+                WHEN trustState = 'CONFLICTED' THEN 2 
+                WHEN trustState = 'BLOCKED' THEN 3 
+                ELSE 4 
+            END ASC,
+            lastSeenAt DESC
+        LIMIT :limit
+    """)
+    suspend fun getPrioritizedIdentities(limit: Int = 1024): List<com.meshwhisper.app.data.model.IdentityEntity>
+
+    @Query("""
+        DELETE FROM identities 
+        WHERE trustState NOT IN ('VERIFIED', 'CONFLICTED', 'BLOCKED')
+          AND identityHashHex NOT IN (
+              SELECT identityHashHex FROM identities 
+              WHERE trustState NOT IN ('VERIFIED', 'CONFLICTED', 'BLOCKED') 
+              ORDER BY lastSeenAt DESC 
+              LIMIT :maxUnverified
+          )
+    """)
+    suspend fun pruneExcessUnverified(maxUnverified: Int = 1024): Int
+
+    @Query("SELECT COUNT(*) FROM identities")
+    suspend fun getIdentityCount(): Int
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertOrUpdate(identity: com.meshwhisper.app.data.model.IdentityEntity)

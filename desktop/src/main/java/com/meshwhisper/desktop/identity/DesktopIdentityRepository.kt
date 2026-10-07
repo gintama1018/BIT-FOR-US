@@ -80,7 +80,7 @@ class DesktopIdentityRepository(
         }
 
         // 2. Load existing persistent identities from DesktopDatabase into runtime IdentityStore
-        val existingIdentities = database.getAllIdentities()
+        val existingIdentities = database.getPrioritizedIdentities(com.meshwhisper.core.protocol.ResourceLimits.MAX_IDENTITIES_PEERS)
         for (ident in existingIdentities) {
             try {
                 val idHash = DesktopCryptoEngine.hexToBytes(ident.identityHashHex)
@@ -229,6 +229,9 @@ class DesktopIdentityRepository(
             lastSeenAt = nowMs
         )
         database.upsertIdentity(updatedIdentity)
+        if (database.getIdentityCount() > com.meshwhisper.core.protocol.ResourceLimits.MAX_IDENTITIES_PEERS) {
+            database.pruneExcessUnverifiedIdentities(com.meshwhisper.core.protocol.ResourceLimits.MAX_IDENTITIES_PEERS)
+        }
 
         val updatedPeer = DesktopPeer(
             nodeId = senderNodeId64,

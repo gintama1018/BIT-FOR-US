@@ -192,7 +192,7 @@ class MeshRouter(
                 } ?: kotlinx.coroutines.runBlocking {
                     try {
                         database.identityDao().getAllByNodeId64(peerId).firstOrNull()?.let {
-                            val pk = com.meshwhisper.core.crypto.PureCryptoEngine.hexToBytes(it.ekPubHex)
+                            val pk = CryptoEngine.hexToBytes(it.ekPubHex)
                             peerPublicKeyCache[peerId] = pk
                             pk
                         }
@@ -555,7 +555,8 @@ class MeshRouter(
             return
         }
 
-        val transport = if (handle.contains(".") || handle.contains(":")) TransportType.WIFI_TCP else TransportType.BLE
+        val isBleMac = handle.matches(Regex("^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$"))
+        val transport = if (isBleMac) TransportType.BLE else if (handle.contains(".")) TransportType.WIFI_TCP else TransportType.BLE
         val linkContext = LinkContext(
             linkHandle = handle,
             transport = transport,
@@ -1196,6 +1197,7 @@ class MeshRouter(
         try {
             val nowSec = System.currentTimeMillis() / 1000L
             database.processedPacketDao().purgeOld(nowSec - 86400L)
+            database.processedPacketDao().pruneExcessRows(com.meshwhisper.core.protocol.ResourceLimits.MAX_PROCESSED_PACKETS_ROWS)
             database.storeForwardDao().purgeExpired(System.currentTimeMillis())
             database.storeForwardDao().trimTotalQueue(MAX_TOTAL_STORE_FORWARD)
             database.topologyEdgeDao().pruneStaleEdges(System.currentTimeMillis() - 120_000L)

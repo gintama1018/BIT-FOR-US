@@ -61,19 +61,26 @@ interface KeyProvider {
 class VerificationRateLimiter(private val clock: Clock) {
     private val globalTokens = AtomicInteger(ResourceLimits.ED25519_VERIFY_BUDGET_PER_SEC_GLOBAL)
     private var lastGlobalResetSec = clock.nowSeconds()
+    private var lastCleanupSec = clock.nowSeconds()
 
     private val linkTokens = ConcurrentHashMap<String, Pair<AtomicInteger, Long>>()
 
     @Synchronized
-    fun tryAcquire(linkHandle: String): Boolean {
+    fun tryAcquire(linkHandle: String, count: Int = 1): Boolean {
         val now = clock.nowSeconds()
+
+        // Periodic eviction of stale linkTokens to prevent memory leak
+        if (now - lastCleanupSec > 60L) {
+            linkTokens.entries.removeIf { now - it.value.second > 60L }
+            lastCleanupSec = now
+        }
 
         // Global refresh
         if (now > lastGlobalResetSec) {
             globalTokens.set(ResourceLimits.ED25519_VERIFY_BUDGET_PER_SEC_GLOBAL)
             lastGlobalResetSec = now
         }
-        if (globalTokens.get() <= 0) return false
+        if (globalTokens.get() < count) return false
 
         // Per-link refresh
         val linkPair = linkTokens.compute(linkHandle) { _, existing ->
@@ -84,10 +91,10 @@ class VerificationRateLimiter(private val clock: Clock) {
             }
         }!!
 
-        if (linkPair.first.get() <= 0) return false
+        if (linkPair.first.get() < count) return false
 
-        linkPair.first.decrementAndGet()
-        globalTokens.decrementAndGet()
+        linkPair.first.addAndGet(-count)
+        globalTokens.addAndGet(-count)
         return true
     }
 }
@@ -295,7 +302,8 @@ class PacketPipeline(
         // =========================================================================
         // S6 — EXPENSIVE CRYPTO (Ed25519)
         // =========================================================================
-        if (!rateLimiter.tryAcquire(linkContext.linkHandle)) {
+        val requiredTokens = if (packet.type == PacketType.PEER_ANNOUNCE) 2 else 1
+        if (!rateLimiter.tryAcquire(linkContext.linkHandle, requiredTokens)) {
             return IngestResult.Dropped(PipelineStage.S6_SIGNATURE, "Verification rate budget exhausted")
         }
 
@@ -458,8 +466,8 @@ class PacketPipeline(
         // =========================================================================
         // ATOMIC POST-AUTH COMMITMENT & OBJECT CONSTRUCTION
         // =========================================================================
-        // 1. Commit persistent dedup (FROZEN §7.1: LINK_AUTH dedup is memory-only nonces in T, no persistent processed_packets row)
-        if (packet.type != PacketType.LINK_AUTH) {
+        // 1. Commit persistent dedup (FROZEN §7.1: LINK_AUTH and VOICE_FRAME skip persistent processed_packets row)
+        if (packet.type != PacketType.LINK_AUTH && packet.type != PacketType.VOICE_FRAME) {
             val newlyCommitted = packetStore.commitSeen(packet.messageId, packet.type.code, packet.timestamp)
             if (!newlyCommitted) {
                 return IngestResult.Dropped(
@@ -598,7 +606,11 @@ class PacketPipeline(
             }
             PacketType.VOICE_FRAME -> {
                 if (packet.ttl != 1) return false
-                payload.size in 16..176
+                if (payload.size !in 16..176) return false
+                // Invariant I-10: VOICE_FRAME requires direct authenticated link matching sender identity
+                if (linkContext.state != LinkState.AUTHENTICATED) return false
+                if (linkContext.boundIdentity == null || !linkContext.boundIdentity.contentEquals(sender?.identityHash)) return false
+                true
             }
             PacketType.PROFILE_UPDATE -> {
                 if (payload.size < 55 || payload.size > 207) return false
@@ -659,10 +671,7 @@ class PacketPipeline(
                 } else null
             }
 
-            PacketType.VOICE_FRAME -> {
-                val dummyUuid = UUID(0L, 0L)
-                keyProvider.getCallKey(dummyUuid) ?: (if (sender != null) keyProvider.getSessionKey(sender.nodeId64, packet.timestamp) else null)
-            }
+            PacketType.VOICE_FRAME -> null
 
             PacketType.LINK_AUTH -> null
             PacketType.KEY_EXCHANGE -> null

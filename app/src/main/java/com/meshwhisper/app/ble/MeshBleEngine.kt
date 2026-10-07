@@ -72,6 +72,10 @@ class MeshBleEngine(private val context: Context) {
     // Rate limiting for inbound GATT writes (200 writes/sec headroom for 50Hz real-time voice + bursts)
     private val rateLimiter = GattWriteRateLimiter(maxWritesPerSecond = 200)
 
+    // Reconnection cooldown & tie-breaker tracking to eliminate connect-disconnect ping-pong loops
+    private val connectionAttemptCooldown = ConcurrentHashMap<String, Long>()
+    private val deferredConnectionTime = ConcurrentHashMap<String, Long>()
+
     private fun isWriteRateAllowed(address: String): Boolean {
         return rateLimiter.isWriteRateAllowed(address)
     }
@@ -344,9 +348,21 @@ class MeshBleEngine(private val context: Context) {
         stopRssiPoller()
         stopAdvertising()
         stopScanning()
+        // Cleanly notify router of all link drops so stale authenticated links are unbound
+        val allAddresses = (activeGattClients.keys + connectedCentrals.keys).toList()
+        for (addr in allAddresses) {
+            try {
+                onPeerDisconnectedListener?.invoke(addr)
+            } catch (_: Exception) {}
+        }
+
         closeAllGattClients()
         stopGattServer()
+        authenticatedLinks.clear()
+        connectionAttemptCooldown.clear()
+        deferredConnectionTime.clear()
         _connectedPeersCount.value = 0
+        updateConnectedNodeIds()
     }
 
     private var watchdogJob: Job? = null
@@ -662,15 +678,21 @@ class MeshBleEngine(private val context: Context) {
                 }
                 Log.d(tag, "Central connected to our GATT server: $address")
                 connectedCentrals[address] = device
+                connectionAttemptCooldown[address] = System.currentTimeMillis()
                 updatePeerCount()
 
-                // Trigger announcement from Peripheral to Central once incoming link is established
+                // Fallback: Central is the primary LINK_AUTH initiator. Peripheral only triggers
+                // ready after 4500ms if Central never initiated and link remains unauthenticated.
                 scope.launch {
-                    delay(800L)
-                    onPeerReadyListener?.invoke(address)
+                    delay(4500L)
+                    if (connectedCentrals.containsKey(address) && authenticatedLinks[address] == null) {
+                        Log.d(tag, "Fallback: Central did not initiate LINK_AUTH within 4.5s; Peripheral triggering ready for $address")
+                        onPeerReadyListener?.invoke(address)
+                    }
                 }
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 Log.d(tag, "Central disconnected from GATT server: $address")
+                connectionAttemptCooldown[address] = System.currentTimeMillis()
                 connectedCentrals.remove(address)
                 centralMtus.remove(address)
                 rateLimiter.remove(address)
@@ -825,15 +847,43 @@ class MeshBleEngine(private val context: Context) {
                 // Pre-auth advertisement scan match must NOT establish direct node trust/identity binding before P4 LINK_AUTH.
                 onPeerDiscoveredListener?.invoke(address, rssi)
 
-                // Auto-connect: Establish outbound GATT Client connection if not already connected as client
-                if (!activeGattClients.containsKey(address)) {
-                    val currentConnections = activeGattClients.size
-                    if (currentConnections < MAX_CONCURRENT_GATT_CONNECTIONS) {
-                        connectToPeer(device, rssi)
-                    } else {
-                        Log.d(tag, "GATT client connection limit ($MAX_CONCURRENT_GATT_CONNECTIONS) reached. Peer $address will communicate via mesh flood relay.")
+                // Guard 1: Ignore device if already connected as GATT Client OR as Peripheral Server
+                if (activeGattClients.containsKey(address) || connectedCentrals.containsKey(address)) {
+                    return
+                }
+
+                // Guard 2: Enforce minimum reconnect interval (4s) to avoid Bluedroid status 133 hammering & L2CAP collisions
+                val now = System.currentTimeMillis()
+                val lastAttempt = connectionAttemptCooldown[address] ?: 0L
+                if (now - lastAttempt < MIN_RECONNECT_INTERVAL_MS) {
+                    return
+                }
+
+                // Guard 3: Connection limit cap
+                if (activeGattClients.size >= MAX_CONCURRENT_GATT_CONNECTIONS) {
+                    Log.d(tag, "GATT client connection limit ($MAX_CONCURRENT_GATT_CONNECTIONS) reached. Peer $address will communicate via mesh flood relay.")
+                    return
+                }
+
+                // Guard 4: Deterministic connection initiator tie-breaker
+                // If peer's nodeId is advertised in serviceData, lower nodeId initiates connection as Central.
+                // Higher nodeId waits up to 3.5s for incoming connection before attempting outbound connect.
+                val meshServiceData = serviceData?.get(ParcelUuid(BleConstants.MESH_SERVICE_UUID))
+                val peerNodeId = if (meshServiceData != null && meshServiceData.size >= 8) {
+                    java.nio.ByteBuffer.wrap(meshServiceData).long
+                } else null
+
+                if (peerNodeId != null && myNodeId != 0L) {
+                    if (myNodeId > peerNodeId) {
+                        val deferredUntil = deferredConnectionTime.computeIfAbsent(address) { now + 3500L }
+                        if (now < deferredUntil) {
+                            return
+                        }
                     }
                 }
+                deferredConnectionTime.remove(address)
+
+                connectToPeer(device, rssi)
             }
         }
 
@@ -862,6 +912,7 @@ class MeshBleEngine(private val context: Context) {
     @SuppressLint("MissingPermission")
     private fun connectToPeer(device: BluetoothDevice, rssi: Int) {
         val address = device.address
+        connectionAttemptCooldown[address] = System.currentTimeMillis()
         Log.d(tag, "Initiating GATT connection to peer: $address (RSSI: $rssi)")
 
         val gatt = try {
@@ -907,6 +958,7 @@ class MeshBleEngine(private val context: Context) {
             delay(12000L)
             if (activeGattClients[address] === conn && !conn.isReady) {
                 Log.w(tag, "GATT connection timeout to $address; aborting and releasing client")
+                connectionAttemptCooldown[address] = System.currentTimeMillis()
                 try {
                     conn.gatt.close()
                 } catch (_: Exception) {}
@@ -926,6 +978,7 @@ class MeshBleEngine(private val context: Context) {
             // Handle connection failure / error status (such as status 133, status 8, timeout)
             if (status != BluetoothGatt.GATT_SUCCESS || newState == BluetoothProfile.STATE_DISCONNECTED) {
                 Log.d(tag, "GATT client connection dropped or failed for $deviceAddress (status=$status, newState=$newState)")
+                connectionAttemptCooldown[deviceAddress] = System.currentTimeMillis()
                 try {
                     gatt.close()
                 } catch (_: Exception) {}
@@ -1446,5 +1499,6 @@ class MeshBleEngine(private val context: Context) {
 
     companion object {
         const val MAX_CONCURRENT_GATT_CONNECTIONS = 5
+        const val MIN_RECONNECT_INTERVAL_MS = 4000L
     }
 }

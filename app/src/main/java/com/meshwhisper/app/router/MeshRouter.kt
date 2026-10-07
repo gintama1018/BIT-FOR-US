@@ -471,6 +471,11 @@ class MeshRouter(
 
     private fun handleBleLinkAuthPacket(rawBytes: ByteArray, ingressAddress: String) {
         scope.launch {
+            if (authenticatedLinks.containsKey(ingressAddress)) {
+                // Link is already authenticated; safely ignore trailing or duplicate LINK_AUTH frames
+                return@launch
+            }
+
             val session = bleLinkAuthSessions.computeIfAbsent(ingressAddress) {
                 LinkAuthSession(
                     linkHandle = ingressAddress,
@@ -490,8 +495,10 @@ class MeshRouter(
                     }
                     if (stepResult is LinkAuthStepResult.Failed) {
                         logPacket("AUTH_FAIL", packet, rawBytes.size, "BLE HELLO failed from $ingressAddress: ${stepResult.reason}")
-                        bleLinkAuthSessions.remove(ingressAddress)
-                        bleEngine.disconnectDevice(ingressAddress)
+                        if (!stepResult.reason.contains("Duplicate") && !stepResult.reason.contains("already")) {
+                            bleLinkAuthSessions.remove(ingressAddress)
+                            bleEngine.disconnectDevice(ingressAddress)
+                        }
                         return@launch
                     }
                     synchronized(session) {
@@ -526,16 +533,20 @@ class MeshRouter(
                         }
                         is LinkAuthStepResult.Failed -> {
                             logPacket("AUTH_FAIL", packet, rawBytes.size, "BLE link $ingressAddress auth failed: ${result.reason}")
-                            bleLinkAuthSessions.remove(ingressAddress)
-                            bleEngine.disconnectDevice(ingressAddress)
+                            if (!result.reason.contains("already") && !result.reason.contains("out of order") && !authenticatedLinks.containsKey(ingressAddress)) {
+                                bleLinkAuthSessions.remove(ingressAddress)
+                                bleEngine.disconnectDevice(ingressAddress)
+                            }
                         }
                         is LinkAuthStepResult.InProgress -> {}
                     }
                 }
             } catch (e: Exception) {
                 Log.w(tag, "Error processing LINK_AUTH packet from $ingressAddress: ${e.message}")
-                bleLinkAuthSessions.remove(ingressAddress)
-                bleEngine.disconnectDevice(ingressAddress)
+                if (!authenticatedLinks.containsKey(ingressAddress)) {
+                    bleLinkAuthSessions.remove(ingressAddress)
+                    bleEngine.disconnectDevice(ingressAddress)
+                }
             }
         }
     }

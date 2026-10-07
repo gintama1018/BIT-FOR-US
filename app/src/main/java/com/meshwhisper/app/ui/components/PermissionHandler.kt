@@ -248,7 +248,7 @@ fun PermissionHandler(
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = "MeshWhisper operates strictly peer-to-peer over Bluetooth Low Energy. Please turn on Bluetooth on this device to connect to the mesh.",
+                            text = "MeshWhisper operates strictly peer-to-peer over Bluetooth Low Energy.\n\nNote: If Flight Mode (Airplane Mode) is turned ON, Android turns off Bluetooth by default. You can simply turn Bluetooth back ON while keeping Flight Mode enabled to communicate 100% off-grid without Cellular or Wi-Fi.",
                             color = TextSecondary,
                             fontFamily = ManropeFamily,
                             fontSize = 13.sp,

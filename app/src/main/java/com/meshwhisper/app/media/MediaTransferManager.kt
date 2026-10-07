@@ -578,11 +578,22 @@ class MediaTransferManager(
 
         val initRaw = MeshPacket.serialize(initPacket)
         if (!isBroadcast && directPacketSender != null && isDirectPeer(recipientNodeId)) {
-            directPacketSender(recipientNodeId, initRaw)
+            var initSent = false
+            for (retry in 0 until 3) {
+                if (directPacketSender(recipientNodeId, initRaw)) {
+                    initSent = true
+                    break
+                }
+                delay(80L)
+            }
+            if (!initSent) {
+                Log.w(tag, "Direct send of MEDIA_INIT to $recipientNodeId failed after 3 attempts; falling back to broadcast")
+                packetBroadcaster(initRaw)
+            }
         } else {
             packetBroadcaster(initRaw)
         }
-        delay(40L)
+        delay(80L)
 
         // 3. Send MEDIA_CHUNK packets with pacing
         val peerPubKey = if (!isBroadcast) {
@@ -595,7 +606,7 @@ class MediaTransferManager(
         } else null
 
         val isDirectWifi = !isBroadcast && isWifiPeer(recipientNodeId)
-        val pacingDelay = if (isDirectWifi) 12L else 55L
+        val pacingDelay = if (isDirectWifi) 12L else 65L
 
         for (chunkIndex in 0 until totalChunks) {
             if (session.isCancelled.get()) {
@@ -714,7 +725,14 @@ class MediaTransferManager(
 
         val chunkRaw = MeshPacket.serialize(chunkPacket)
         if (!isBroadcast && directPacketSender != null && isDirectPeer(recipientNodeId)) {
-            directPacketSender(recipientNodeId, chunkRaw)
+            val sentOk = directPacketSender(recipientNodeId, chunkRaw)
+            if (!sentOk) {
+                delay(30L)
+                val retryOk = directPacketSender(recipientNodeId, chunkRaw)
+                if (!retryOk) {
+                    packetBroadcaster(chunkRaw)
+                }
+            }
         } else {
             packetBroadcaster(chunkRaw)
         }
@@ -1041,7 +1059,11 @@ class MediaTransferManager(
         isBroadcast: Boolean
     ) {
         val sessionKey = "${packet.senderId}_$mediaId"
-        val session = inboundSessions[sessionKey] ?: return
+        val session = inboundSessions[sessionKey]
+        if (session == null) {
+            Log.d(tag, "Received MEDIA_CHUNK for uninitialized inbound session $sessionKey; ignoring chunk $chunkIndex")
+            return
+        }
         session.lastActivityMs = System.currentTimeMillis()
 
         // Atomic Receiver-Side Chunk Admission (P6 Final Micro-Fix 1 & C-14)

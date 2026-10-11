@@ -48,14 +48,14 @@ object MediaCompressor {
         if (gridCols <= 1 || gridRows <= 1) return null
 
         val maxDimension = when (quality) {
-            ImageQuality.HIGH -> 1600
-            ImageQuality.STANDARD -> 800
-            ImageQuality.ORIGINAL -> 1600
+            ImageQuality.HIGH -> 1200
+            ImageQuality.STANDARD -> 480
+            ImageQuality.ORIGINAL -> 1200
         }
         val jpegQuality = when (quality) {
-            ImageQuality.HIGH -> 80
-            ImageQuality.STANDARD -> 70
-            ImageQuality.ORIGINAL -> 95
+            ImageQuality.HIGH -> 75
+            ImageQuality.STANDARD -> 65
+            ImageQuality.ORIGINAL -> 85
         }
 
         return try {
@@ -122,7 +122,7 @@ object MediaCompressor {
                     cellBitmap.compress(Bitmap.CompressFormat.JPEG, jpegQuality, tileStream)
                     val tileBytes = tileStream.toByteArray()
 
-                    // Pad each tile to next multiple of CHUNK_PAYLOAD_SIZE (400 bytes)
+                    // Pad each tile to next multiple of CHUNK_PAYLOAD_SIZE (320 bytes)
                     val chunkSize = com.meshwhisper.app.protocol.MeshPacket.CHUNK_PAYLOAD_SIZE
                     val remainder = tileBytes.size % chunkSize
                     val padLen = if (remainder != 0) chunkSize - remainder else 0
@@ -157,6 +157,19 @@ object MediaCompressor {
     }
 
     /**
+     * Trims trailing zero padding from a JPEG byte array by locating the JPEG End of Image (EOI) marker: 0xFF, 0xD9.
+     * Prevents native BitmapFactory / Skia decode failures on devices that reject trailing junk data.
+     */
+    fun trimJpegPadding(rawBytes: ByteArray): ByteArray {
+        for (i in rawBytes.size - 2 downTo 0) {
+            if (rawBytes[i] == 0xFF.toByte() && rawBytes[i + 1] == 0xD9.toByte()) {
+                return rawBytes.copyOfRange(0, i + 2)
+            }
+        }
+        return rawBytes
+    }
+
+    /**
      * Stitches independently-encoded JPEG tiles from the concatenated transmission byte stream
      * into a single, canonical, standard JPEG byte array suitable for disk persistence and BitmapFactory decoding.
      */
@@ -185,7 +198,9 @@ object MediaCompressor {
                     if (tileIdx >= paddedTileByteLengths.size) break
                     val pLen = paddedTileByteLengths[tileIdx]
                     if (offset + pLen <= concatenatedBytes.size) {
-                        val tileBmp = BitmapFactory.decodeByteArray(concatenatedBytes, offset, pLen)
+                        val tileSlice = concatenatedBytes.copyOfRange(offset, offset + pLen)
+                        val cleanTileBytes = trimJpegPadding(tileSlice)
+                        val tileBmp = BitmapFactory.decodeByteArray(cleanTileBytes, 0, cleanTileBytes.size)
                         if (tileBmp != null) {
                             val x = (c * baseTileW).toFloat()
                             canvas.drawBitmap(tileBmp, x, y, null)

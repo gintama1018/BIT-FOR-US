@@ -148,7 +148,7 @@ class MediaTransferManager(
     private val _transferProgress = MutableSharedFlow<MediaTransferProgress>(extraBufferCapacity = 64)
     val transferProgress: SharedFlow<MediaTransferProgress> = _transferProgress.asSharedFlow()
 
-    private val _tileUpdates = MutableSharedFlow<TileUpdate>(extraBufferCapacity = 64)
+    private val _tileUpdates = MutableSharedFlow<TileUpdate>(replay = 128, extraBufferCapacity = 128)
     val tileUpdates: SharedFlow<TileUpdate> = _tileUpdates.asSharedFlow()
 
     private val _transferStates = MutableStateFlow<Map<UUID, TransferStateInfo>>(emptyMap())
@@ -200,6 +200,7 @@ class MediaTransferManager(
         val chunks: ConcurrentHashMap<Int, ByteArray> get() = admission.chunks
         val throughputTracker = mutableListOf<Pair<Long, Long>>() // timestampMs -> cumulativeBytes
         val paintedTiles: MutableSet<Int> = ConcurrentHashMap.newKeySet()
+        val decodedTiles: ConcurrentHashMap<Int, android.graphics.Bitmap> = ConcurrentHashMap()
         val cumulativeBytesAccepted: Long get() = admission.cumulativeBytesAccepted
         val cumulativeBytesRelayed: Long get() = admission.cumulativeBytesRelayed
         val forwardCountPerIndex: ConcurrentHashMap<Int, Int> get() = admission.forwardCountPerIndex
@@ -207,6 +208,15 @@ class MediaTransferManager(
     }
 
     private val inboundSessions = ConcurrentHashMap<String, InboundMediaSession>()
+
+    fun getDecodedTilesForMedia(mediaId: UUID): Map<Int, android.graphics.Bitmap> {
+        for (session in inboundSessions.values) {
+            if (session.mediaId == mediaId) {
+                return session.decodedTiles.toMap()
+            }
+        }
+        return emptyMap()
+    }
 
     private val identityMediaBudgetTracker = com.meshwhisper.core.protocol.IdentityMediaBudgetTracker()
     private fun checkAndTrackMediaBudget(senderId: Long, bytesToAdd: Int, nowMs: Long = System.currentTimeMillis()): Boolean =
@@ -606,7 +616,7 @@ class MediaTransferManager(
         } else null
 
         val isDirectWifi = !isBroadcast && isWifiPeer(recipientNodeId)
-        val pacingDelay = if (isDirectWifi) 12L else 65L
+        val pacingDelay = if (isDirectWifi) 12L else 38L
 
         for (chunkIndex in 0 until totalChunks) {
             if (session.isCancelled.get()) {
@@ -632,7 +642,7 @@ class MediaTransferManager(
             val eta = calculateEta(session.throughputTracker, currentBytes, mediaBytes.size.toLong())
 
             val isLastChunk = (chunkIndex == totalChunks - 1)
-            if (mediaType != MediaType.AVATAR) {
+            if (mediaType != MediaType.AVATAR && (isLastChunk || chunkIndex % 20 == 0)) {
                 database.messageDao().updateMediaTransfer(
                     messageId = mediaId.toString(),
                     progress = progress,
@@ -1092,9 +1102,11 @@ class MediaTransferManager(
                                 }
                             }
                             val rawTileBytes = tileStream.toByteArray()
-                            val tileBmp = android.graphics.BitmapFactory.decodeByteArray(rawTileBytes, 0, rawTileBytes.size)
+                            val trimmedTileBytes = MediaCompressor.trimJpegPadding(rawTileBytes)
+                            val tileBmp = android.graphics.BitmapFactory.decodeByteArray(trimmedTileBytes, 0, trimmedTileBytes.size)
                             if (tileBmp != null) {
                                 session.paintedTiles.add(tileIdx)
+                                session.decodedTiles[tileIdx] = tileBmp
                                 _tileUpdates.emit(TileUpdate(mediaId, tileIdx, session.gridCols, session.gridRows, tileBmp))
                                 Log.d(tag, "Progressively revealed tile $tileIdx/${session.tileChunkRanges.size} for media $mediaId")
                             }
@@ -1127,9 +1139,9 @@ class MediaTransferManager(
             )
         )
 
-        // If not all chunks received yet, update progress in DB
+        // If not all chunks received yet, throttle progress updates in DB to avoid Room UI jitter
         if (receivedCount < session.totalChunks) {
-            if (session.mediaType != MediaType.AVATAR) {
+            if (session.mediaType != MediaType.AVATAR && (receivedCount % 20 == 0)) {
                 database.messageDao().updateMediaTransfer(
                     messageId = mediaId.toString(),
                     progress = progress,

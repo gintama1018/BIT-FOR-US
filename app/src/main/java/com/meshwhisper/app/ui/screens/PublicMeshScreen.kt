@@ -930,9 +930,16 @@ private fun SaharaEditorialMessageCard(
             // Body
             when (msg.mediaType) {
                 MediaType.IMAGE -> {
+                    val mediaUuid = remember(msg.messageId) {
+                        try { java.util.UUID.fromString(msg.messageId) } catch (_: Exception) { null }
+                    }
+                    val initialTiles = remember(mediaUuid) {
+                        mediaUuid?.let { viewModel.getDecodedTilesForMedia(it) } ?: emptyMap()
+                    }
                     ImageMessageBubble(
                         message = msg,
                         tileUpdates = viewModel.tileUpdates,
+                        initialTiles = initialTiles,
                         isOutgoing = msg.isOutgoing,
                         modifier = Modifier.padding(top = 4.dp)
                     )

@@ -627,6 +627,8 @@ class MeshRouter(
 
 
         scope.launch {
+            ensurePeerKnown(authPacket)
+
             // Post-auth: record topology edge
             database.topologyEdgeDao().insertOrUpdate(
                 com.meshwhisper.app.data.model.TopologyEdgeEntity(
@@ -671,6 +673,43 @@ class MeshRouter(
                     originIdentityHash = authPacket.senderIdentity.identityHash
                 )
             }
+        }
+    }
+
+    private suspend fun ensurePeerKnown(authPacket: AuthenticatedPacket) {
+        val packet = authPacket.packet
+        if (packet.senderId == 0L || packet.senderId == cryptoEngine.nodeId) return
+
+        peerPublicKeyCache[packet.senderId] = authPacket.senderIdentity.ekPub
+
+        val existing = database.peerDao().getPeerById(packet.senderId)
+        if (existing == null) {
+            val ekPubHex = CryptoEngine.bytesToHex(authPacket.senderIdentity.ekPub)
+            val senderHashHex = CryptoEngine.bytesToHex(authPacket.senderIdentity.identityHash)
+            val fallbackAlias = "Node-${String.format("%016X", packet.senderId).takeLast(4)}"
+            val peerEntity = PeerEntity(
+                nodeId = packet.senderId,
+                alias = fallbackAlias,
+                publicKeyHex = ekPubHex,
+                fingerprint = CryptoEngine.generateFingerprint(authPacket.senderIdentity.ikPub),
+                lastSeen = packet.timestamp * 1000L,
+                isDirect = (packet.ttl == MeshPacket.DEFAULT_TTL),
+                rssi = -50,
+                hopCount = maxOf(0, MeshPacket.DEFAULT_TTL - packet.ttl),
+                identityHashHex = senderHashHex,
+                trustState = authPacket.senderIdentity.trustState.name,
+                isVerified = (authPacket.senderIdentity.trustState == com.meshwhisper.core.identity.TrustState.VERIFIED),
+                hasKeyChanged = authPacket.senderIdentity.hasKeyChanged,
+                previousFingerprint = null
+            )
+            database.peerDao().insertOrUpdate(peerEntity)
+        } else {
+            database.peerDao().update(
+                existing.copy(
+                    lastSeen = packet.timestamp * 1000L,
+                    isDirect = if (packet.ttl == MeshPacket.DEFAULT_TTL) true else existing.isDirect
+                )
+            )
         }
     }
 
@@ -1525,7 +1564,31 @@ class MeshRouter(
     }
 
     suspend fun sendDirectMessage(recipientNodeId: Long, text: String): String? {
-        val peer = database.peerDao().getPeerById(recipientNodeId) ?: return null
+        var peer = database.peerDao().getPeerById(recipientNodeId)
+        if (peer == null) {
+            val cachedKey = peerPublicKeyCache[recipientNodeId]
+            if (cachedKey != null) {
+                val fallbackAlias = "Node-${String.format("%016X", recipientNodeId).takeLast(4)}"
+                val fallbackHex = CryptoEngine.bytesToHex(cachedKey)
+                val synthesizedPeer = PeerEntity(
+                    nodeId = recipientNodeId,
+                    alias = fallbackAlias,
+                    publicKeyHex = fallbackHex,
+                    fingerprint = fallbackHex.take(16),
+                    lastSeen = System.currentTimeMillis(),
+                    isDirect = true,
+                    rssi = -50,
+                    hopCount = 1,
+                    identityHashHex = fallbackHex,
+                    trustState = com.meshwhisper.core.identity.TrustState.SEEN.name,
+                    isVerified = false
+                )
+                database.peerDao().insertOrUpdate(synthesizedPeer)
+                peer = synthesizedPeer
+            } else {
+                return null
+            }
+        }
         if (peer.isBlocked) {
             Log.w(tag, "Cannot send message to blocked peer $recipientNodeId")
             return null
@@ -1611,7 +1674,9 @@ class MeshRouter(
         }
 
         if (!dispatched) {
-            logPacket("TX_PENDING", packet, raw.size, "Peer $recipientNodeId not reachable directly; stored in Store-and-Forward queue")
+            broadcastPacketDirect(raw)
+            dispatched = true
+            logPacket("TX_BROADCAST_FALLBACK", packet, raw.size, "Dispatched DM via direct broadcast fallback to $recipientNodeId")
         }
 
         return msgId.toString()
@@ -1622,7 +1687,31 @@ class MeshRouter(
         payload: LocationBreadcrumbPayload,
         isEmergency: Boolean = false
     ): Boolean {
-        val peer = database.peerDao().getPeerById(recipientNodeId) ?: return false
+        var peer = database.peerDao().getPeerById(recipientNodeId)
+        if (peer == null) {
+            val cachedKey = peerPublicKeyCache[recipientNodeId]
+            if (cachedKey != null) {
+                val fallbackAlias = "Node-${String.format("%016X", recipientNodeId).takeLast(4)}"
+                val fallbackHex = CryptoEngine.bytesToHex(cachedKey)
+                val synthesizedPeer = PeerEntity(
+                    nodeId = recipientNodeId,
+                    alias = fallbackAlias,
+                    publicKeyHex = fallbackHex,
+                    fingerprint = fallbackHex.take(16),
+                    lastSeen = System.currentTimeMillis(),
+                    isDirect = true,
+                    rssi = -50,
+                    hopCount = 1,
+                    identityHashHex = fallbackHex,
+                    trustState = com.meshwhisper.core.identity.TrustState.SEEN.name,
+                    isVerified = false
+                )
+                database.peerDao().insertOrUpdate(synthesizedPeer)
+                peer = synthesizedPeer
+            } else {
+                return false
+            }
+        }
         if (peer.isBlocked) return false
         if (identityRepository.isNodeConflicted(recipientNodeId)) return false
 
@@ -1702,7 +1791,16 @@ class MeshRouter(
     }
 
     private suspend fun sendAck(recipientNodeId: Long, originalMsgId: UUID) {
-        val peer = database.peerDao().getPeerById(recipientNodeId) ?: return
+        val peer = database.peerDao().getPeerById(recipientNodeId)
+        val peerPubKey = if (peer != null) {
+            try {
+                CryptoEngine.hexToBytes(peer.publicKeyHex)
+            } catch (_: Exception) {
+                peerPublicKeyCache[recipientNodeId]
+            }
+        } else {
+            peerPublicKeyCache[recipientNodeId]
+        } ?: return
         val timestamp = System.currentTimeMillis() / 1000L
         val ackPacketId = UUID.randomUUID()
 
@@ -1719,7 +1817,6 @@ class MeshRouter(
             timestamp = timestamp
         )
 
-        val peerPubKey = CryptoEngine.hexToBytes(peer.publicKeyHex)
         val sessionKey = cryptoEngine.derivePeerSessionKey(peerPubKey, timestamp)
         val encResult = cryptoEngine.encrypt(
             plaintext = plainPayload,
@@ -1939,6 +2036,27 @@ class MeshRouter(
         if (identityRepository.isNodeConflicted(recipientNodeId)) {
             Log.w(tag, "Cannot send media to conflicted peer $recipientNodeId: Unicast suspended (C-23)")
             return ""
+        }
+        if (database.peerDao().getPeerById(recipientNodeId) == null) {
+            val cachedKey = peerPublicKeyCache[recipientNodeId]
+            if (cachedKey != null) {
+                val fallbackAlias = "Node-${String.format("%016X", recipientNodeId).takeLast(4)}"
+                val fallbackHex = CryptoEngine.bytesToHex(cachedKey)
+                val synthesizedPeer = PeerEntity(
+                    nodeId = recipientNodeId,
+                    alias = fallbackAlias,
+                    publicKeyHex = fallbackHex,
+                    fingerprint = fallbackHex.take(16),
+                    lastSeen = System.currentTimeMillis(),
+                    isDirect = true,
+                    rssi = -50,
+                    hopCount = 1,
+                    identityHashHex = fallbackHex,
+                    trustState = com.meshwhisper.core.identity.TrustState.SEEN.name,
+                    isVerified = false
+                )
+                database.peerDao().insertOrUpdate(synthesizedPeer)
+            }
         }
         return mediaTransferManager.sendMedia(
             recipientNodeId = recipientNodeId,

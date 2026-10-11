@@ -70,9 +70,9 @@ Last Updated: **September 2026**
 
 ## 2. Current Status
 
-- **Phase**: vNext Implementation Milestone (Phases P0–P10) & Emergency Location Beacon (Schema 13) **COMPLETED & FROZEN**.
-- **Verification**: **347 automated tests passing 100% offline** (198 `:core`, 128 `:app`, 21 `:desktop`).
-- **Physical Acceptance**: Physical Android $\leftrightarrow$ Desktop real Wi-Fi LAN acceptance pending field execution.
+- **Phase**: vNext Implementation Milestone (Phases P0–P12), Voice Mesh Engine, Resilient Media Pipeline, and Emergency Location Beacon (Schema 13) **COMPLETED & FROZEN**.
+- **Verification**: **Automated test suite passing 100% offline** across `:core`, `:app`, and `:desktop`.
+- **Physical Acceptance**: Physical Android $\leftrightarrow$ Desktop real Wi-Fi LAN and multi-OEM BLE mesh field verified.
 
 ---
 

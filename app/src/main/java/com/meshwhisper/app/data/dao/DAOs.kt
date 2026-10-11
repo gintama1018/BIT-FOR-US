@@ -131,6 +131,12 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE isSos = 1 ORDER BY timestamp DESC LIMIT :limit")
     fun getSosMessages(limit: Int = 50): Flow<List<MessageEntity>>
 
+    @Query("DELETE FROM messages WHERE messageId = :messageId")
+    suspend fun deleteMessageById(messageId: String)
+
+    @Query("DELETE FROM messages WHERE isBroadcast = 0 AND (senderId = :peerNodeId OR recipientId = :peerNodeId)")
+    suspend fun clearMessagesForPeer(peerNodeId: Long)
+
     @Query("DELETE FROM messages")
     suspend fun deleteAll()
 }

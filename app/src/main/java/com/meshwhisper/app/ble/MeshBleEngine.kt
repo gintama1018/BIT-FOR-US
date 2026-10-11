@@ -71,13 +71,26 @@ class MeshBleEngine(private val context: Context) {
 
     // Rate limiting for inbound GATT writes (200 writes/sec headroom for 50Hz real-time voice + bursts)
     private val rateLimiter = GattWriteRateLimiter(maxWritesPerSecond = 200)
+    private fun isWriteRateAllowed(address: String): Boolean = rateLimiter.isWriteRateAllowed(address)
 
     // Reconnection cooldown & tie-breaker tracking to eliminate connect-disconnect ping-pong loops
     private val connectionAttemptCooldown = ConcurrentHashMap<String, Long>()
     private val deferredConnectionTime = ConcurrentHashMap<String, Long>()
 
-    private fun isWriteRateAllowed(address: String): Boolean {
-        return rateLimiter.isWriteRateAllowed(address)
+    // Cache of discovered devices by nodeId for on-demand direct connections
+    private val discoveredDevicesByNodeId = ConcurrentHashMap<Long, Pair<BluetoothDevice, Int>>()
+
+    @SuppressLint("MissingPermission")
+    fun connectDirectlyToNode(nodeId: Long): Boolean {
+        val target = discoveredDevicesByNodeId[nodeId] ?: return false
+        val (device, rssi) = target
+        val address = device.address
+        if (activeGattClients.containsKey(address) || connectedCentrals.containsKey(address)) {
+            return true
+        }
+        deferredConnectionTime.remove(address)
+        connectToPeer(device, rssi)
+        return true
     }
 
     // Connected peripheral GATT clients (Central role)
@@ -216,6 +229,9 @@ class MeshBleEngine(private val context: Context) {
     }
 
     private var myNodeId: Long = 0L
+    private var lastBtOnTimeMs = 0L
+    private var rapidRestartCount = 0
+    private var consecutiveAdvertiseFailures = 0
 
     // Receiver to automatically restart / stop engine when user toggles Bluetooth
     private val bluetoothStateReceiver = object : BroadcastReceiver() {
@@ -224,11 +240,29 @@ class MeshBleEngine(private val context: Context) {
                 val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
                 when (state) {
                     BluetoothAdapter.STATE_ON -> {
-                        Log.d(tag, "Bluetooth radio turned ON -> restarting mesh engine")
+                        val now = System.currentTimeMillis()
+                        if (now - lastBtOnTimeMs < 6000L) {
+                            rapidRestartCount++
+                            Log.w(tag, "Rapid Bluetooth ON detected ($rapidRestartCount). Device firmware cycling suspected. Throttling restart...")
+                            if (rapidRestartCount >= 2) {
+                                // Suspend peripheral advertising mode to prevent crashing device's Bluetooth daemon (common on Oppo A31 / Helio P35)
+                                _supportsPeripheral.value = false
+                                _isAdvertising.value = false
+                            }
+                        } else {
+                            rapidRestartCount = 0
+                        }
+                        lastBtOnTimeMs = now
+
+                        Log.d(tag, "Bluetooth radio turned ON -> restarting mesh engine (rapidCount=$rapidRestartCount)")
                         _isBluetoothEnabled.value = true
-                        val targetId = if (myNodeId != 0L) myNodeId else ((context.applicationContext as? com.meshwhisper.app.MeshApplication)?.cryptoEngine?.nodeId ?: 0L)
-                        if (targetId != 0L) {
-                            start(targetId)
+                        scope.launch {
+                            val settleDelay = if (rapidRestartCount > 0) 2500L else 600L
+                            delay(settleDelay)
+                            val targetId = if (myNodeId != 0L) myNodeId else ((context.applicationContext as? com.meshwhisper.app.MeshApplication)?.cryptoEngine?.nodeId ?: 0L)
+                            if (targetId != 0L && bluetoothAdapter?.isEnabled == true) {
+                                start(targetId)
+                            }
                         }
                     }
                     BluetoothAdapter.STATE_OFF, BluetoothAdapter.STATE_TURNING_OFF -> {
@@ -241,11 +275,39 @@ class MeshBleEngine(private val context: Context) {
         }
     }
 
+    private fun isPeripheralAdvertisingSupported(): Boolean {
+        // 1. Hardware capability check: MUST support multiple advertisement sets
+        if (bluetoothAdapter?.isMultipleAdvertisementSupported != true) {
+            Log.w(tag, "Device hardware does not support multi-advertisement sets (isMultipleAdvertisementSupported = false). Disabling BLE advertising to protect Bluetooth radio.")
+            return false
+        }
+
+        // 2. Known problematic SoC / OEM firmware blacklist
+        // MediaTek MT6765 / MT6762 (Helio P22/P35) on ColorOS / Oppo (e.g. Oppo A31 / CPH2015, A12, A15) has a kernel driver panic in bt_drv
+        // when startAdvertising is called, causing Bluetooth to toggle ON/OFF in an infinite loop.
+        val hardware = Build.HARDWARE.lowercase()
+        val board = Build.BOARD.lowercase()
+        val manufacturer = Build.MANUFACTURER.lowercase()
+        val model = Build.MODEL.lowercase()
+        val product = Build.PRODUCT.lowercase()
+
+        if (hardware.contains("mt6765") || hardware.contains("mt6762") || hardware.contains("mt67") ||
+            board.contains("mt6765") || board.contains("mt6762") ||
+            model.contains("cph2015") || model.contains("cph2073") || model.contains("cph2081") ||
+            product.contains("cph2015") ||
+            (manufacturer.contains("oppo") && Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q) ||
+            (manufacturer.contains("realme") && Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q && hardware.contains("mt"))
+        ) {
+            Log.w(tag, "Known fragile MediaTek/Oppo Bluetooth chipset ($hardware / $model). Disabling BLE Peripheral mode to prevent Bluetooth firmware crash loop.")
+            return false
+        }
+
+        return bluetoothAdapter?.bluetoothLeAdvertiser != null
+    }
+
     init {
-        // Check advertiser capability directly from BluetoothAdapter (more reliable than packageManager feature flag)
         val canAdvertise = try {
-            (bluetoothAdapter?.isMultipleAdvertisementSupported == true) ||
-                    (bluetoothAdapter?.bluetoothLeAdvertiser != null)
+            isPeripheralAdvertisingSupported()
         } catch (e: Exception) {
             false
         }
@@ -314,16 +376,20 @@ class MeshBleEngine(private val context: Context) {
         isEngineRunning = true
         Log.i(tag, "Starting Mesh BLE Engine for Node ID: $nodeId")
 
-        try {
-            startGattServer()
-        } catch (e: Exception) {
-            Log.e(tag, "Failed starting GATT server", e)
-        }
+        if (_supportsPeripheral.value) {
+            try {
+                startGattServer()
+            } catch (e: Exception) {
+                Log.e(tag, "Failed starting GATT server", e)
+            }
 
-        try {
-            startAdvertising()
-        } catch (e: Exception) {
-            Log.e(tag, "Failed starting advertising", e)
+            try {
+                startAdvertising()
+            } catch (e: Exception) {
+                Log.e(tag, "Failed starting advertising", e)
+            }
+        } else {
+            Log.i(tag, "Running in Central-only mode on this device (Peripheral mode disabled for stability)")
         }
 
         try {
@@ -433,8 +499,10 @@ class MeshBleEngine(private val context: Context) {
                 activeGattClients.remove(addr)
             }
         }
-        startGattServer()
-        startAdvertising()
+        if (_supportsPeripheral.value) {
+            startGattServer()
+            startAdvertising()
+        }
         startScanning()
     }
 
@@ -528,7 +596,7 @@ class MeshBleEngine(private val context: Context) {
             stopScanning()
             startScanning()
         }
-        if (isAdvertising.value && isEngineRunning) {
+        if (isAdvertising.value && isEngineRunning && _supportsPeripheral.value) {
             stopAdvertising()
             startAdvertising()
         }
@@ -547,6 +615,10 @@ class MeshBleEngine(private val context: Context) {
 
     @SuppressLint("MissingPermission")
     private fun startAdvertising() {
+        if (!_supportsPeripheral.value) {
+            Log.d(tag, "Peripheral advertising disabled on this device")
+            return
+        }
         advertiser = bluetoothAdapter?.bluetoothLeAdvertiser
         if (advertiser == null) {
             Log.w(tag, "BluetoothLeAdvertiser not available on this device")
@@ -554,12 +626,16 @@ class MeshBleEngine(private val context: Context) {
             return
         }
 
-        val advMode = if (isLowLatencyMode) {
+        val advMode = if (isLowLatencyMode && consecutiveAdvertiseFailures == 0) {
             AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY
         } else {
-            AdvertiseSettings.ADVERTISE_MODE_LOW_POWER // Low-power battery-preserving interval in background
+            AdvertiseSettings.ADVERTISE_MODE_BALANCED
         }
-        val txPower = AdvertiseSettings.ADVERTISE_TX_POWER_HIGH // Always maximum RF power (+4 to +8 dBm) for maximum mesh range
+        val txPower = if (consecutiveAdvertiseFailures == 0) {
+            AdvertiseSettings.ADVERTISE_TX_POWER_HIGH // Maximum RF power
+        } else {
+            AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM // Fallback for fragile MediaTek chips
+        }
 
         val settings = AdvertiseSettings.Builder()
             .setAdvertiseMode(advMode)
@@ -618,6 +694,7 @@ class MeshBleEngine(private val context: Context) {
             Log.i(tag, "BLE Advertising active and broadcasting Mesh Service")
             _isAdvertising.value = true
             _supportsPeripheral.value = true
+            consecutiveAdvertiseFailures = 0
         }
 
         override fun onStartFailure(errorCode: Int) {
@@ -625,9 +702,18 @@ class MeshBleEngine(private val context: Context) {
             if (errorCode == AdvertiseCallback.ADVERTISE_FAILED_ALREADY_STARTED) {
                 _isAdvertising.value = true
                 _supportsPeripheral.value = true
+                consecutiveAdvertiseFailures = 0
                 return
             }
             _isAdvertising.value = false
+            consecutiveAdvertiseFailures++
+
+            if (errorCode == AdvertiseCallback.ADVERTISE_FAILED_FEATURE_UNSUPPORTED || consecutiveAdvertiseFailures >= 2) {
+                Log.w(tag, "BLE Advertising unsupported or repeatedly failed ($consecutiveAdvertiseFailures times). Disabling peripheral advertising on this chipset to prevent Bluetooth restart loop.")
+                _supportsPeripheral.value = false
+                return
+            }
+
             if (errorCode == AdvertiseCallback.ADVERTISE_FAILED_DATA_TOO_LARGE) {
                 Log.w(tag, "Advertising data too large; retrying with basic service UUID only...")
                 try {
@@ -637,23 +723,21 @@ class MeshBleEngine(private val context: Context) {
                         .addServiceUuid(ParcelUuid(BleConstants.MESH_SERVICE_UUID))
                         .build()
                     val fallbackSettings = AdvertiseSettings.Builder()
-                        .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+                        .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)
                         .setConnectable(true)
-                        .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
+                        .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
                         .build()
                     advertiser?.startAdvertising(fallbackSettings, basicData, this)
                 } catch (e: Exception) {
                     Log.e(tag, "Fallback advertising also failed", e)
                 }
-            } else if (errorCode == AdvertiseCallback.ADVERTISE_FAILED_FEATURE_UNSUPPORTED) {
-                _supportsPeripheral.value = false
             } else {
-                // Transient error: Retry advertising after 1.5s backoff
-                if (isEngineRunning && hasPermissions()) {
+                // Transient error: Retry advertising ONCE after 2.5s backoff with medium power
+                if (isEngineRunning && hasPermissions() && consecutiveAdvertiseFailures < 2) {
                     scope.launch {
-                        delay(1500L)
+                        delay(2500L)
                         if (isEngineRunning && !_isAdvertising.value && _supportsPeripheral.value) {
-                            Log.i(tag, "Auto-recovering BLE advertiser after error $errorCode...")
+                            Log.i(tag, "Auto-recovering BLE advertiser after error $errorCode with BALANCED mode...")
                             try {
                                 advertiser?.stopAdvertising(advertiseCallback)
                             } catch (_: Exception) {}
@@ -792,10 +876,12 @@ class MeshBleEngine(private val context: Context) {
             )
         }
 
-        val scanMode = if (isLowLatencyMode) {
+        val scanMode = if (isLowLatencyMode && _supportsPeripheral.value) {
             ScanSettings.SCAN_MODE_LOW_LATENCY
+        } else if (isLowLatencyMode) {
+            ScanSettings.SCAN_MODE_BALANCED // Gentle on older MediaTek radios (Oppo A31)
         } else {
-            ScanSettings.SCAN_MODE_LOW_POWER // Hardware duty-cycled (~0.5-1s active per 5s window) to save battery
+            ScanSettings.SCAN_MODE_LOW_POWER // Hardware duty-cycled to save battery
         }
 
         val settings = ScanSettings.Builder()
@@ -872,6 +958,10 @@ class MeshBleEngine(private val context: Context) {
                 val peerNodeId = if (meshServiceData != null && meshServiceData.size >= 8) {
                     java.nio.ByteBuffer.wrap(meshServiceData).long
                 } else null
+
+                if (peerNodeId != null) {
+                    discoveredDevicesByNodeId[peerNodeId] = Pair(device, rssi)
+                }
 
                 if (peerNodeId != null && myNodeId != 0L) {
                     if (myNodeId > peerNodeId) {

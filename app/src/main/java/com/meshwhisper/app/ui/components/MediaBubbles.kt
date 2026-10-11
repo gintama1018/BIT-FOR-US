@@ -351,9 +351,14 @@ fun TiledImageCanvas(
     previewBitmap: android.graphics.Bitmap?,
     finalBitmap: android.graphics.Bitmap?,
     tileUpdates: kotlinx.coroutines.flow.SharedFlow<com.meshwhisper.app.media.TileUpdate>?,
+    initialTiles: Map<Int, android.graphics.Bitmap> = emptyMap(),
     modifier: Modifier = Modifier
 ) {
-    val receivedTiles = remember(mediaId) { androidx.compose.runtime.mutableStateMapOf<Int, android.graphics.Bitmap>() }
+    val receivedTiles = remember(mediaId) {
+        androidx.compose.runtime.mutableStateMapOf<Int, android.graphics.Bitmap>().apply {
+            putAll(initialTiles)
+        }
+    }
     var gridCols by remember(mediaId) { mutableStateOf(8) }
     var gridRows by remember(mediaId) { mutableStateOf(8) }
 
@@ -439,6 +444,7 @@ fun TiledImageCanvas(
 fun ImageMessageBubble(
     message: MessageEntity,
     tileUpdates: kotlinx.coroutines.flow.SharedFlow<com.meshwhisper.app.media.TileUpdate>? = null,
+    initialTiles: Map<Int, android.graphics.Bitmap> = emptyMap(),
     isOutgoing: Boolean = false,
     modifier: Modifier = Modifier
 ) {
@@ -497,6 +503,7 @@ fun ImageMessageBubble(
                 previewBitmap = previewBitmap,
                 finalBitmap = bitmap,
                 tileUpdates = tileUpdates,
+                initialTiles = initialTiles,
                 modifier = Modifier.fillMaxSize()
             )
 

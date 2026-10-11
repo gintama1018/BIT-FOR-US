@@ -72,6 +72,52 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
     val allLocations: StateFlow<List<com.meshwhisper.app.data.model.LastKnownLocationEntity>> = database.locationDao().getAllLocations()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    // Message Reactions & Long-Press Actions
+    private val _messageReactions = MutableStateFlow<Map<String, List<String>>>(emptyMap())
+    val messageReactions: StateFlow<Map<String, List<String>>> = _messageReactions.asStateFlow()
+
+    init {
+        try {
+            val prefs = app.getSharedPreferences("mesh_reactions", Context.MODE_PRIVATE)
+            val initialMap = mutableMapOf<String, List<String>>()
+            prefs.all.forEach { (key, value) ->
+                if (value is String && value.isNotBlank()) {
+                    initialMap[key] = value.split(",").filter { it.isNotBlank() }
+                }
+            }
+            _messageReactions.value = initialMap
+        } catch (_: Exception) {}
+    }
+
+    fun toggleReaction(messageId: String, emoji: String) {
+        val current = _messageReactions.value
+        val existing = current[messageId] ?: emptyList()
+        val updated = if (existing.contains(emoji)) existing - emoji else existing + emoji
+        val newMap = if (updated.isEmpty()) current - messageId else current + (messageId to updated)
+        _messageReactions.value = newMap
+
+        try {
+            val prefs = app.getSharedPreferences("mesh_reactions", Context.MODE_PRIVATE)
+            if (updated.isEmpty()) {
+                prefs.edit().remove(messageId).apply()
+            } else {
+                prefs.edit().putString(messageId, updated.joinToString(",")).apply()
+            }
+        } catch (_: Exception) {}
+    }
+
+    fun deleteMessage(messageId: String) {
+        viewModelScope.launch {
+            database.messageDao().deleteMessageById(messageId)
+        }
+    }
+
+    fun clearChatWithPeer(peerNodeId: Long) {
+        viewModelScope.launch {
+            database.messageDao().clearMessagesForPeer(peerNodeId)
+        }
+    }
+
     val breadcrumbManager get() = app.breadcrumbManager
     val locationHelper get() = app.locationHelper
 
@@ -166,6 +212,16 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
 
     fun startVoiceCall(peerNodeId: Long): Boolean {
         return router.voiceCallManager.startCall(peerNodeId)
+    }
+
+    fun connectDirectlyToPeer(peerNodeId: Long): Boolean {
+        return bleEngine.connectDirectlyToNode(peerNodeId)
+    }
+
+    fun broadcastTestLocationFix(latitude: Double, longitude: Double, accuracyMeters: Float = 3.5f) {
+        viewModelScope.launch {
+            router.announcePresence(latitude, longitude, accuracyMeters)
+        }
     }
 
     fun acceptVoiceCall() {
@@ -561,6 +617,9 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
 
     val transferStates = router.mediaTransferManager.transferStates
     val tileUpdates = router.mediaTransferManager.tileUpdates
+
+    fun getDecodedTilesForMedia(mediaId: java.util.UUID): Map<Int, android.graphics.Bitmap> =
+        router.mediaTransferManager.getDecodedTilesForMedia(mediaId)
 
     fun sendMediaDirect(
         recipientNodeId: Long,

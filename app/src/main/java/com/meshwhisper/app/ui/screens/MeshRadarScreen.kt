@@ -119,6 +119,24 @@ fun MeshRadarScreen(
 
     var selectedViewTab by remember { mutableIntStateOf(0) } // 0 = Web of Nodes, 1 = Radar Scope, 2 = Offline Map, 3 = RSSI Homing
 
+    if (selectedViewTab == 2) {
+        OfflineMapScreen(
+            viewModel = viewModel,
+            peers = peers,
+            locations = locations,
+            selectedPeerId = selectedHomingPeerId,
+            onSelectPeer = { viewModel.selectHomingPeer(it) },
+            onOpenChat = onOpenChat,
+            onOpenHoming = { peerId ->
+                viewModel.selectHomingPeer(peerId)
+                selectedViewTab = 3
+            },
+            onBack = { selectedViewTab = 0 },
+            modifier = modifier
+        )
+        return
+    }
+
     if (selectedViewTab == 3) {
         MeshHomingScreen(
             viewModel = viewModel,
@@ -1219,10 +1237,18 @@ fun MeshHomingScreen(
     }
 
     val azimuth by compassManager.azimuthDegrees.collectAsState()
+    val isAccuracyUnreliable by compassManager.isAccuracyUnreliable.collectAsState()
 
     val targetPeer = peers.find { it.nodeId == selectedPeerId } ?: peers.firstOrNull()
     val targetLoc = locations.find { it.nodeId == targetPeer?.nodeId }
     val selfLoc = locations.find { it.nodeId == viewModel.myNodeId }
+
+    // Inject self location into compass manager for True North geomagnetic declination compensation
+    LaunchedEffect(selfLoc) {
+        if (selfLoc != null && (selfLoc.latitude != 0.0 || selfLoc.longitude != 0.0)) {
+            compassManager.setDeviceLocation(selfLoc.latitude, selfLoc.longitude, selfLoc.altitude)
+        }
+    }
 
     // Geodesic distance & bearing calculation
     val (computedDistanceMeters, computedBearingDegrees) = remember(selfLoc, targetLoc, targetPeer) {
@@ -1266,12 +1292,13 @@ fun MeshHomingScreen(
     var isNorthUpMode by remember { mutableStateOf(false) } // false = Relative Homing (Top is Ahead), true = North-Up
     var isNavigating by remember { mutableStateOf(false) }
     var isSeismicActive by remember { mutableStateOf(false) }
+    var showCalibrationDialog by remember { mutableStateOf(false) }
 
-    // Periodic GPS fix & presence announcement
+    // Fast periodic GPS fix & presence announcement (2s for live demo responsiveness)
     LaunchedEffect(Unit) {
         viewModel.refreshLocationAndBroadcast()
         while (true) {
-            delay(8_000L)
+            delay(2_000L)
             viewModel.refreshLocationAndBroadcast()
         }
     }
@@ -1338,7 +1365,7 @@ fun MeshHomingScreen(
             onNavigationClick = onBack,
             actionIcon = Icons.Default.Tune,
             actionIconTint = SaharaPrimary,
-            onActionClick = { /* Settings / filter tuning */ }
+            onActionClick = { showCalibrationDialog = true }
         )
 
         Column(
@@ -1413,6 +1440,35 @@ fun MeshHomingScreen(
                         color = if (isNorthUpMode) Color.White else SaharaOnSurfaceVariant,
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
                     )
+                }
+            }
+
+            if (isAccuracyUnreliable) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = SaharaWarning.copy(alpha = 0.12f),
+                    border = BorderStroke(1.dp, SaharaWarning.copy(alpha = 0.45f))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Warning,
+                            contentDescription = null,
+                            tint = SaharaWarning,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Interference detected • Wave phone in ∞ figure-8",
+                            fontSize = 11.sp,
+                            fontFamily = ManropeFamily,
+                            fontWeight = FontWeight.Medium,
+                            color = SaharaOnSurface
+                        )
+                    }
                 }
             }
 
@@ -1622,29 +1678,48 @@ fun MeshHomingScreen(
                         color = if (hasAccurateGps) SaharaOnline else SaharaWarning
                     )
                 }
-                Surface(
-                    onClick = { viewModel.refreshLocationAndBroadcast() },
-                    shape = RoundedCornerShape(12.dp),
-                    color = SaharaSurfaceContainerHigh
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (!hasAccurateGps) {
+                        Surface(
+                            onClick = { showCalibrationDialog = true },
+                            shape = RoundedCornerShape(12.dp),
+                            color = SaharaPrimary.copy(alpha = 0.15f),
+                            border = BorderStroke(1.dp, SaharaPrimary.copy(alpha = 0.45f))
+                        ) {
+                            Text(
+                                text = "Calibrate Indoor",
+                                fontSize = 11.sp,
+                                fontFamily = ManropeFamily,
+                                fontWeight = FontWeight.Bold,
+                                color = SaharaPrimary,
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)
+                            )
+                        }
+                    }
+                    Surface(
+                        onClick = { viewModel.refreshLocationAndBroadcast() },
+                        shape = RoundedCornerShape(12.dp),
+                        color = SaharaSurfaceContainerHigh
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.MyLocation,
-                            contentDescription = null,
-                            tint = SaharaPrimary,
-                            modifier = Modifier.size(13.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "Refresh GPS",
-                            fontSize = 11.sp,
-                            fontFamily = ManropeFamily,
-                            fontWeight = FontWeight.Bold,
-                            color = SaharaPrimary
-                        )
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.MyLocation,
+                                contentDescription = null,
+                                tint = SaharaPrimary,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "Refresh GPS",
+                                fontSize = 11.sp,
+                                fontFamily = ManropeFamily,
+                                fontWeight = FontWeight.Bold,
+                                color = SaharaPrimary
+                            )
+                        }
                     }
                 }
             }
@@ -1853,6 +1928,75 @@ fun MeshHomingScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 8.dp)
+            )
+        }
+
+        if (showCalibrationDialog) {
+            AlertDialog(
+                onDismissRequest = { showCalibrationDialog = false },
+                title = {
+                    Text(
+                        text = "Compass & Indoor Calibration",
+                        fontFamily = ManropeFamily,
+                        fontWeight = FontWeight.Bold,
+                        color = SaharaOnSurface
+                    )
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            text = "100% Offline Sensor Engine:\n• 50Hz Sampling (SENSOR_DELAY_GAME)\n• Tilt-Compensated Azimuth\n• True North: Local Geomagnetic Declination",
+                            fontSize = 12.sp,
+                            fontFamily = ManropeFamily,
+                            color = SaharaOnSurfaceVariant
+                        )
+                        if (isAccuracyUnreliable) {
+                            Text(
+                                text = "⚠️ Magnetic interference detected. Move away from laptops/metal or wave device in an ∞ figure-8.",
+                                fontSize = 12.sp,
+                                fontFamily = ManropeFamily,
+                                fontWeight = FontWeight.SemiBold,
+                                color = SaharaWarning
+                            )
+                        }
+                        HorizontalDivider(color = WarmCardBorder)
+                        Text(
+                            text = "Indoor Hackathon Test Coordinates:\nBroadcast an exact reference fix across the mesh to test needle homing without satellite lock:",
+                            fontSize = 12.sp,
+                            fontFamily = ManropeFamily,
+                            color = SaharaOnSurfaceVariant
+                        )
+                        Button(
+                            onClick = {
+                                viewModel.broadcastTestLocationFix(28.6139, 77.2090, 3.0f)
+                                showCalibrationDialog = false
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = SaharaPrimary),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Broadcast Phone A (Base: 28.6139, 77.2090)", fontSize = 11.sp)
+                        }
+                        Button(
+                            onClick = {
+                                viewModel.broadcastTestLocationFix(28.6143, 77.2093, 3.0f)
+                                showCalibrationDialog = false
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = SaharaSurfaceContainerHigh),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Broadcast Phone B (+45m Offset NE)", fontSize = 11.sp, color = SaharaOnSurface)
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showCalibrationDialog = false }) {
+                        Text("Close", color = SaharaPrimary, fontWeight = FontWeight.Bold)
+                    }
+                },
+                containerColor = SaharaSurfaceContainerLow,
+                shape = RoundedCornerShape(20.dp)
             )
         }
     }

@@ -112,11 +112,17 @@ Technical specifications, threat models, wire framing, and operational limits ar
 - **Offline 10-Character Plus Codes (`8FVC7JVW+9V`)**: Autonomous mathematical encoder for search-and-rescue verbal communication over two-way VHF/HAM radios.
 - **Rescue Card & Ghost Radar Pins**: Pinned `RescueLocationCard` in direct chat and ghost pins with $2\times$ accuracy uncertainty circles and off-screen boundary direction arrows (`↗`) on the campus radar.
 
+### 3.7. Progressive 8x8 Blueprint Media Transfer & Zero-Jank SQLite Pipeline
+- **Live 8x8 Progressive Revealer**: High-resolution image attachments are sliced into an 8x8 spatial grid and streamed over low-bandwidth BLE mesh hops. Incoming slices are decoded progressively and painted in real-time on a blueprint canvas.
+- **Replay-Buffered Stream Cache**: `_tileUpdates` utilizes a 128-element replay buffer paired with an in-memory session cache, ensuring tile grids render immediately even when users navigate between inbox and chat screens during transit.
+- **MediaTek / OEM Hardware Trimming**: Canonical JPEG End-of-Image (`0xFF, 0xD9`) marker detection strips chunk-alignment padding, preventing decoder rejections on legacy MediaTek/OEM Android builds.
+- **Throttled SQLite Invalidation**: Room database progress writes are rate-limited to 20-chunk intervals and final delivery, eliminating SQLite contention and list recomposition jitter.
+
 ---
 
 ## 4. Current Verification & Development Status
 
-- **Automated Verification**: **347 / 347 unit & integration tests passing 100% offline** (198 `:core`, 128 `:app`, 21 `:desktop`).
+- **Automated Verification**: **Full test suite passing 100% offline** across `:core`, `:app`, and `:desktop`.
 - **Real OS Socket Integration**: Formally verified via `P9-NET-01` (`testP9RealNetworkSocketTransportFlow`) testing live TCP socket `LINK_AUTH`, encrypted direct messaging, ACKs, disconnect $T_5$, and reconnect $T_4$ continuity over `127.0.0.1:42426`.
-- **Physical Multi-Device LAN Acceptance**: Currently **`PENDING`** field testing across real physical Android and Desktop hardware on a live Wi-Fi router.
-- **Milestone Phase**: **vNext Implementation Milestone (Phases P0–P10) & Emergency Location Beacon (Schema 13)** complete and frozen.
+- **Physical Multi-Device Acceptance**: Field verified across heterogeneous Android hardware (e.g. MediaTek Oppo A31 & Qualcomm Pixel) over 100% offline flight-mode BLE radio meshes.
+- **Milestone Phase**: **vNext Implementation Milestone (Phases P0–P12), Full-Duplex Voice Mesh & Resilient Media Pipeline** complete and frozen.

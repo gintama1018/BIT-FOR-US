@@ -618,7 +618,7 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     val audioRecorder = com.meshwhisper.app.media.AudioRecorder(application)
-    val audioPlayer = com.meshwhisper.app.media.AudioPlayer()
+    val audioPlayer = com.meshwhisper.app.media.AudioPlayer(application)
 
     val transferStates = router.mediaTransferManager.transferStates
     val tileUpdates = router.mediaTransferManager.tileUpdates

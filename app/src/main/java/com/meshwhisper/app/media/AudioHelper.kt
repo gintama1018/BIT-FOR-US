@@ -1,10 +1,12 @@
 package com.meshwhisper.app.media
 
 import android.content.Context
+import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.os.Build
 import android.util.Log
+import com.meshwhisper.app.storage.MediaAtRestManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -86,10 +88,11 @@ class AudioRecorder(private val context: Context) {
     }
 }
 
-class AudioPlayer {
+class AudioPlayer(private val context: Context? = null) {
     private val tag = "AudioPlayer"
     private var mediaPlayer: MediaPlayer? = null
     private var currentPlayingUri: String? = null
+    private var activePlaybackTempFile: File? = null
     private var progressJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.Main)
 
@@ -120,15 +123,51 @@ class AudioPlayer {
         stop()
 
         try {
-            val mp = MediaPlayer()
-            mp.setDataSource(filePath)
-            mp.prepare()
-            mp.setOnCompletionListener {
-                _isPlaying.value = false
-                _progressMs.value = 0L
-                progressJob?.cancel()
+            val sourceFile = File(filePath)
+            if (!sourceFile.exists()) {
+                Log.e(tag, "Audio file does not exist: $filePath")
+                return
             }
-            mp.start()
+
+            // At-rest encryption check and decryption:
+            // Voice notes are stored encrypted with MWMEDIA1 header.
+            // If encrypted, decrypt to an isolated private cache file for MediaPlayer.
+            val fileToPlay: File
+            val atRestManager = context?.let { MediaAtRestManager(it) }
+            if (atRestManager != null && atRestManager.isMediaFileEncrypted(sourceFile)) {
+                val decryptedBytes = atRestManager.readAndDecryptMediaFile(sourceFile.name, sourceFile)
+                val ext = sourceFile.extension.ifBlank { "m4a" }
+                val cacheDir = context.cacheDir ?: File(context.filesDir, "temp_cache").also { it.mkdirs() }
+                val tempFile = File(cacheDir, "play_${System.currentTimeMillis()}_${sourceFile.nameWithoutExtension}.$ext")
+                tempFile.writeBytes(decryptedBytes)
+                activePlaybackTempFile = tempFile
+                fileToPlay = tempFile
+            } else {
+                fileToPlay = sourceFile
+            }
+
+            val mp = MediaPlayer().apply {
+                setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .build()
+                )
+                setDataSource(fileToPlay.absolutePath)
+                prepare()
+                setOnCompletionListener {
+                    _isPlaying.value = false
+                    _progressMs.value = 0L
+                    progressJob?.cancel()
+                    cleanupTempFile()
+                }
+                setOnErrorListener { _, what, extra ->
+                    Log.e(tag, "MediaPlayer error: what=$what, extra=$extra")
+                    stop()
+                    true
+                }
+                start()
+            }
 
             mediaPlayer = mp
             currentPlayingUri = filePath
@@ -150,13 +189,27 @@ class AudioPlayer {
 
     fun stop() {
         progressJob?.cancel()
-        mediaPlayer?.stop()
-        mediaPlayer?.release()
+        try {
+            mediaPlayer?.stop()
+        } catch (_: Exception) {}
+        try {
+            mediaPlayer?.release()
+        } catch (_: Exception) {}
         mediaPlayer = null
         currentPlayingUri = null
         _activeUri.value = null
         _isPlaying.value = false
         _progressMs.value = 0L
+        cleanupTempFile()
+    }
+
+    private fun cleanupTempFile() {
+        try {
+            activePlaybackTempFile?.let {
+                if (it.exists()) it.delete()
+            }
+        } catch (_: Exception) {}
+        activePlaybackTempFile = null
     }
 
     private fun startProgressTracker() {

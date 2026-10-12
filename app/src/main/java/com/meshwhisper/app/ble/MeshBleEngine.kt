@@ -42,6 +42,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentHashMap
 
 class MeshBleEngine(private val context: Context) {
@@ -120,6 +122,7 @@ class MeshBleEngine(private val context: Context) {
     val connectedPeersCount: StateFlow<Int> = _connectedPeersCount.asStateFlow()
 
     private val authenticatedLinks = ConcurrentHashMap<String, LinkAuthProof>()
+    private val deviceSendMutexes = ConcurrentHashMap<String, Mutex>()
     private val _connectedNodeIds = MutableStateFlow<Set<Long>>(emptySet())
     val connectedNodeIds: StateFlow<Set<Long>> = _connectedNodeIds.asStateFlow()
 
@@ -275,33 +278,8 @@ class MeshBleEngine(private val context: Context) {
     }
 
     private fun isPeripheralAdvertisingSupported(): Boolean {
-        // 1. Hardware capability check: MUST support multiple advertisement sets
-        if (bluetoothAdapter?.isMultipleAdvertisementSupported != true) {
-            Log.w(tag, "Device hardware does not support multi-advertisement sets (isMultipleAdvertisementSupported = false). Disabling BLE advertising to protect Bluetooth radio.")
-            return false
-        }
-
-        // 2. Known problematic SoC / OEM firmware blacklist
-        // MediaTek MT6765 / MT6762 (Helio P22/P35) on ColorOS / Oppo (e.g. Oppo A31 / CPH2015, A12, A15) has a kernel driver panic in bt_drv
-        // when startAdvertising is called, causing Bluetooth to toggle ON/OFF in an infinite loop.
-        val hardware = Build.HARDWARE.lowercase()
-        val board = Build.BOARD.lowercase()
-        val manufacturer = Build.MANUFACTURER.lowercase()
-        val model = Build.MODEL.lowercase()
-        val product = Build.PRODUCT.lowercase()
-
-        if (hardware.contains("mt6765") || hardware.contains("mt6762") || hardware.contains("mt67") ||
-            board.contains("mt6765") || board.contains("mt6762") ||
-            model.contains("cph2015") || model.contains("cph2073") || model.contains("cph2081") ||
-            product.contains("cph2015") ||
-            (manufacturer.contains("oppo") && Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q) ||
-            (manufacturer.contains("realme") && Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q && hardware.contains("mt"))
-        ) {
-            Log.w(tag, "Known fragile MediaTek/Oppo Bluetooth chipset ($hardware / $model). Disabling BLE Peripheral mode to prevent Bluetooth firmware crash loop.")
-            return false
-        }
-
-        return bluetoothAdapter?.bluetoothLeAdvertiser != null
+        val adapter = bluetoothAdapter ?: return false
+        return adapter.bluetoothLeAdvertiser != null
     }
 
     init {
@@ -629,16 +607,12 @@ class MeshBleEngine(private val context: Context) {
             return
         }
 
-        val advMode = if (isLowLatencyMode && consecutiveAdvertiseFailures == 0) {
-            AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY
-        } else {
+        val advMode = if (isLowLatencyMode) {
             AdvertiseSettings.ADVERTISE_MODE_BALANCED
-        }
-        val txPower = if (consecutiveAdvertiseFailures == 0) {
-            AdvertiseSettings.ADVERTISE_TX_POWER_HIGH // Maximum RF power
         } else {
-            AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM // Fallback for fragile MediaTek chips
+            AdvertiseSettings.ADVERTISE_MODE_LOW_POWER
         }
+        val txPower = AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM
 
         val settings = AdvertiseSettings.Builder()
             .setAdvertiseMode(advMode)
@@ -653,26 +627,12 @@ class MeshBleEngine(private val context: Context) {
             .addServiceUuid(ParcelUuid(BleConstants.MESH_SERVICE_UUID))
             .build()
 
-        val scanResponse = if (myNodeId != 0L) {
-            val nodeIdBytes = java.nio.ByteBuffer.allocate(8).putLong(myNodeId).array()
-            AdvertiseData.Builder()
-                .setIncludeDeviceName(false)
-                .addServiceData(ParcelUuid(BleConstants.MESH_SERVICE_UUID), nodeIdBytes)
-                .build()
-        } else {
-            null
-        }
-
         try {
             advertiser?.stopAdvertising(advertiseCallback)
         } catch (_: Exception) {}
 
         try {
-            if (scanResponse != null) {
-                advertiser?.startAdvertising(settings, data, scanResponse, advertiseCallback)
-            } else {
-                advertiser?.startAdvertising(settings, data, advertiseCallback)
-            }
+            advertiser?.startAdvertising(settings, data, advertiseCallback)
             _isAdvertising.value = true
             Log.d(tag, "Initiated BLE Advertising for Mesh Service UUID (Node ID: $myNodeId)")
         } catch (e: Exception) {
@@ -1093,7 +1053,7 @@ class MeshBleEngine(private val context: Context) {
                 Log.d(tag, "Connected as Central to $deviceAddress, requesting HIGH priority and MTU 512...")
                 gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
                 gatt.requestMtu(BleConstants.REQUESTED_MTU)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     try {
                         gatt.setPreferredPhy(
                             BluetoothDevice.PHY_LE_2M_MASK or BluetoothDevice.PHY_LE_1M_MASK or BluetoothDevice.PHY_LE_CODED_MASK,
@@ -1528,48 +1488,51 @@ class MeshBleEngine(private val context: Context) {
      */
     @SuppressLint("MissingPermission")
     suspend fun sendDirectToDevice(deviceAddress: String, packetBytes: ByteArray): Boolean {
-        val client = activeGattClients[deviceAddress]
-        if (client != null && client.isReady) {
-            val writeChar = client.writeChar ?: return false
-            val frames = framer.fragment(packetBytes, client.mtu)
-            for (frame in frames) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    client.gatt.writeCharacteristic(writeChar, frame, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
-                } else {
-                    @Suppress("DEPRECATION")
-                    writeChar.value = frame
-                    @Suppress("DEPRECATION")
-                    writeChar.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-                    @Suppress("DEPRECATION")
-                    client.gatt.writeCharacteristic(writeChar)
+        val mutex = deviceSendMutexes.computeIfAbsent(deviceAddress) { Mutex() }
+        return mutex.withLock {
+            val client = activeGattClients[deviceAddress]
+            if (client != null && client.isReady) {
+                val writeChar = client.writeChar ?: return false
+                val frames = framer.fragment(packetBytes, client.mtu)
+                for (frame in frames) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        client.gatt.writeCharacteristic(writeChar, frame, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        writeChar.value = frame
+                        @Suppress("DEPRECATION")
+                        writeChar.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                        @Suppress("DEPRECATION")
+                        client.gatt.writeCharacteristic(writeChar)
+                    }
+                    if (frames.size > 1) delay(15L)
                 }
-                if (frames.size > 1) delay(15L)
+                return true
             }
-            return true
-        }
 
-        val centralDevice = connectedCentrals[deviceAddress]
-        val server = gattServer
-        if (centralDevice != null && server != null) {
-            val service = server.getService(BleConstants.MESH_SERVICE_UUID)
-            val notifyChar = service?.getCharacteristic(BleConstants.NOTIFY_CHAR_UUID) ?: return false
-            val centralMtu = centralMtus[deviceAddress] ?: BleConstants.DEFAULT_MTU
-            val frames = framer.fragment(packetBytes, centralMtu)
-            for (frame in frames) {
-                @Suppress("DEPRECATION")
-                notifyChar.value = frame
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    server.notifyCharacteristicChanged(centralDevice, notifyChar, false, frame)
-                } else {
+            val centralDevice = connectedCentrals[deviceAddress]
+            val server = gattServer
+            if (centralDevice != null && server != null) {
+                val service = server.getService(BleConstants.MESH_SERVICE_UUID)
+                val notifyChar = service?.getCharacteristic(BleConstants.NOTIFY_CHAR_UUID) ?: return false
+                val centralMtu = centralMtus[deviceAddress] ?: BleConstants.DEFAULT_MTU
+                val frames = framer.fragment(packetBytes, centralMtu)
+                for (frame in frames) {
                     @Suppress("DEPRECATION")
-                    server.notifyCharacteristicChanged(centralDevice, notifyChar, false)
+                    notifyChar.value = frame
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        server.notifyCharacteristicChanged(centralDevice, notifyChar, false, frame)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        server.notifyCharacteristicChanged(centralDevice, notifyChar, false)
+                    }
+                    if (frames.size > 1) delay(15L)
                 }
-                if (frames.size > 1) delay(15L)
+                return true
             }
-            return true
-        }
 
-        return false
+            false
+        }
     }
 
     @SuppressLint("MissingPermission")

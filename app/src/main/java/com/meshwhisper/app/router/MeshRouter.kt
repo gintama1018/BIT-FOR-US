@@ -415,6 +415,38 @@ class MeshRouter(
             } catch (e: Exception) {
                 Log.w(tag, "identityRepository.onLinkEstablished error: ${e.message}")
             }
+            try {
+                val existing = database.peerDao().getPeerById(proof.peerNodeId64)
+                if (existing == null) {
+                    val fallbackAlias = "Node-${String.format(java.util.Locale.US, "%016X", proof.peerNodeId64).takeLast(4)}"
+                    val hashHex = CryptoEngine.bytesToHex(proof.peerIdentityHash)
+                    val peerEntity = PeerEntity(
+                        nodeId = proof.peerNodeId64,
+                        alias = fallbackAlias,
+                        publicKeyHex = hashHex,
+                        fingerprint = hashHex.take(8),
+                        lastSeen = System.currentTimeMillis(),
+                        isDirect = true,
+                        rssi = -45,
+                        hopCount = 0,
+                        identityHashHex = hashHex,
+                        trustState = "LINKED",
+                        isVerified = false,
+                        hasKeyChanged = false,
+                        previousFingerprint = null
+                    )
+                    database.peerDao().insertOrUpdate(peerEntity)
+                } else {
+                    database.peerDao().update(
+                        existing.copy(
+                            lastSeen = System.currentTimeMillis(),
+                            isDirect = true
+                        )
+                    )
+                }
+            } catch (e: Exception) {
+                Log.w(tag, "Error saving direct peer on bindLink: ${e.message}")
+            }
         }
     }
 
@@ -506,8 +538,7 @@ class MeshRouter(
                             val localHello = session.createHelloPacket()
                             val helloBytes = MeshPacket.serialize(localHello)
                             launch { bleEngine.sendDirectToDevice(ingressAddress, helloBytes) }
-                        }
-                        if (session.state == LinkAuthState.HELLO_EXCHANGED) {
+                        } else if (session.state == LinkAuthState.HELLO_EXCHANGED) {
                             val localConfirm = session.createConfirmPacket()
                             val confirmBytes = MeshPacket.serialize(localConfirm)
                             launch { bleEngine.sendDirectToDevice(ingressAddress, confirmBytes) }
@@ -531,6 +562,33 @@ class MeshRouter(
                             announcePresence()
                             drainStoreAndForwardQueueForPeer(proof.peerNodeId64, forceImmediate = true)
                         }
+                        is LinkAuthStepResult.InProgress -> {
+                            val localConfirm = synchronized(session) {
+                                if (session.state == LinkAuthState.CONFIRM_RECEIVED) {
+                                    session.createConfirmPacket()
+                                } else null
+                            }
+                            if (localConfirm != null) {
+                                val confirmBytes = MeshPacket.serialize(localConfirm)
+                                bleEngine.sendDirectToDevice(ingressAddress, confirmBytes)
+                            }
+                            val proof = LinkAuthProof.create(
+                                linkHandle = ingressAddress,
+                                peerIdentityHash = session.remoteIdentityHash!!,
+                                peerNodeId64 = session.remoteNodeId64!!,
+                                linkKey = session.linkKey!!
+                            )
+                            bindLink(proof)
+                            bleEngine.onLinkAuthenticated(proof)
+                            bleLinkAuthSessions.remove(ingressAddress)
+                            logPacket("AUTH", packet, rawBytes.size, "BLE link $ingressAddress authenticated as 0x${String.format("%016X", proof.peerNodeId64)}")
+
+                            syncDirectNeighbors()
+                            announcePresence()
+                            delay(1200L)
+                            announcePresence()
+                            drainStoreAndForwardQueueForPeer(proof.peerNodeId64, forceImmediate = true)
+                        }
                         is LinkAuthStepResult.Failed -> {
                             logPacket("AUTH_FAIL", packet, rawBytes.size, "BLE link $ingressAddress auth failed: ${result.reason}")
                             if (!result.reason.contains("already") && !result.reason.contains("out of order") && !authenticatedLinks.containsKey(ingressAddress)) {
@@ -538,7 +596,6 @@ class MeshRouter(
                                 bleEngine.disconnectDevice(ingressAddress)
                             }
                         }
-                        is LinkAuthStepResult.InProgress -> {}
                     }
                 }
             } catch (e: Exception) {

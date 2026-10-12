@@ -164,7 +164,7 @@ class LinkAuthProof private constructor(
     val linkKey: ByteArray
 ) {
     companion object {
-        internal fun create(
+        fun create(
             linkHandle: String,
             peerIdentityHash: ByteArray,
             peerNodeId64: Long,

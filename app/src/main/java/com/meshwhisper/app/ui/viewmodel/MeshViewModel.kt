@@ -162,7 +162,12 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
 
     // Engine & Router State
     val isBluetoothEnabled: StateFlow<Boolean> = bleEngine.isBluetoothEnabled
-    val connectedPeersCount: StateFlow<Int> = bleEngine.connectedPeersCount
+    val connectedPeersCount: StateFlow<Int> = combine(
+        bleEngine.connectedPeersCount,
+        app.wifiEngine.connectedPeersCount
+    ) { bleCount, wifiCount ->
+        bleCount + wifiCount
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, 0)
     val connectedNodeIds: StateFlow<Set<Long>> = combine(
         bleEngine.connectedNodeIds,
         app.wifiEngine.connectedWifiPeers

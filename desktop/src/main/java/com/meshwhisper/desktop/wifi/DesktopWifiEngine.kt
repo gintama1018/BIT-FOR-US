@@ -529,11 +529,15 @@ class DesktopWifiEngine(
             broadcastList.add(InetAddress.getByName("255.255.255.255"))
 
             val myIp = _localIpAddress.value
-            if (myIp != null && (myIp.startsWith("192.168.43.") || myIp.startsWith("192.168.137."))) {
+            if (myIp != null) {
                 val lastDot = myIp.lastIndexOf('.')
                 if (lastDot > 0) {
-                    val gwIp = myIp.substring(0, lastDot) + ".1"
-                    try { broadcastList.add(InetAddress.getByName(gwIp)) } catch (_: Exception) {}
+                    val subnetPrefix = myIp.substring(0, lastDot)
+                    try { broadcastList.add(InetAddress.getByName("$subnetPrefix.255")) } catch (_: Exception) {}
+                    if (myIp.startsWith("192.168.43.") || myIp.startsWith("192.168.137.")) {
+                        val gwIp = "$subnetPrefix.1"
+                        try { broadcastList.add(InetAddress.getByName(gwIp)) } catch (_: Exception) {}
+                    }
                 }
             }
 
@@ -544,7 +548,7 @@ class DesktopWifiEngine(
 
                 for (interfaceAddress in iface.interfaceAddresses) {
                     val broadcast = interfaceAddress.broadcast
-                    if (broadcast != null && interfaceAddress.address is Inet4Address) {
+                    if (broadcast != null && interfaceAddress.address is Inet4Address && !interfaceAddress.address.isLinkLocalAddress) {
                         broadcastList.add(broadcast)
                     }
                 }
@@ -563,21 +567,39 @@ class DesktopWifiEngine(
     private fun refreshLocalIp() {
         try {
             val interfaces = NetworkInterface.getNetworkInterfaces() ?: return
+            var bestIp: String? = null
+            var bestPriority = 0
+
             while (interfaces.hasMoreElements()) {
                 val iface = interfaces.nextElement()
                 if (iface.isLoopback || !iface.isUp) continue
+                val name = iface.name.lowercase()
+                val displayName = (iface.displayName ?: "").lowercase()
 
                 val addresses = iface.inetAddresses
                 while (addresses.hasMoreElements()) {
                     val addr = addresses.nextElement()
-                    if (!addr.isLoopbackAddress && addr is Inet4Address) {
-                        val ip = addr.hostAddress
-                        if (ip != null && !ip.startsWith("127.")) {
-                            _localIpAddress.value = ip
-                            return
+                    if (!addr.isLoopbackAddress && addr is Inet4Address && !addr.isLinkLocalAddress) {
+                        val ip = addr.hostAddress ?: continue
+                        if (ip.startsWith("127.") || ip.startsWith("169.254.")) continue
+
+                        var priority = 1
+                        if (name.contains("wlan") || name.contains("wi-fi") || name.contains("wifi") ||
+                            displayName.contains("wi-fi") || displayName.contains("wireless")) {
+                            priority = 10
+                        } else if (ip.startsWith("192.168.") || ip.startsWith("10.") || ip.startsWith("172.")) {
+                            priority = 5
+                        }
+
+                        if (priority > bestPriority) {
+                            bestPriority = priority
+                            bestIp = ip
                         }
                     }
                 }
+            }
+            if (bestIp != null) {
+                _localIpAddress.value = bestIp
             }
         } catch (_: Exception) {}
     }

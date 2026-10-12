@@ -188,6 +188,30 @@ class DesktopMeshRouter(
         authenticatedLinks[proof.linkHandle] = proof.peerIdentityHash
         scope.launch {
             identityRepository.onLinkEstablished(proof.peerIdentityHash)
+            try {
+                val existing = database.getPeer(proof.peerNodeId64)
+                if (existing == null) {
+                    val fallbackAlias = "Phone-${String.format("%016X", proof.peerNodeId64).takeLast(4)}"
+                    val hashHex = DesktopCryptoEngine.bytesToHex(proof.peerIdentityHash)
+                    val peer = com.meshwhisper.desktop.db.DesktopPeer(
+                        nodeId = proof.peerNodeId64,
+                        identityHashHex = hashHex,
+                        publicKeyHex = hashHex,
+                        alias = fallbackAlias,
+                        rssi = -45,
+                        hops = 0,
+                        lastSeen = System.currentTimeMillis(),
+                        publicFingerprint = hashHex.take(8),
+                        trustState = "LINKED",
+                        isVerified = false
+                    )
+                    database.upsertPeer(peer)
+                } else {
+                    database.upsertPeer(existing.copy(lastSeen = System.currentTimeMillis()))
+                }
+            } catch (e: Exception) {
+                logger.w(TAG, "Error upserting direct peer on bindLink: ${e.message}")
+            }
         }
     }
 

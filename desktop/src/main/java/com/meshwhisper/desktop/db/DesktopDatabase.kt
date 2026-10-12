@@ -32,7 +32,15 @@ data class DesktopPeer(
     val hasKeyChanged: Boolean = false,
     val trustState: String = "LEGACY_UNVERIFIED",
     val isVerified: Boolean = (trustState == "VERIFIED"),
-    val keyVersion: Long = 1L
+    val keyVersion: Long = 1L,
+    val latitude: Double = 0.0,
+    val longitude: Double = 0.0,
+    val altitude: Double = 0.0,
+    val accuracyMeters: Float = 0.0f,
+    val batteryPercent: Int = -1,
+    val locationTimestamp: Long = 0L,
+    val plusCode: String? = null,
+    val locationTrigger: String? = null
 )
 
 data class DesktopMessage(
@@ -159,6 +167,14 @@ class DesktopDatabase(
                 try { stmt.execute("ALTER TABLE peers ADD COLUMN trustState TEXT NOT NULL DEFAULT 'LEGACY_UNVERIFIED';") } catch (_: Exception) {}
                 try { stmt.execute("ALTER TABLE peers ADD COLUMN isVerified INTEGER NOT NULL DEFAULT 0;") } catch (_: Exception) {}
                 try { stmt.execute("ALTER TABLE peers ADD COLUMN keyVersion INTEGER NOT NULL DEFAULT 1;") } catch (_: Exception) {}
+                try { stmt.execute("ALTER TABLE peers ADD COLUMN latitude REAL DEFAULT 0.0;") } catch (_: Exception) {}
+                try { stmt.execute("ALTER TABLE peers ADD COLUMN longitude REAL DEFAULT 0.0;") } catch (_: Exception) {}
+                try { stmt.execute("ALTER TABLE peers ADD COLUMN altitude REAL DEFAULT 0.0;") } catch (_: Exception) {}
+                try { stmt.execute("ALTER TABLE peers ADD COLUMN accuracyMeters REAL DEFAULT 0.0;") } catch (_: Exception) {}
+                try { stmt.execute("ALTER TABLE peers ADD COLUMN batteryPercent INTEGER DEFAULT -1;") } catch (_: Exception) {}
+                try { stmt.execute("ALTER TABLE peers ADD COLUMN locationTimestamp INTEGER DEFAULT 0;") } catch (_: Exception) {}
+                try { stmt.execute("ALTER TABLE peers ADD COLUMN plusCode TEXT;") } catch (_: Exception) {}
+                try { stmt.execute("ALTER TABLE peers ADD COLUMN locationTrigger TEXT;") } catch (_: Exception) {}
 
                 // 3. Messages
                 stmt.execute("""
@@ -509,6 +525,35 @@ class DesktopDatabase(
     }
 
     @Synchronized
+    fun updatePeerTrustState(nodeId: Long, trustState: String) {
+        val isVerifiedInt = if (trustState == "VERIFIED") 1 else 0
+        val isBlockedInt = if (trustState == "BLOCKED") 1 else 0
+        getConnection().use { conn ->
+            conn.prepareStatement("""
+                UPDATE peers 
+                SET trustState = ?, isVerified = ?, isBlocked = ? 
+                WHERE nodeId = ?
+            """.trimIndent()).use { stmt ->
+                stmt.setString(1, trustState)
+                stmt.setInt(2, isVerifiedInt)
+                stmt.setInt(3, isBlockedInt)
+                stmt.setLong(4, nodeId)
+                stmt.executeUpdate()
+            }
+        }
+    }
+
+    @Synchronized
+    fun resetPeerIdentitiesCache() {
+        getConnection().use { conn ->
+            conn.createStatement().use { stmt ->
+                stmt.execute("DELETE FROM identities")
+                stmt.execute("DELETE FROM peers")
+            }
+        }
+    }
+
+    @Synchronized
     fun updatePeerKeyChange(identityHashHex: String, hasKeyChanged: Boolean) {
         getConnection().use { conn ->
             conn.prepareStatement("UPDATE peers SET hasKeyChanged = ? WHERE identityHashHex = ?").use { stmt ->
@@ -524,6 +569,14 @@ class DesktopDatabase(
         val kVer = try { rs.getLong("keyVersion") } catch (_: Exception) { 1L }
         val idHash = try { rs.getString("identityHashHex") } catch (_: Exception) { null }
         val hasChanged = try { rs.getInt("hasKeyChanged") == 1 } catch (_: Exception) { false }
+        val lat = try { rs.getDouble("latitude") } catch (_: Exception) { 0.0 }
+        val lon = try { rs.getDouble("longitude") } catch (_: Exception) { 0.0 }
+        val alt = try { rs.getDouble("altitude") } catch (_: Exception) { 0.0 }
+        val acc = try { rs.getFloat("accuracyMeters") } catch (_: Exception) { 0.0f }
+        val batt = try { rs.getInt("batteryPercent") } catch (_: Exception) { -1 }
+        val locTs = try { rs.getLong("locationTimestamp") } catch (_: Exception) { 0L }
+        val pCode = try { rs.getString("plusCode") } catch (_: Exception) { null }
+        val lTrig = try { rs.getString("locationTrigger") } catch (_: Exception) { null }
 
         return DesktopPeer(
             nodeId = rs.getLong("nodeId"),
@@ -539,8 +592,56 @@ class DesktopDatabase(
             hasKeyChanged = hasChanged,
             trustState = tState,
             isVerified = (tState == "VERIFIED"),
-            keyVersion = maxOf(1L, kVer)
+            keyVersion = maxOf(1L, kVer),
+            latitude = lat,
+            longitude = lon,
+            altitude = alt,
+            accuracyMeters = acc,
+            batteryPercent = batt,
+            locationTimestamp = locTs,
+            plusCode = pCode,
+            locationTrigger = lTrig
         )
+    }
+
+    @Synchronized
+    fun updatePeerLocation(
+        nodeId: Long,
+        latitude: Double,
+        longitude: Double,
+        altitude: Double,
+        accuracyMeters: Float,
+        batteryPercent: Int,
+        locationTimestamp: Long,
+        plusCode: String?,
+        locationTrigger: String?
+    ) {
+        getConnection().use { conn ->
+            val sql = """
+                UPDATE peers SET 
+                    latitude = ?, 
+                    longitude = ?, 
+                    altitude = ?, 
+                    accuracyMeters = ?, 
+                    batteryPercent = ?, 
+                    locationTimestamp = ?, 
+                    plusCode = ?, 
+                    locationTrigger = ?
+                WHERE nodeId = ?
+            """.trimIndent()
+            conn.prepareStatement(sql).use { stmt ->
+                stmt.setDouble(1, latitude)
+                stmt.setDouble(2, longitude)
+                stmt.setDouble(3, altitude)
+                stmt.setFloat(4, accuracyMeters)
+                stmt.setInt(5, batteryPercent)
+                stmt.setLong(6, locationTimestamp)
+                stmt.setString(7, plusCode)
+                stmt.setString(8, locationTrigger)
+                stmt.setLong(9, nodeId)
+                stmt.executeUpdate()
+            }
+        }
     }
 
     // --- Message DAO Operations ---

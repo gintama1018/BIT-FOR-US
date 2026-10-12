@@ -482,9 +482,9 @@ class PacketPipeline(
             dedupCache.put(dedupKey, System.currentTimeMillis())
         }
 
-        // 3. Commit identity updates if PEER_ANNOUNCE or LINK_AUTH
+        // 3. Commit identity updates if PEER_ANNOUNCE
         val finalIdentity = resolvedIdentity ?: return IngestResult.Dropped(PipelineStage.S6_SIGNATURE, "No identity resolved")
-        if (packet.type == PacketType.PEER_ANNOUNCE || packet.type == PacketType.LINK_AUTH) {
+        if (packet.type == PacketType.PEER_ANNOUNCE) {
             identityStore.upsert(finalIdentity)
         }
 

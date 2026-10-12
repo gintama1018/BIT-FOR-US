@@ -310,20 +310,79 @@ class DesktopMeshRouter(
         val packet = authPacket.packet
         if (packet.recipientId != myNodeId) return
 
-        val text = String(authPacket.decryptedPayload, Charsets.UTF_8)
-        val msg = DesktopMessage(
-            messageId = packet.messageId.toString(),
-            senderNodeId = packet.senderId,
-            recipientNodeId = myNodeId,
-            text = text,
-            timestamp = packet.timestamp,
-            isIncoming = true,
-            isDelivered = true,
-            ttlRemaining = packet.ttl
-        )
+        val isBreadcrumb = LocationBreadcrumbPayload.isBreadcrumb(authPacket.decryptedPayload)
+        val msg = if (isBreadcrumb) {
+            val breadcrumb = LocationBreadcrumbPayload.deserialize(authPacket.decryptedPayload)
+            if (breadcrumb != null) {
+                val plusCode = PlusCodeHelper.encode(breadcrumb.latitude, breadcrumb.longitude)
+                database.updatePeerLocation(
+                    nodeId = packet.senderId,
+                    latitude = breadcrumb.latitude,
+                    longitude = breadcrumb.longitude,
+                    altitude = breadcrumb.altitude,
+                    accuracyMeters = breadcrumb.accuracyMeters,
+                    batteryPercent = breadcrumb.batteryPercent,
+                    locationTimestamp = breadcrumb.fixTimestampSec,
+                    plusCode = plusCode,
+                    locationTrigger = breadcrumb.triggerType.name
+                )
+                val isSos = (breadcrumb.triggerType == BreadcrumbTriggerType.MANUAL_SOS ||
+                        breadcrumb.triggerType == BreadcrumbTriggerType.BATTERY_CRITICAL_5)
+                val text = buildString {
+                    append(if (isSos) "🚨 RESCUE BEACON: " else "📍 LOCATION BEACON: ")
+                    append("[${breadcrumb.triggerType.name}] • Plus Code: $plusCode\n")
+                    append("Coordinates: ${String.format(java.util.Locale.US, "%.6f, %.6f", breadcrumb.latitude, breadcrumb.longitude)} ")
+                    append("(±${breadcrumb.accuracyMeters}m, Alt: ${breadcrumb.altitude.toInt()}m)\n")
+                    if (breadcrumb.batteryPercent >= 0) {
+                        append("Battery: ${breadcrumb.batteryPercent}% ")
+                    }
+                    if (!breadcrumb.note.isNullOrBlank()) {
+                        append("• Note: ${breadcrumb.note}")
+                    }
+                }
+                DesktopMessage(
+                    messageId = packet.messageId.toString(),
+                    senderNodeId = packet.senderId,
+                    recipientNodeId = myNodeId,
+                    text = text,
+                    timestamp = packet.timestamp,
+                    isIncoming = true,
+                    isDelivered = true,
+                    ttlRemaining = packet.ttl,
+                    isEmergencySos = isSos
+                )
+            } else {
+                DesktopMessage(
+                    messageId = packet.messageId.toString(),
+                    senderNodeId = packet.senderId,
+                    recipientNodeId = myNodeId,
+                    text = "📍 [Encrypted Location Breadcrumb Received]",
+                    timestamp = packet.timestamp,
+                    isIncoming = true,
+                    isDelivered = true,
+                    ttlRemaining = packet.ttl
+                )
+            }
+        } else {
+            val text = String(authPacket.decryptedPayload, Charsets.UTF_8)
+            DesktopMessage(
+                messageId = packet.messageId.toString(),
+                senderNodeId = packet.senderId,
+                recipientNodeId = myNodeId,
+                text = text,
+                timestamp = packet.timestamp,
+                isIncoming = true,
+                isDelivered = true,
+                ttlRemaining = packet.ttl
+            )
+        }
+
         database.insertMessage(msg)
         _incomingMessages.tryEmit(msg)
-        logger.i(TAG, "🔒 [DM] from 0x${String.format("%016X", packet.senderId)}: $text")
+        if (msg.isEmergencySos) {
+            _sosAlerts.tryEmit(msg)
+        }
+        logger.i(TAG, "🔒 [DM] from 0x${String.format("%016X", packet.senderId)}: ${msg.text}")
 
         // Send authenticated ACK back
         sendAck(packet.senderId, packet.messageId)

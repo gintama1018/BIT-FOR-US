@@ -14,6 +14,7 @@ import kotlinx.coroutines.launch
 import java.awt.*
 import java.awt.event.WindowAdapter
 import java.awt.event.WindowEvent
+import java.io.ByteArrayInputStream
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
@@ -66,6 +67,9 @@ class DesktopMainWindow(
     // Radar Canvas
     private val radarCanvas = AnimatedRadarCanvas(database, router.myNodeId)
 
+    // Tactical Map & Homing
+    private val tacticalMapPanel: TacticalMapPanel
+
     // Inspector Logs
     private val logsTextArea = JTextArea().apply {
         isEditable = false
@@ -82,6 +86,10 @@ class DesktopMainWindow(
         setLocationRelativeTo(null)
         contentPane.background = ModernTheme.BG_MAIN
         contentPane.layout = BorderLayout()
+
+        tacticalMapPanel = TacticalMapPanel(database, router) { peerId ->
+            openDirectChatWithPeer(peerId)
+        }
 
         // 1. Top Header
         val headerPanel = buildHeaderPanel()
@@ -117,6 +125,7 @@ class DesktopMainWindow(
         contentDeck.add(buildPublicMeshTab(), "PUBLIC")
         contentDeck.add(buildDirectChatsTab(), "DM")
         contentDeck.add(buildRadarTab(), "RADAR")
+        contentDeck.add(tacticalMapPanel, "MAP_HOMING")
         contentDeck.add(buildInspectorTab(), "INSPECTOR")
         contentDeck.add(buildSettingsTab(), "SETTINGS")
 
@@ -178,6 +187,62 @@ class DesktopMainWindow(
             )
         }
         rightBox.add(statusBadgeLabel)
+
+        val pairGuideBtn = ModernButton(
+            text = "📱 Pair Phone",
+            bgColor = ModernTheme.BG_CARD,
+            hoverColor = ModernTheme.BG_CARD_HOVER,
+            textColor = ModernTheme.TEXT_MAIN,
+            cornerRadius = 8
+        ).apply {
+            addActionListener {
+                val myIp = wifiEngine.localIpAddress.value ?: "Not detected (Check Wi-Fi / Hotspot)"
+                val options = arrayOf("⚡ Connect to Phone IP...", "Close")
+                val choice = JOptionPane.showOptionDialog(
+                    this@DesktopMainWindow,
+                    """
+                    ⚡ 100% OFFLINE MOBILE & DESKTOP MESH PAIRING:
+                    
+                    🖥️ THIS COMPUTER IP: $myIp : 42426
+                    
+                    1. CONNECTION MODES (Zero Internet / SIM required):
+                       • Mode A: Phone Hotspot -> Turn ON Hotspot on Phone, connect PC Wi-Fi to Phone.
+                         (Phone is usually at default gateway 192.168.43.1).
+                       • Mode B: PC Hotspot -> Turn ON Windows Mobile Hotspot, connect Phone to PC.
+                       • Mode C: Common Offline Router -> Connect both to any local Wi-Fi router.
+                    
+                    2. AUTOMATIC DISCOVERY:
+                       • Both devices broadcast UDP discovery beacons on port 42425 ('MWIF').
+                       • Desktop automatically auto-probes the Phone Hotspot gateway (192.168.43.1).
+                    
+                    3. DIRECT IP CONNECT:
+                       • If Windows Firewall or Phone blocks UDP broadcast, click 'Connect to Phone IP...' below!
+                    """.trimIndent(),
+                    "📱 Phone & Desktop Mesh Pairing Guide",
+                    JOptionPane.DEFAULT_OPTION,
+                    JOptionPane.INFORMATION_MESSAGE,
+                    null,
+                    options,
+                    options[0]
+                )
+                if (choice == 0) {
+                    val defaultTargetIp = if (myIp.contains(".")) {
+                        val lastDot = myIp.lastIndexOf('.')
+                        if (lastDot > 0) myIp.substring(0, lastDot) + ".1" else "192.168.43.1"
+                    } else "192.168.43.1"
+                    val inputIp = JOptionPane.showInputDialog(
+                        this@DesktopMainWindow,
+                        "Enter Phone IP address to connect directly over local Wi-Fi / Hotspot:\n(Default Phone Hotspot IP is 192.168.43.1)",
+                        defaultTargetIp
+                    )
+                    if (!inputIp.isNullOrBlank()) {
+                        wifiEngine.connectDirectToIp(inputIp.trim())
+                        JOptionPane.showMessageDialog(this@DesktopMainWindow, "Attempting direct TCP connection to ${inputIp.trim()}:42426...")
+                    }
+                }
+            }
+        }
+        rightBox.add(pairGuideBtn)
 
         val sosBtn = ModernButton(
             text = "🚨 SEND SOS",
@@ -247,6 +312,7 @@ class DesktopMainWindow(
         }
         val btnDm = createNavBtn("Direct Chats", "🔒", "DM")
         val btnRadar = createNavBtn("Mesh Radar", "📡", "RADAR")
+        val btnMap = createNavBtn("Tactical Map", "🗺️", "MAP_HOMING")
         val btnInspector = createNavBtn("Packet Stream", "📋", "INSPECTOR")
         val btnSettings = createNavBtn("Station Vault", "⚙️", "SETTINGS")
 
@@ -255,6 +321,8 @@ class DesktopMainWindow(
         sidebar.add(btnDm)
         sidebar.add(Box.createVerticalStrut(6))
         sidebar.add(btnRadar)
+        sidebar.add(Box.createVerticalStrut(6))
+        sidebar.add(btnMap)
         sidebar.add(Box.createVerticalStrut(6))
         sidebar.add(btnInspector)
         sidebar.add(Box.createVerticalStrut(6))
@@ -384,12 +452,55 @@ class DesktopMainWindow(
             background = ModernTheme.BG_MAIN
         }
 
+        val headerBox = JPanel(BorderLayout(12, 0)).apply {
+            isOpaque = false
+            border = EmptyBorder(0, 0, 12, 0)
+        }
+
         dmChatTitleLabel.apply {
             font = ModernTheme.FONT_TITLE
             foreground = ModernTheme.TEXT_MAIN
-            border = EmptyBorder(0, 0, 12, 0)
         }
-        rightPanel.add(dmChatTitleLabel, BorderLayout.NORTH)
+        headerBox.add(dmChatTitleLabel, BorderLayout.WEST)
+
+        val verifyBtn = ModernButton("🛡️ Verify Safety Number", ModernTheme.BG_CARD, ModernTheme.BG_CARD_HOVER, ModernTheme.TEXT_MAIN, 6).apply {
+            font = ModernTheme.FONT_SMALL
+            addActionListener {
+                val peer = selectedPeer
+                if (peer == null) {
+                    JOptionPane.showMessageDialog(this@DesktopMainWindow, "Please select a peer first!")
+                    return@addActionListener
+                }
+                val options = arrayOf("Mark as Cryptographically VERIFIED", "Cancel")
+                val choice = JOptionPane.showOptionDialog(
+                    this@DesktopMainWindow,
+                    """
+                    🛡️ PEER CRYPTOGRAPHIC SAFETY NUMBER:
+                    
+                    Alias: ${peer.alias}
+                    Node ID: 0x${String.format("%016X", peer.nodeId)}
+                    Fingerprint: ${peer.publicFingerprint}
+                    Trust State: ${peer.trustState}
+                    
+                    Compare this Safety Number with the peer's phone screen to verify identity.
+                    """.trimIndent(),
+                    "🛡️ Cryptographic Safety Number Verification",
+                    JOptionPane.DEFAULT_OPTION,
+                    JOptionPane.INFORMATION_MESSAGE,
+                    null,
+                    options,
+                    options[0]
+                )
+                if (choice == 0) {
+                    database.updatePeerTrustState(peer.nodeId, "VERIFIED")
+                    refreshPeersList()
+                    updateDmChatHeader()
+                    JOptionPane.showMessageDialog(this@DesktopMainWindow, "✓ Peer ${peer.alias} is now marked as VERIFIED!")
+                }
+            }
+        }
+        headerBox.add(verifyBtn, BorderLayout.EAST)
+        rightPanel.add(headerBox, BorderLayout.NORTH)
         rightPanel.add(dmScrollPane, BorderLayout.CENTER)
 
         val dmBottomBox = JPanel(BorderLayout(10, 0)).apply {
@@ -397,23 +508,46 @@ class DesktopMainWindow(
             border = EmptyBorder(12, 0, 0, 0)
         }
 
-        val dmAttachBtn = ModernButton("📎 Attach", ModernTheme.BG_CARD, ModernTheme.BG_CARD_HOVER, ModernTheme.TEXT_MAIN, 10).apply {
+        val attachBox = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0)).apply { isOpaque = false }
+        val dmPhotoBtn = ModernButton("📷 Photo", ModernTheme.BG_CARD, ModernTheme.BG_CARD_HOVER, ModernTheme.TEXT_MAIN, 8).apply {
             addActionListener {
                 val peer = selectedPeer ?: (if (peerListModel.isEmpty) null else peerListModel.get(0))
                 if (peer == null) {
                     JOptionPane.showMessageDialog(this@DesktopMainWindow, "Please select a peer from the left sidebar first!", "No Peer Selected", JOptionPane.INFORMATION_MESSAGE)
                     return@addActionListener
                 }
-                val chooser = JFileChooser()
+                val chooser = JFileChooser().apply {
+                    dialogTitle = "Select Image to Send over Mesh"
+                    fileFilter = javax.swing.filechooser.FileNameExtensionFilter("Image Files (*.jpg, *.png, *.jpeg)", "jpg", "png", "jpeg")
+                }
                 if (chooser.showOpenDialog(this@DesktopMainWindow) == JFileChooser.APPROVE_OPTION) {
                     val file = chooser.selectedFile
-                    val type = if (file.name.endsWith(".jpg", true) || file.name.endsWith(".png", true)) "IMAGE" else "FILE"
-                    router.mediaManager.sendMediaFile(peer.nodeId, file, type, "")
+                    router.mediaManager.sendMediaFile(peer.nodeId, file, "IMAGE", "")
                     refreshDmMessages()
                 }
             }
         }
-        dmBottomBox.add(dmAttachBtn, BorderLayout.WEST)
+
+        val dmFileBtn = ModernButton("📁 File", ModernTheme.BG_CARD, ModernTheme.BG_CARD_HOVER, ModernTheme.TEXT_MAIN, 8).apply {
+            addActionListener {
+                val peer = selectedPeer ?: (if (peerListModel.isEmpty) null else peerListModel.get(0))
+                if (peer == null) {
+                    JOptionPane.showMessageDialog(this@DesktopMainWindow, "Please select a peer from the left sidebar first!", "No Peer Selected", JOptionPane.INFORMATION_MESSAGE)
+                    return@addActionListener
+                }
+                val chooser = JFileChooser().apply {
+                    dialogTitle = "Select File Attachment to Send over Mesh"
+                }
+                if (chooser.showOpenDialog(this@DesktopMainWindow) == JFileChooser.APPROVE_OPTION) {
+                    val file = chooser.selectedFile
+                    router.mediaManager.sendMediaFile(peer.nodeId, file, "FILE", "")
+                    refreshDmMessages()
+                }
+            }
+        }
+        attachBox.add(dmPhotoBtn)
+        attachBox.add(dmFileBtn)
+        dmBottomBox.add(attachBox, BorderLayout.WEST)
 
         dmInputField.addActionListener { sendDirectChat() }
         dmBottomBox.add(dmInputField, BorderLayout.CENTER)
@@ -436,6 +570,23 @@ class DesktopMainWindow(
             dmChatTitleLabel.text = "🔒 [${peer.trustState}] Encrypted Chat with ${peer.alias} (0x${String.format("%016X", peer.nodeId).takeLast(6)}) — $status"
         } else {
             dmChatTitleLabel.text = "Select a peer to start encrypted chat"
+        }
+    }
+
+    fun openDirectChatWithPeer(peerId: Long) {
+        val peer = database.getPeer(peerId)
+        if (peer != null) {
+            selectedPeer = peer
+            selectedPeerId = peer.nodeId
+            updateDmChatHeader()
+            refreshDmMessages()
+            cardLayout.show(contentDeck, "DM")
+            for (b in navButtons) {
+                b.foreground = ModernTheme.TEXT_MUTED
+            }
+            if (navButtons.size > 1) {
+                navButtons[1].foreground = ModernTheme.TEXT_MAIN
+            }
         }
     }
 
@@ -547,6 +698,19 @@ class DesktopMainWindow(
         aliasBox.add(saveAliasBtn)
 
         tab.add(createCard("🏷️ Station Display Name", aliasBox))
+        tab.add(Box.createVerticalStrut(18))
+
+        val cacheBox = JPanel(FlowLayout(FlowLayout.LEFT, 12, 0)).apply { isOpaque = false }
+        val clearCacheBtn = ModernButton("🧹 Clear Peer Counter Cache", ModernTheme.BG_CARD, ModernTheme.BG_CARD_HOVER, ModernTheme.TEXT_MAIN, 10).apply {
+            addActionListener {
+                database.resetPeerIdentitiesCache()
+                refreshPeersList()
+                JOptionPane.showMessageDialog(this@DesktopMainWindow, "Peer identity and counter cache cleared! Newly installed peers will sync announcements cleanly.")
+            }
+        }
+        cacheBox.add(clearCacheBtn)
+        tab.add(createCard("🧹 Network Peer Cache", cacheBox))
+
         return tab
     }
 
@@ -579,7 +743,8 @@ class DesktopMainWindow(
         // Periodic Status and Peer Refresh
         javax.swing.Timer(1500) {
             val count = wifiEngine.connectedPeersCount.value
-            statusBadgeLabel.text = "⚡ $count LAN PEER(S) • DUAL-RADIO READY"
+            val ipStr = wifiEngine.localIpAddress.value?.let { " ($it)" } ?: ""
+            statusBadgeLabel.text = "⚡ $count LAN PEER(S)$ipStr • DUAL-RADIO READY"
             refreshPeersList()
             radarCanvas.repaint()
         }.start()
@@ -673,7 +838,12 @@ class DesktopMainWindow(
 
                 if (msg.mediaType == "IMAGE") {
                     try {
-                        val origImg = ImageIO.read(mediaFile)
+                        val rawBytes = if (router.mediaManager.isMediaFileEncrypted(mediaFile)) {
+                            router.mediaManager.readAndDecryptMediaFile(mediaFile.name, mediaFile)
+                        } else {
+                            mediaFile.readBytes()
+                        }
+                        val origImg = ImageIO.read(ByteArrayInputStream(rawBytes))
                         if (origImg != null) {
                             val maxW = 320
                             val maxH = 220
@@ -686,7 +856,7 @@ class DesktopMainWindow(
                                 border = LineBorder(ModernTheme.BORDER_COLOR, 1, true)
                                 addMouseListener(object : java.awt.event.MouseAdapter() {
                                     override fun mouseClicked(e: java.awt.event.MouseEvent?) {
-                                        try { Desktop.getDesktop().open(mediaFile) } catch (_: Exception) {}
+                                        openOrExportMediaFile(mediaFile)
                                     }
                                 })
                             }
@@ -705,13 +875,7 @@ class DesktopMainWindow(
                 val openBtn = ModernButton(actionLabel, ModernTheme.BG_CARD, ModernTheme.BG_CARD_HOVER, ModernTheme.TEXT_MAIN, 6).apply {
                     font = ModernTheme.FONT_SMALL
                     addActionListener {
-                        try {
-                            if (Desktop.isDesktopSupported()) {
-                                Desktop.getDesktop().open(mediaFile)
-                            }
-                        } catch (e: Exception) {
-                            JOptionPane.showMessageDialog(this@DesktopMainWindow, "File saved at: ${mediaFile.absolutePath}")
-                        }
+                        openOrExportMediaFile(mediaFile)
                     }
                 }
                 mediaPanel.add(openBtn)
@@ -726,6 +890,28 @@ class DesktopMainWindow(
         }
 
         return panel
+    }
+
+    private fun openOrExportMediaFile(mediaFile: File) {
+        try {
+            val decryptedBytes = if (router.mediaManager.isMediaFileEncrypted(mediaFile)) {
+                router.mediaManager.readAndDecryptMediaFile(mediaFile.name, mediaFile)
+            } else {
+                mediaFile.readBytes()
+            }
+            val ext = mediaFile.extension.ifBlank { "bin" }
+            val tempPlainFile = File.createTempFile("mesh_view_${mediaFile.nameWithoutExtension}_", ".$ext")
+            tempPlainFile.deleteOnExit()
+            tempPlainFile.writeBytes(decryptedBytes)
+
+            if (Desktop.isDesktopSupported()) {
+                Desktop.getDesktop().open(tempPlainFile)
+            } else {
+                JOptionPane.showMessageDialog(this, "Exported decrypted file to: ${tempPlainFile.absolutePath}")
+            }
+        } catch (e: Exception) {
+            JOptionPane.showMessageDialog(this, "Could not open media: ${e.message}", "Media Error", JOptionPane.ERROR_MESSAGE)
+        }
     }
 
     private fun refreshPeersList() {

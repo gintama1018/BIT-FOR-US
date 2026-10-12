@@ -74,7 +74,7 @@ class DesktopMediaManager(
 ) {
     companion object {
         private const val TAG = "DesktopMediaManager"
-        const val CHUNK_PAYLOAD_SIZE = 400
+        const val CHUNK_PAYLOAD_SIZE = MeshPacket.CHUNK_PAYLOAD_SIZE // 320 bytes
         val MAGIC_HEADER = "MWMEDIA1".toByteArray(Charsets.US_ASCII)
         val FILE_HKDF_INFO = "MW/FILE/v2".toByteArray(Charsets.UTF_8)
     }
@@ -395,6 +395,22 @@ class DesktopMediaManager(
         }
     }
 
+    private fun trimJpegPadding(rawBytes: ByteArray): ByteArray {
+        if (rawBytes.size < 4) return rawBytes
+        var eoiIndex = -1
+        for (i in rawBytes.size - 2 downTo 0) {
+            if ((rawBytes[i].toInt() and 0xFF) == 0xFF && (rawBytes[i + 1].toInt() and 0xFF) == 0xD9) {
+                eoiIndex = i + 2
+                break
+            }
+        }
+        return if (eoiIndex in 1..rawBytes.size) {
+            rawBytes.copyOfRange(0, eoiIndex)
+        } else {
+            rawBytes
+        }
+    }
+
     private fun stitchTiledImageInMemory(
         concatenatedBytes: ByteArray,
         session: InboundMediaSession
@@ -418,7 +434,8 @@ class DesktopMediaManager(
                 if (tileIdx >= session.paddedTileByteLengths.size) break
                 val pLen = session.paddedTileByteLengths[tileIdx]
                 if (byteOffset + pLen <= concatenatedBytes.size) {
-                    val tileBytes = concatenatedBytes.copyOfRange(byteOffset, byteOffset + pLen)
+                    val rawTileBytes = concatenatedBytes.copyOfRange(byteOffset, byteOffset + pLen)
+                    val tileBytes = trimJpegPadding(rawTileBytes)
                     try {
                         val tileImg = ImageIO.read(ByteArrayInputStream(tileBytes))
                         if (tileImg != null) {
@@ -447,11 +464,32 @@ class DesktopMediaManager(
         if (!file.exists() || !file.isFile) return
 
         // Read and decrypt into memory if encrypted, or read plain if fresh local file
-        val fileBytes = if (isMediaFileEncrypted(file)) {
+        val rawFileBytes = if (isMediaFileEncrypted(file)) {
             readAndDecryptMediaFile(file.name, file)
         } else {
             file.readBytes()
         }
+
+        // Optimize dimensions for image transmission over mesh
+        val fileBytes = if (mediaType.uppercase() == "IMAGE") {
+            try {
+                val orig = ImageIO.read(ByteArrayInputStream(rawFileBytes))
+                if (orig != null && (orig.width > 480 || orig.height > 480)) {
+                    val maxDim = 480.0
+                    val scale = minOf(maxDim / orig.width, maxDim / orig.height)
+                    val targetW = (orig.width * scale).toInt()
+                    val targetH = (orig.height * scale).toInt()
+                    val scaled = java.awt.image.BufferedImage(targetW, targetH, java.awt.image.BufferedImage.TYPE_INT_RGB)
+                    val g = scaled.createGraphics()
+                    g.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION, java.awt.RenderingHints.VALUE_INTERPOLATION_BILINEAR)
+                    g.drawImage(orig, 0, 0, targetW, targetH, null)
+                    g.dispose()
+                    val baos = ByteArrayOutputStream()
+                    ImageIO.write(scaled, "jpg", baos)
+                    baos.toByteArray()
+                } else rawFileBytes
+            } catch (_: Exception) { rawFileBytes }
+        } else rawFileBytes
 
         val mediaId = UUID.randomUUID()
         val timestampSec = System.currentTimeMillis() / 1000L

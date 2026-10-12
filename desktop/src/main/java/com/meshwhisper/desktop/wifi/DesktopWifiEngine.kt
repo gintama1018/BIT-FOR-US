@@ -63,6 +63,7 @@ class DesktopWifiEngine(
     private val sessionRegistry = WifiSessionRegistry(ResourceLimits.MAX_WIFI_AUTHENTICATED_SESSIONS)
     private val udpBeaconLimiter = UdpBeaconLimiter()
     private val frameRateLimiter = WifiFrameRateLimiter()
+    private val pendingConnectingIps = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     // State flows
     private val _isWifiActive = MutableStateFlow(false)
@@ -233,12 +234,22 @@ class DesktopWifiEngine(
         }
     }
 
+    fun connectDirectToIp(ip: String, tcpPort: Int = TCP_DATA_PORT) {
+        connectToPeer(0L, ip, tcpPort)
+    }
+
     private fun connectToPeer(peerId: Long, ip: String, tcpPort: Int) {
         if (!isEngineRunning) return
         if (sessionRegistry.size() >= ResourceLimits.MAX_WIFI_AUTHENTICATED_SESSIONS) return
-        if (sessionRegistry.getSessionByNodeId(peerId) != null) return
+        if (peerId != 0L && sessionRegistry.getSessionByNodeId(peerId) != null) return
+        if (sessionRegistry.getAllSessions().any { it.ipAddress == ip }) return
+
+        if (!pendingConnectingIps.add(ip)) {
+            return // Outbound connection to this IP already pending
+        }
 
         if (!WifiTransportPool.acquirePendingSlot()) {
+            pendingConnectingIps.remove(ip)
             logger.w(TAG, "Pending handshake pool saturated (max 8). Skipping outbound connection to $ip:$tcpPort")
             return
         }
@@ -259,6 +270,7 @@ class DesktopWifiEngine(
                 logger.d(TAG, "Could not connect to peer $ip:$tcpPort: ${e.message}")
                 try { socket?.close() } catch (_: Exception) {}
             } finally {
+                pendingConnectingIps.remove(ip)
                 WifiTransportPool.releasePendingSlot()
             }
         }
@@ -448,8 +460,16 @@ class DesktopWifiEngine(
         if (buf.remaining() < aliasLen) return
         if (peerId == myNodeId) return
 
+        // Deterministic Wi-Fi initiator tie-breaker:
+        // Lower nodeId initiates outbound TCP connection.
+        // Higher nodeId listens to prevent simultaneous cross-connect race conditions.
+        if (myNodeId != 0L && peerId != 0L && myNodeId > peerId) {
+            return
+        }
+
         if (sessionRegistry.size() < ResourceLimits.MAX_WIFI_AUTHENTICATED_SESSIONS) {
-            if (sessionRegistry.getSessionByNodeId(peerId) == null) {
+            if (sessionRegistry.getSessionByNodeId(peerId) == null &&
+                sessionRegistry.getAllSessions().none { it.ipAddress == senderIp }) {
                 connectToPeer(peerId, senderIp, tcpPort)
             }
         }
@@ -478,6 +498,22 @@ class DesktopWifiEngine(
                                 udpSocket?.send(datagram)
                             } catch (_: Exception) {}
                         }
+
+                        // Hotspot auto-probe: Only probe if on typical hotspot subnets (192.168.43.x or 192.168.137.x)
+                        // and no peers connected yet
+                        if (sessionRegistry.size() == 0 && (myIp.startsWith("192.168.43.") || myIp.startsWith("192.168.137."))) {
+                            val lastDot = myIp.lastIndexOf('.')
+                            if (lastDot > 0) {
+                                val gwIp = myIp.substring(0, lastDot) + ".1"
+                                if (gwIp != myIp) {
+                                    try {
+                                        val gwDatagram = DatagramPacket(beaconBytes, beaconBytes.size, InetAddress.getByName(gwIp), UDP_DISCOVERY_PORT)
+                                        udpSocket?.send(gwDatagram)
+                                    } catch (_: Exception) {}
+                                    connectToPeer(0L, gwIp, TCP_DATA_PORT)
+                                }
+                            }
+                        }
                     }
                 } catch (e: Exception) {
                     logger.w(TAG, "UDP Beacon broadcast error: ${e.message}")
@@ -491,6 +527,15 @@ class DesktopWifiEngine(
         val broadcastList = mutableListOf<InetAddress>()
         try {
             broadcastList.add(InetAddress.getByName("255.255.255.255"))
+
+            val myIp = _localIpAddress.value
+            if (myIp != null && (myIp.startsWith("192.168.43.") || myIp.startsWith("192.168.137."))) {
+                val lastDot = myIp.lastIndexOf('.')
+                if (lastDot > 0) {
+                    val gwIp = myIp.substring(0, lastDot) + ".1"
+                    try { broadcastList.add(InetAddress.getByName(gwIp)) } catch (_: Exception) {}
+                }
+            }
 
             val interfaces = NetworkInterface.getNetworkInterfaces() ?: return broadcastList
             while (interfaces.hasMoreElements()) {

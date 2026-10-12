@@ -244,9 +244,8 @@ class MeshBleEngine(private val context: Context) {
                         if (now - lastBtOnTimeMs < 6000L) {
                             rapidRestartCount++
                             Log.w(tag, "Rapid Bluetooth ON detected ($rapidRestartCount). Device firmware cycling suspected. Throttling restart...")
-                            if (rapidRestartCount >= 2) {
-                                // Suspend peripheral advertising mode to prevent crashing device's Bluetooth daemon (common on Oppo A31 / Helio P35)
-                                _supportsPeripheral.value = false
+                            if (rapidRestartCount >= 3) {
+                                // Temporarily pause advertising to let driver settle without permanently disabling support
                                 _isAdvertising.value = false
                             }
                         } else {
@@ -359,6 +358,10 @@ class MeshBleEngine(private val context: Context) {
             return
         }
 
+        val canAdv = try { isPeripheralAdvertisingSupported() } catch (_: Exception) { false }
+        _supportsPeripheral.value = canAdv
+        consecutiveAdvertiseFailures = 0
+
         if (isEngineRunning) {
             Log.d(tag, "Mesh engine is already active, ensuring scanner and advertiser are running")
             if (!_isScanning.value) {
@@ -374,7 +377,7 @@ class MeshBleEngine(private val context: Context) {
         }
 
         isEngineRunning = true
-        Log.i(tag, "Starting Mesh BLE Engine for Node ID: $nodeId")
+        Log.i(tag, "Starting Mesh BLE Engine for Node ID: $nodeId (supportsPeripheral=$canAdv)")
 
         if (_supportsPeripheral.value) {
             try {
@@ -708,8 +711,8 @@ class MeshBleEngine(private val context: Context) {
             _isAdvertising.value = false
             consecutiveAdvertiseFailures++
 
-            if (errorCode == AdvertiseCallback.ADVERTISE_FAILED_FEATURE_UNSUPPORTED || consecutiveAdvertiseFailures >= 2) {
-                Log.w(tag, "BLE Advertising unsupported or repeatedly failed ($consecutiveAdvertiseFailures times). Disabling peripheral advertising on this chipset to prevent Bluetooth restart loop.")
+            if (errorCode == AdvertiseCallback.ADVERTISE_FAILED_FEATURE_UNSUPPORTED) {
+                Log.w(tag, "BLE Advertising unsupported on this chipset hardware.")
                 _supportsPeripheral.value = false
                 return
             }
@@ -732,10 +735,11 @@ class MeshBleEngine(private val context: Context) {
                     Log.e(tag, "Fallback advertising also failed", e)
                 }
             } else {
-                // Transient error: Retry advertising ONCE after 2.5s backoff with medium power
-                if (isEngineRunning && hasPermissions() && consecutiveAdvertiseFailures < 2) {
+                // Transient error: Retry advertising with backoff
+                if (isEngineRunning && hasPermissions() && consecutiveAdvertiseFailures < 4) {
                     scope.launch {
-                        delay(2500L)
+                        val backoff = if (consecutiveAdvertiseFailures <= 2) 2500L else 5000L
+                        delay(backoff)
                         if (isEngineRunning && !_isAdvertising.value && _supportsPeripheral.value) {
                             Log.i(tag, "Auto-recovering BLE advertiser after error $errorCode with BALANCED mode...")
                             try {
@@ -963,7 +967,7 @@ class MeshBleEngine(private val context: Context) {
                     discoveredDevicesByNodeId[peerNodeId] = Pair(device, rssi)
                 }
 
-                if (peerNodeId != null && myNodeId != 0L) {
+                if (_supportsPeripheral.value && peerNodeId != null && myNodeId != 0L) {
                     if (myNodeId > peerNodeId) {
                         val deferredUntil = deferredConnectionTime.computeIfAbsent(address) { now + 3500L }
                         if (now < deferredUntil) {
@@ -1006,7 +1010,7 @@ class MeshBleEngine(private val context: Context) {
         Log.d(tag, "Initiating GATT connection to peer: $address (RSSI: $rssi)")
 
         val gatt = try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 device.connectGatt(
                     context,
                     false,
@@ -1023,13 +1027,17 @@ class MeshBleEngine(private val context: Context) {
                 )
             }
         } catch (e: Exception) {
-            Log.w(tag, "connectGatt with PHY flags failed, falling back to basic LE transport: ${e.message}")
-            device.connectGatt(
-                context,
-                false,
-                createGattCallback(address),
-                BluetoothDevice.TRANSPORT_LE
-            )
+            Log.w(tag, "connectGatt failed, falling back to basic LE transport: ${e.message}")
+            try {
+                device.connectGatt(
+                    context,
+                    false,
+                    createGattCallback(address),
+                    BluetoothDevice.TRANSPORT_LE
+                )
+            } catch (_: Exception) {
+                null
+            }
         }
 
         if (gatt == null) {
